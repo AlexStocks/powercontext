@@ -23,6 +23,10 @@ candidate scopes. Results move across scopes through explicit publication of an 
 Report projects the `work` hierarchy from a root scope and folds `execution` by default. Project, Feature, and Agent
 may be UI names, but they do not form a second identity model.
 
+This RFC covers scopes within one tenant or authorization domain. A tenant may have several unrelated `context`
+scopes, or connect them with Parent Relations to share common Context. Cross-tenant sharing requires separate rules
+for identity, authorization, revocation, and audit, so Parent Relation does not represent it.
+
 # Motivation
 
 PowerContext currently uses `scope_id` to isolate Source, Memory, Artifact, Handoff, and other mutable state. This
@@ -49,10 +53,10 @@ This proposal must provide all of these outcomes:
 
 # Guide-level explanation
 
-## Scope Role and Parent Relation
+## Reading the model
 
-The system has one kind of durable boundary: scope. `context`, `work`, and `execution` are values of an ordinary
-scope's `role` field:
+The system has one kind of durable boundary: scope. Runtime routes state only by `scope_id`. Role, title, and Parent
+Relation are properties that explain the ID. They do not introduce more identity objects:
 
 ```text
 Scope
@@ -64,20 +68,18 @@ Scope
 `-- parent relation: parent_scope_id + shared | delegated
 ```
 
-An actual scope tree shows ID, Role, and Relation together:
+Every diagram in this RFC uses the same notation. Square brackets show Role. `shared` or `delegated` on a connecting
+line shows the child's Relation to its parent.
 
 ```text
-scp_repo [context, "Repository context"]
-`-- scp_feature [work, "Retry race", shared]
-    |-- scp_agent_a [execution, "Agent A", shared]
-    |   `-- scp_research [execution, "Research", delegated]
-    `-- scp_migration [work, "Schema migration", delegated]
-        `-- scp_migration_agent [execution, "Migration agent", shared]
+scp_repo "Repository context" [context]
+`-- shared --> scp_feature "Retry race" [work]
+    `-- shared --> scp_agent_a "Agent A" [execution]
 ```
 
-Every node has its own `scope_id`, and every Runtime operation continues to route by that ID. Role creates no new
-identity; it adds collaboration semantics to a scope. Parent Relation references two scope IDs and controls how the
-child reads Context. Sessions and workspaces remain outside the tree and refer to its nodes.
+The three scopes store state separately. `scp_agent_a` can read `scp_feature` and `scp_repo` along continuous
+`shared` relations, but it still writes only to `scp_agent_a`. A session or workspace refers to the current scope and
+does not change data ownership.
 
 | Choice | Question answered | Not responsible for |
 | --- | --- | --- |
@@ -120,7 +122,55 @@ read scopes: current scope + continuous shared ancestors
 ```
 
 Role does not imply Relation. A `work` may use `shared` with a parent `context`, or `delegated` for an isolated task.
-An `execution` may read common `work`, or use `delegated` for a minimum-context subagent.
+An `execution` may read common `work`, or use `delegated` for a minimum-context subagent. A `context` may also use
+another `context` as its parent. Role does not impose a fixed depth.
+
+## Sharing Context within one tenant
+
+One tenant does not imply one top-level `context`. Several `context` scopes may stay independent or read a common
+parent:
+
+```text
+scp_common "Shared conventions" [context]
+|-- shared --> scp_repo_a "Repository A" [context]
+`-- shared --> scp_repo_b "Repository B" [context]
+```
+
+When `scp_repo_a` is current, the Context resolver returns `scp_repo_a` and `scp_common`. It does not return the
+sibling `scp_repo_b`. Writes to `scp_repo_a` also stay out of `scp_common`. The same relation can express layered
+Context reuse:
+
+```text
+scp_org "Organization knowledge" [context]
+`-- shared --> scp_team "Team conventions" [context]
+    `-- shared --> scp_repo "Repository context" [context]
+        `-- shared --> scp_feature "Retry race" [work]
+```
+
+`scp_feature` can read Context along this continuous relation. Every scope keeps its own title, summary, status, and
+Handoff. Shared reads do not merge them.
+
+Scopes without a parent relation do not enter each other's Context read set merely because they belong to the same
+tenant. They exchange selected content through exact publication:
+
+```text
+scp_repo_a [context] -- publish exact revision --> scp_repo_b [context]
+```
+
+The support boundary is explicit:
+
+| Need | Expression | Result |
+| --- | --- | --- |
+| Several independent Contexts | No Parent Relation | No cross-reads |
+| Several Contexts share base material | Same `context` as each scope's `shared` parent | Reads the common parent, not siblings |
+| Layered Context reuse | A `context` uses another `context` as its `shared` parent | Reads along continuous relations |
+| Selected exchange between independent Contexts | Exact publication | Copies one version without ongoing sync |
+| Inherit several unrelated Contexts at once | Multiple parents | Not supported |
+| Cross-tenant sharing | Not applicable | Outside this RFC |
+
+`shared` provides continuous reads from parent Context. Publication delivers an exact version between two authorized
+scopes. A scope has at most one parent. For reuse across several scopes, publish stable material to a common
+`context`, or publish directly where needed. These relations provide no evidence of cross-tenant authorization.
 
 ## External selection
 
@@ -148,8 +198,8 @@ The host creates a `work` and one session `execution`:
 
 ```text
 scp_repo [context]
-`-- scp_feature [work, shared]
-    `-- scp_session [execution, shared]
+`-- shared --> scp_feature [work]
+    `-- shared --> scp_session [execution]
 ```
 
 The session writes to `scp_session` and reads Context from `scp_feature` and `scp_repo`. Work conclusions are
@@ -161,10 +211,10 @@ A bug and feature use sibling `work` scopes:
 
 ```text
 scp_repo [context]
-|-- scp_bug [work, shared]
-|   `-- scp_session_bug [execution, shared]
-`-- scp_feature [work, shared]
-    `-- scp_session_feature [execution, shared]
+|-- shared --> scp_bug [work]
+|   `-- shared --> scp_session_bug [execution]
+`-- shared --> scp_feature [work]
+    `-- shared --> scp_session_feature [execution]
 ```
 
 At a request boundary, the host suspends or closes `scp_session_bug`, resolves or creates the feature scopes, and
@@ -177,9 +227,9 @@ Peer agents use sibling `execution` scopes under one `work`:
 
 ```text
 scp_feature [work]
-|-- scp_agent_a [execution, shared]
-|-- scp_agent_b [execution, shared]
-`-- scp_agent_c [execution, shared]
+|-- shared --> scp_agent_a [execution]
+|-- shared --> scp_agent_b [execution]
+`-- shared --> scp_agent_c [execution]
 ```
 
 Each agent reads common `work` but not a sibling's intermediate state. After an agent publishes a selected result to
@@ -192,9 +242,9 @@ A temporary subagent uses a `delegated execution`:
 
 ```text
 scp_feature [work]
-`-- scp_main [execution, shared]
-    |-- scp_research [execution, delegated]
-    `-- scp_test [execution, delegated]
+`-- shared --> scp_main [execution]
+    |-- delegated --> scp_research [execution]
+    `-- delegated --> scp_test [execution]
 ```
 
 The orchestrator selects input for the child scope. The child returns exact result references, then the host decides
@@ -205,9 +255,9 @@ A subtask that needs independent Continue or handoff uses a nested `work`:
 
 ```text
 scp_feature [work]
-|-- scp_main [execution, shared]
-`-- scp_migration [work, delegated]
-    `-- scp_migration_agent [execution, shared]
+|-- shared --> scp_main [execution]
+`-- delegated --> scp_migration [work]
+    `-- shared --> scp_migration_agent [execution]
 ```
 
 `scp_migration` owns its own Handoff and appears as child work under `scp_feature` in a report.
@@ -229,10 +279,10 @@ execution-local material
 Publication creates a new immutable revision in the target scope and retains the source scope, source revision, and
 digest. It grants the target no permission to read the source scope and does not merge Handoff histories.
 
-A Handoff Report selects a `context` or `work` root, traverses a bounded subtree, and projects only `work`:
+A Handoff Report selects a `context` or `work` root, traverses bounded descendant scopes, and projects only `work`:
 
 ```text
-scope tree                         report projection
+scope relations                    report projection
 
 scp_repo [context]                Repository context
 |-- scp_bug [work]                +-- Bug fix
@@ -293,8 +343,8 @@ Scope-local Runtime
 ```
 
 The scope-local Runtime continues to handle state using one explicit `scope_id`. The scope application layer owns
-metadata, hierarchy, and cross-scope operations. The integration maps external session, workspace, and orchestrator
-lifecycle to scopes. An agent transport projects only application behavior authorized for its caller.
+metadata, parent relations, and cross-scope operations. The integration maps external session, workspace, and
+orchestrator lifecycle to scopes. An agent transport projects only application behavior authorized for its caller.
 
 ## Scope contract
 
@@ -329,6 +379,7 @@ Parent relations satisfy these invariants:
 4. A parent chain contains no cycle.
 5. Changing a parent does not move or rewrite existing state.
 6. A relation mode grants no permission or cross-scope write capability.
+7. This RFC does not use parent relations to represent cross-tenant sharing.
 
 The Context resolver returns the current scope and continuous `shared` ancestors and retains source scope and exact
 revision for every item. The implementation limits maximum depth and total budget. Resolution stops at `delegated`
@@ -397,16 +448,16 @@ Report generation freezes these inputs:
 
 ```text
 root_scope_id
-hierarchy revision
+parent-relation revision
 selected work scope_ids
 exact Handoff revision or no_handoff per work
 activity boundary
 rendering options
 ```
 
-A dynamic subtree is used only for discovery. The response returns the final selection, and later hierarchy or
-Handoff changes do not modify an existing report. The report preserves the nearest work ancestry among selected work
-scopes. It does not merge Handoff histories or write to any scope.
+A dynamic descendant set is used only for discovery. The response returns the final selection, and later parent
+relation or Handoff changes do not modify an existing report. The report preserves the nearest work ancestry among
+selected work scopes. It does not merge Handoff histories or write to any scope.
 
 The report authorizes every selected scope. An inaccessible scope must not leak its title, existence, or count. Strict
 mode fails, while a mode that permits partial results marks omissions explicitly.
@@ -468,7 +519,7 @@ topology.
 
 ## Retain Project catalog for report organization
 
-Rejected. It creates a second identity and membership model beside scope hierarchy and requires workspace, activity,
+Rejected. It creates a second identity and membership model beside scope parent relations and requires workspace, activity,
 and report operations to maintain `project_id`.
 
 ## Promote all child content automatically
@@ -505,4 +556,6 @@ rejected results. It also makes sharing depend on agent topology.
 # Future possibilities
 
 Later work may add scope search, title history, archival policy, and a host-bound MCP transport. Reports covering work
-without a common ancestor can add a multi-root projection over exact selection without restoring Project identity.
+without a common parent can add a multi-root projection over exact selection without restoring Project identity.
+Cross-tenant sharing needs a separate design for tenant identity, authorization, revocation, audit, and data copying.
+It does not reuse Parent Relation from this RFC.

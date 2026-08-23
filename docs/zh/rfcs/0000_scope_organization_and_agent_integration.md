@@ -20,6 +20,9 @@ agent host 在 turn 开始前把 session 绑定到一个当前 scope。目录和
 Artifact revision 显式发布，Handoff Report 从根 scope 投影 `work` 层级并默认折叠 `execution`。Project、Feature 和 Agent
 可以作为界面名称，不形成第二套身份模型。
 
+本 RFC 讨论同一租户或授权域内的 scope。一个租户可以有多个互不相关的 `context` scope，也可以通过 Parent Relation 共享
+共同 Context。跨租户共享涉及身份、授权、撤销和审计，不使用本 RFC 的 Parent Relation 表达，需要单独设计。
+
 # Motivation
 
 PowerContext 当前使用 `scope_id` 隔离 Source、Memory、Artifact、Handoff 和其他可变状态。这个边界是必要的，但不透明 ID
@@ -43,9 +46,10 @@ branch、session、feature 或 agent，都会在其他场景中混合状态或�
 
 # Guide-level explanation
 
-## Scope Role 和 Parent Relation
+## 如何阅读这个模型
 
-系统中只有一种持久边界：scope。`context`、`work` 和 `execution` 都是普通 scope 的 `role` 值：
+系统中只有一种持久边界：scope。Runtime 只用 `scope_id` 路由状态。Role、标题和 Parent Relation 是 scope 的属性，用于解释
+这个 ID，而不是新的身份对象：
 
 ```text
 Scope
@@ -57,19 +61,16 @@ Scope
 `-- parent relation: parent_scope_id + shared | delegated
 ```
 
-一棵实际的 scope 树同时显示 ID、Role 和 Relation：
+本文中的图使用同一种写法：方括号表示 Role，连接线上的 `shared` 或 `delegated` 表示 child 对 parent 的 Relation。
 
 ```text
-scp_repo [context, "Repository context"]
-`-- scp_feature [work, "Retry race", shared]
-    |-- scp_agent_a [execution, "Agent A", shared]
-    |   `-- scp_research [execution, "Research", delegated]
-    `-- scp_migration [work, "Schema migration", delegated]
-        `-- scp_migration_agent [execution, "Migration agent", shared]
+scp_repo "Repository context" [context]
+`-- shared --> scp_feature "Retry race" [work]
+    `-- shared --> scp_agent_a "Agent A" [execution]
 ```
 
-每个节点都有自己的 `scope_id`，所有 Runtime 操作仍以这个 ID 路由。Role 不创建新的 identity；它只给 scope 增加协作语义。
-Parent Relation 引用两个 scope ID，决定子节点的 Context 读取方式。session 和 workspace 位于树外，只引用其中的节点。
+三个 scope 各自保存状态。`scp_agent_a` 可以沿连续的 `shared` 关系读取 `scp_feature` 和 `scp_repo`，但仍只写入
+`scp_agent_a`。session 和 workspace 只引用当前 scope，不改变数据归属。
 
 | 选择 | 回答的问题 | 不负责 |
 | --- | --- | --- |
@@ -111,7 +112,51 @@ read scopes: current scope + continuous shared ancestors
 ```
 
 Relation 不由 Role 推断。一个 `work` 可以与父 `context` 使用 `shared`，也可以作为隔离任务使用 `delegated`。一个
-`execution` 可以读取共同 `work`，也可以作为最小上下文 sub-agent 使用 `delegated`。
+`execution` 可以读取共同 `work`，也可以作为最小上下文 sub-agent 使用 `delegated`。`context` 也可以把另一个 `context`
+作为 parent，Role 不限制合理的层级深度。
+
+## 单租户内的 Context 共享
+
+单租户不等于只有一个顶层 `context`。多个 `context` scope 可以保持独立，也可以读取一个共同的 parent：
+
+```text
+scp_common "Shared conventions" [context]
+|-- shared --> scp_repo_a "Repository A" [context]
+`-- shared --> scp_repo_b "Repository B" [context]
+```
+
+以 `scp_repo_a` 为当前 scope 时，Context resolver 返回 `scp_repo_a` 和 `scp_common`。它不会返回 sibling
+`scp_repo_b`。`scp_repo_a` 的写入也不会进入 `scp_common`。如果两个 context 需要分层复用，可以继续使用相同表达：
+
+```text
+scp_org "Organization knowledge" [context]
+`-- shared --> scp_team "Team conventions" [context]
+    `-- shared --> scp_repo "Repository context" [context]
+        `-- shared --> scp_feature "Retry race" [work]
+```
+
+`scp_feature` 可以读取这条连续关系上的 Context。每个 scope 仍有自己的标题、摘要、状态和 Handoff，不会因为共享读取而合并。
+
+没有 parent 关系的 scope 不会因为属于同一租户而进入彼此的 Context 读取范围。它们之间如需传递确定内容，使用 exact
+publication：
+
+```text
+scp_repo_a [context] -- publish exact revision --> scp_repo_b [context]
+```
+
+支撑边界如下：
+
+| 需求 | 表达 | 结果 |
+| --- | --- | --- |
+| 多个独立 Context | 不设置 Parent Relation | 不互相读取 |
+| 多个 Context 共享基础材料 | 分别以同一 `context` 为 `shared` parent | 读取共同 parent，不读取 sibling |
+| Context 分层复用 | `context` 以另一个 `context` 为 `shared` parent | 沿连续关系读取 |
+| 独立 Context 交付选定材料 | exact publication | 复制确定版本，不持续同步 |
+| 同时继承多个无关 Context | 多 parent | 不支持 |
+| 跨租户共享 | 不适用 | 不在本 RFC 范围内 |
+
+`shared` 用于持续读取 parent Context，publication 用于在两个已授权 scope 之间交付一个确定版本。一个 scope 最多有一个
+parent。需要多方复用时，应把稳定材料发布到共同 `context`，或按需直接 publication。以上关系不能作为跨租户授权依据。
 
 ## 外部选择
 
@@ -137,8 +182,8 @@ host 创建一个 `work` 和一个 session `execution`：
 
 ```text
 scp_repo [context]
-`-- scp_feature [work, shared]
-    `-- scp_session [execution, shared]
+`-- shared --> scp_feature [work]
+    `-- shared --> scp_session [execution]
 ```
 
 session 写入 `scp_session`，并读取 `scp_feature` 和 `scp_repo` 的 Context。工作结论发布到 `scp_feature`，对外 Handoff 由
@@ -150,10 +195,10 @@ bug 和 feature 使用两个 sibling `work`：
 
 ```text
 scp_repo [context]
-|-- scp_bug [work, shared]
-|   `-- scp_session_bug [execution, shared]
-`-- scp_feature [work, shared]
-    `-- scp_session_feature [execution, shared]
+|-- shared --> scp_bug [work]
+|   `-- shared --> scp_session_bug [execution]
+`-- shared --> scp_feature [work]
+    `-- shared --> scp_session_feature [execution]
 ```
 
 host 在请求边界暂停或关闭 `scp_session_bug`，解析或创建 feature scopes，然后更新 session binding。下一个请求从
@@ -165,9 +210,9 @@ peer agent 使用同一 `work` 下的 sibling `execution`：
 
 ```text
 scp_feature [work]
-|-- scp_agent_a [execution, shared]
-|-- scp_agent_b [execution, shared]
-`-- scp_agent_c [execution, shared]
+|-- shared --> scp_agent_a [execution]
+|-- shared --> scp_agent_b [execution]
+`-- shared --> scp_agent_c [execution]
 ```
 
 每个 agent 读取共同 `work`，不读取 sibling 的中间状态。agent 把选定结果发布到 `scp_feature` 后，其他 agent 才能在后续
@@ -179,9 +224,9 @@ scp_feature [work]
 
 ```text
 scp_feature [work]
-`-- scp_main [execution, shared]
-    |-- scp_research [execution, delegated]
-    `-- scp_test [execution, delegated]
+`-- shared --> scp_main [execution]
+    |-- delegated --> scp_research [execution]
+    `-- delegated --> scp_test [execution]
 ```
 
 orchestrator 为 child scope 选择输入。child 返回 exact result references，host 决定哪些结果发布到 `scp_feature`。child
@@ -191,9 +236,9 @@ Handoff 可以用于恢复和诊断，默认报告不单列这些 execution。
 
 ```text
 scp_feature [work]
-|-- scp_main [execution, shared]
-`-- scp_migration [work, delegated]
-    `-- scp_migration_agent [execution, shared]
+|-- shared --> scp_main [execution]
+`-- delegated --> scp_migration [work]
+    `-- shared --> scp_migration_agent [execution]
 ```
 
 `scp_migration` 拥有自己的 Handoff，并作为 `scp_feature` 的子工作出现在报告中。
@@ -215,10 +260,10 @@ execution-local material
 publication 在 target scope 创建新的 immutable revision，并保留 source scope、source revision 和 digest。它不授予 target
 读取 source scope 的权限，也不合并双方的 Handoff history。
 
-Handoff Report 选择一个 `context` 或 `work` root，遍历有界子树，只投影 `work`：
+Handoff Report 选择一个 `context` 或 `work` root，遍历有界的后代 scope，只投影 `work`：
 
 ```text
-scope tree                         report projection
+scope relations                    report projection
 
 scp_repo [context]                Repository context
 |-- scp_bug [work]                +-- Bug fix
@@ -276,7 +321,8 @@ Scope-local Runtime
     `---- Artifact / Handoff
 ```
 
-Scope-local Runtime 继续以一个显式 `scope_id` 处理状态。Scope application layer 负责 metadata、hierarchy 和跨 scope 操作。
+Scope-local Runtime 继续以一个显式 `scope_id` 处理状态。Scope application layer 负责 metadata、parent relations 和跨
+scope 操作。
 integration 负责把外部 session、workspace 和 orchestrator lifecycle 映射到 scope。agent transport 只能投影调用方被授权的
 application 行为。
 
@@ -309,7 +355,8 @@ Role 首期不可原地变更。`active` 接受正常读写；`closed` 保留读
 3. 非根 scope 使用 `shared` 或 `delegated`；
 4. 父链不能成环；
 5. 调整父关系不移动或重写已有状态；
-6. relation mode 不授予权限和跨 scope 写入能力。
+6. relation mode 不授予权限和跨 scope 写入能力；
+7. 本 RFC 不使用父关系表达跨租户共享。
 
 Context resolver 返回当前 scope 和连续 `shared` 祖先，并保留每条内容的来源 scope 和 exact revision。实现必须限制最大
 深度和总预算。遇到 `delegated` 或不可用祖先时停止；允许降级的调用必须标记结果不完整。
@@ -374,15 +421,15 @@ publication 需要读取 source 和写入 target。Role、Relation 和目录关�
 
 ```text
 root_scope_id
-hierarchy revision
+parent-relation revision
 selected work scope_ids
 exact Handoff revision or no_handoff per work
 activity boundary
 rendering options
 ```
 
-动态子树只用于发现。响应返回最终 selection，后续 hierarchy 或 Handoff 变化不修改已经生成的报告。报告保留 selected work
-之间最近的 work ancestry，不合并 Handoff histories，也不写入任何 scope。
+动态的后代集合只用于发现。响应返回最终 selection，后续 parent relation 或 Handoff 变化不修改已经生成的报告。报告保留
+selected work 之间最近的 work ancestry，不合并 Handoff histories，也不写入任何 scope。
 
 报告对每个 selected scope 执行读取授权。不可访问 scope 的标题、存在性和数量也不能泄露。严格模式失败；允许部分结果的
 模式明确标记缺失。
@@ -437,7 +484,7 @@ catalog 可以在迁移期提供只读报告，但不能创建新的组织关系
 
 ## 保留 Project catalog 组织报告
 
-不采用。它在 scope hierarchy 之外建立第二套 identity 和 membership，并要求 workspace、activity 和 report 同时维护
+不采用。它在 scope parent relations 之外建立第二套 identity 和 membership，并要求 workspace、activity 和 report 同时维护
 `project_id`。
 
 ## 自动提升所有 child 内容
@@ -465,5 +512,6 @@ catalog 可以在迁移期提供只读报告，但不能创建新的组织关系
 
 # Future possibilities
 
-后续可以增加 scope 搜索、历史标题、归档策略和 host-bound MCP transport。需要报告多个无共同祖先的工作时，可以在 exact
-selection 上增加多根 projection，不恢复 Project identity。
+后续可以增加 scope 搜索、历史标题、归档策略和 host-bound MCP transport。需要报告多个无共同 parent 的工作时，可以在
+exact selection 上增加多 root projection，不恢复 Project identity。跨租户共享需要单独定义租户身份、授权、撤销、审计和
+数据复制语义，不复用本 RFC 的 Parent Relation。
