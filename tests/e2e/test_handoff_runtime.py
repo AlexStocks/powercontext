@@ -27,7 +27,8 @@ from powercontext.builtin.artifacts.handoff import (
     PrepareHandoff,
 )
 from powercontext.builtin.artifacts.memory import MemoryEntryInput
-from powercontext.builtin.persistence.sqlite import SQLiteConfig
+from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
+from powercontext.builtin.persistence.tables import BUILTIN_TABLES
 from powercontext.builtin.records import ArtifactWrite
 from powercontext.builtin.runtime import (
     ActivateHandoff,
@@ -43,9 +44,12 @@ from powercontext.builtin.runtime import (
     RememberMemoryRequest,
     open_builtin_runtime,
 )
+from powercontext.builtin.runtime.relational import RelationalContexts
 from powercontext.builtin.scope import ScopeDraft
 from powercontext.builtin.source_eligibility import SourceNotEligibleError
 from powercontext.errors import RevisionConflictError
+from powercontext.sources import SourceDefinitionRegistry, SourceRef
+from tests.builtin.persistence.contract import SOURCE_ADAPTERS, CommitAdapter, CommitInput, NoteInput
 
 
 class _EchoHandoffPipeline:
@@ -93,6 +97,39 @@ def test_handoff_batch_error_identifies_missing_artifact_after_valid_source(fami
                 )
             assert error.value.citation == missing
             assert await runtime.handoff.for_scope(scope.scope_id).latest() is None
+
+    asyncio.run(scenario())
+
+
+def test_handoff_batch_error_identifies_source_with_unregistered_definition() -> None:
+    async def scenario() -> None:
+        async with SQLiteProfile.open(SQLiteConfig(), tables=BUILTIN_TABLES) as profile:
+            original = RelationalContexts(
+                database=profile.database,
+                source_registry=SourceDefinitionRegistry.from_adapters(SOURCE_ADAPTERS),
+            )
+            context = await original.get("project")
+            valid = await context.sources.add(await context.sources.resolve(CommitInput(revision="valid")))
+            unavailable = await context.sources.add(
+                await context.sources.resolve(NoteInput(note_id="unavailable", body="Historical note."))
+            )
+            citations = (
+                HandoffSourceCitation(source_ref=SourceRef(source_type="commit", source_id=valid.name)),
+                HandoffSourceCitation(source_ref=SourceRef(source_type="note", source_id=unavailable.name)),
+            )
+
+            # Reopen the same data without the historical Note adapter.
+            reopened = RelationalContexts(
+                database=profile.database,
+                source_registry=SourceDefinitionRegistry.from_adapters((CommitAdapter(),)),
+                handoff_pipeline=_EchoHandoffPipeline(),
+            )
+            handoffs = (await reopened.get("project")).artifacts.handoff
+            with pytest.raises(HandoffEvidenceUnavailableError) as error:
+                await handoffs.prepare(PrepareHandoff(objective="Report unavailable evidence.", evidence=citations))
+
+            assert error.value.citation == citations[1]
+            assert await handoffs.latest() is None
 
     asyncio.run(scenario())
 

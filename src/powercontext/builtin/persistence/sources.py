@@ -171,9 +171,14 @@ class SourceRepository:
             .mappings()
             .all()
         )
-        decoded = {
-            (stored.ref.source_type, stored.ref.source_id): stored for stored in (self._decode_row(row) for row in rows)
-        }
+        decoded: dict[tuple[str, str], StoredSource] = {}
+        for row in rows:
+            try:
+                stored = self._decode_row(row)
+            except RepositoryNotFoundError:
+                ref = SourceRef(source_type=str(row["source_type"]), source_id=str(row["source_id"]))
+                raise RepositoryNotFoundError("source", (scope_id, ref)) from None
+            decoded[(stored.ref.source_type, stored.ref.source_id)] = stored
         for ref in ordered:
             if (ref.source_type, ref.source_id) not in decoded:
                 raise RepositoryNotFoundError("source", (scope_id, ref))
