@@ -25,6 +25,7 @@ from powercontext.http._generated.models import (
     ArtifactPage,
     ArtifactPublication,
     ArtifactRevision,
+    ArtifactRevisionPage,
     ArtifactTagPage,
     ArtifactTagSet,
     Capabilities,
@@ -52,6 +53,7 @@ from powercontext.http._generated.models import (
     FlushMemoryResponse,
     GeneratedCandidateResponse,
     GenerateExperienceRequest,
+    GeneratePromptDemonstrationsRequest,
     GenerateSkillRequest,
     GetArtifactCandidateRequest,
     GetConnectorCheckpointRequest,
@@ -74,6 +76,7 @@ from powercontext.http._generated.models import (
     ListAccessResourcesRequest,
     ListAccessRolesRequest,
     ListArtifactCandidatesRequest,
+    ListArtifactRevisionsRequest,
     ListArtifactsRequest,
     ListExternalSkillsRequest,
     ListExternalSkillsResponse,
@@ -92,6 +95,8 @@ from powercontext.http._generated.models import (
     PreparedHandoff,
     PreparedWorkHandoff,
     PrepareHandoffRequest,
+    PromptConfiguration,
+    PromptDemonstrationResult,
     ProposeExperienceRequest,
     ProposeSkillPackageRequest,
     ProposeSkillRequest,
@@ -2100,9 +2105,7 @@ CREATE_ARTIFACT = Operation[CreateArtifactRequest, ArtifactCreated](
         503: {"$ref": "#/components/responses/Unavailable"},
         500: {"$ref": "#/components/responses/InternalError"},
     },
-    access=AccessRequirement(
-        action="scope.contribute", resource="scope", scope_id_field="scope_id", resolver="request"
-    ),
+    access=AccessRequirement(action=None, resource=None, scope_id_field=None, resolver="create_artifact_access"),
 )
 
 LIST_ARTIFACTS = Operation[ListArtifactsRequest, ArtifactPage](
@@ -2388,6 +2391,86 @@ GET_ARTIFACT_REVISION = Operation[None, ArtifactRevision](
         500: {"$ref": "#/components/responses/InternalError"},
     },
     access=AccessRequirement(action=None, resource=None, scope_id_field=None, resolver="path_artifact_read_access"),
+)
+
+LIST_ARTIFACT_REVISIONS = Operation[ListArtifactRevisionsRequest, ArtifactRevisionPage](
+    method="GET",
+    path="/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}/revisions",
+    operation_id="list_artifact_revisions",
+    request_type=ListArtifactRevisionsRequest,
+    request_location="query",
+    path_parameters=("scope_id", "family", "artifact_id"),
+    response_type=ArtifactRevisionPage,
+    success_status=200,
+    summary="List immutable Artifact revisions",
+    tags=("artifacts",),
+    scope_mode="none",
+    responses={
+        200: {"description": "One snapshot-bounded page of immutable revisions without content."},
+        400: {"$ref": "#/components/responses/BadRequest"},
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        410: {"$ref": "#/components/responses/CursorExpired"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(action=None, resource=None, scope_id_field=None, resolver="path_artifact_read_access"),
+)
+
+GET_PROMPT_CONFIGURATION = Operation[None, PromptConfiguration](
+    method="GET",
+    path="/v1/scopes/{scope_id}/prompts/{prompt_key}",
+    operation_id="get_prompt_configuration",
+    request_type=None,
+    request_location=None,
+    path_parameters=("scope_id", "prompt_key"),
+    response_type=PromptConfiguration,
+    success_status=200,
+    summary="Read scoped Prompt configuration and built-in defaults",
+    tags=("prompts",),
+    scope_mode="none",
+    responses={
+        200: {
+            "description": "Current configuration and Runtime-owned default guidance.",
+            "headers": {
+                "Cache-Control": {"schema": {"type": "string", "enum": ["no-store"]}},
+                "X-PowerContext-Request-ID": {"$ref": "#/components/headers/RequestId"},
+            },
+        },
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(action="scope.read", resource="scope", scope_id_field="scope_id", resolver="request"),
+)
+
+GENERATE_PROMPT_DEMONSTRATIONS = Operation[GeneratePromptDemonstrationsRequest, PromptDemonstrationResult](
+    method="POST",
+    path="/v1/scopes/{scope_id}/prompts/{prompt_key}/demonstrations",
+    operation_id="generate_prompt_demonstrations",
+    request_type=GeneratePromptDemonstrationsRequest,
+    request_location="body",
+    path_parameters=("scope_id", "prompt_key"),
+    response_type=PromptDemonstrationResult,
+    success_status=200,
+    summary="Generate editable Prompt demonstrations without saving",
+    tags=("prompts",),
+    scope_mode="none",
+    responses={
+        200: {"description": "Validated suggestions; no Artifact or head was written."},
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(action="scope.admin", resource="scope", scope_id_field="scope_id", resolver="request"),
 )
 
 GET_ACCESS_PRINCIPAL = Operation[None, AccessMeResponse](

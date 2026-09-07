@@ -594,6 +594,11 @@ Operational Prompt configuration 会改变一个 Scope 中所有兼容 inference
 generation 需要 `scope.admin`。Legacy static bearer 继续映射到配置的 administrative Principal。Server 的 policy
 enforcement point 在分派到 writer 前检查 Prompt family mutation rule；其他 generic Artifact write 保留各自授权规则。
 
+`scope.contributor` 与保留的 Prompt Artifact ownership 均不能授权这些修改。每个请求都检查当前的 `scope.admin`
+权限：撤销该权限后，原管理员不能凭 ownership 或仍持有的 contributor 角色替换 Custom 内容、切换到 Auto、
+恢复历史版本或生成案例。被拒绝的请求返回 `403`，不改变 head、不新增 revision，也不调用案例生成模型。
+撤销权限不会回退已经保存的配置；当前具备管理权限的操作者可以继续替换该配置。
+
 Runtime 内部使用 current Scope Prompt 是已授权 domain operation 的组成部分，不是隐式 exact-resource share。本 RFC
 不允许通过 `prompt.user` 共享 operational Prompt revision，其 Prompt access profile 不声明可授予的 exact role。
 

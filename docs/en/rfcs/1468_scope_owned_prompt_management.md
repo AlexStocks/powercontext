@@ -623,6 +623,12 @@ create, replace, and demonstration generation require `scope.admin`. The legacy 
 configured administrative Principal. The Server's policy-enforcement point checks the Prompt family mutation rule
 before dispatching to its writer; other generic Artifact writes keep their own authorization rules.
 
+`scope.contributor` and retained Prompt Artifact ownership do not authorize these mutations. Each request checks
+current `scope.admin` authority: after its revocation, the former administrator cannot replace Custom content, switch
+to Auto, restore an earlier revision, or generate demonstrations through ownership or a remaining contributor role.
+A denied request returns `403` without changing the head, adding a revision, or invoking the demonstration model.
+Revoking access does not revert already-saved configuration; a currently authorized administrator can replace it.
+
 The Runtime's internal use of the current Scope Prompt is part of the already-authorized domain operation. It is not an
 implicit exact-resource share. Operational Prompt revisions are not shareable through `prompt.user` in this RFC, and
 the Prompt access profile advertises no grantable exact roles for them.

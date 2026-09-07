@@ -102,13 +102,13 @@ ARTIFACT_FAMILY_PROFILES: dict[str, ArtifactFamilyAccessProfile] = {
         selector="forbidden",
         mutation_semantics=frozenset({AccessAction.ARTIFACT_WRITE}),
     ),
-    # Prompt authorization vocabulary is reserved, but this deployment does not yet
-    # implement an immutable approved Prompt lifecycle or exact get/use operations.
+    # Operational Prompts inherit Scope access and retain immutable revisions.
+    # Direct Prompt sharing has no public grantable roles.
     "prompt": ArtifactFamilyAccessProfile(
         family="prompt",
-        enabled=False,
+        enabled=True,
         share_unit="artifact",
-        shareable_states=frozenset({"approved"}),
+        shareable_states=frozenset(),
         base_action=AccessAction.ARTIFACT_READ,
         additional_actions=frozenset({AccessAction.PROMPT_USE}),
         grantable_roles=frozenset(),

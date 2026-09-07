@@ -47,6 +47,7 @@ from powercontext.http import (
     ArtifactPage,
     ArtifactPublication,
     ArtifactRevision,
+    ArtifactRevisionPage,
     Capabilities,
     CaptureContentSourceRequest,
     CaptureContentSourceResponse,
@@ -73,6 +74,7 @@ from powercontext.http import (
     FlushMemoryResponse,
     GeneratedCandidateResponse,
     GenerateExperienceRequest,
+    GeneratePromptDemonstrationsRequest,
     GenerateSkillRequest,
     GetArtifactCandidateRequest,
     GetConnectorCheckpointRequest,
@@ -95,6 +97,7 @@ from powercontext.http import (
     ListAccessResourcesRequest,
     ListAccessRolesRequest,
     ListArtifactCandidatesRequest,
+    ListArtifactRevisionsRequest,
     ListArtifactsRequest,
     ListExternalSkillsRequest,
     ListExternalSkillsResponse,
@@ -113,6 +116,8 @@ from powercontext.http import (
     PreparedHandoff,
     PreparedWorkHandoff,
     PrepareHandoffRequest,
+    PromptConfiguration,
+    PromptDemonstrationResult,
     ProposeExperienceRequest,
     ProposeSkillPackageRequest,
     ProposeSkillRequest,
@@ -194,6 +199,7 @@ from powercontext.http._generated.operations import (
     FINALIZE_HANDOFF,
     FLUSH_MEMORY,
     GENERATE_EXPERIENCE,
+    GENERATE_PROMPT_DEMONSTRATIONS,
     GENERATE_SKILL,
     GET_ACCESS_PRINCIPAL,
     GET_ARTIFACT,
@@ -208,6 +214,7 @@ from powercontext.http._generated.operations import (
     GET_LIVENESS,
     GET_MEMORY_ENTRY,
     GET_MEMORY_ENTRY_TAGS,
+    GET_PROMPT_CONFIGURATION,
     GET_READINESS,
     GET_SCOPE,
     GET_SKILL,
@@ -221,6 +228,7 @@ from powercontext.http._generated.operations import (
     LIST_ACCESS_RESOURCES,
     LIST_ACCESS_ROLES,
     LIST_ARTIFACT_CANDIDATES,
+    LIST_ARTIFACT_REVISIONS,
     LIST_ARTIFACTS,
     LIST_EXTERNAL_SKILLS,
     LIST_MANAGED_SKILLS,
@@ -667,6 +675,36 @@ class PowerContextClient:
             LIST_ARTIFACTS,
             request,
             path_parameters={"scope_id": scope_id, "family": family},
+        )
+
+    async def list_artifact_revisions(
+        self, scope_id: str, family: str, artifact_id: str, request: ListArtifactRevisionsRequest
+    ) -> ArtifactRevisionPage:
+        """List immutable revision metadata using a stable, scoped pagination snapshot."""
+
+        return await self._request(
+            LIST_ARTIFACT_REVISIONS,
+            request,
+            path_parameters={"scope_id": scope_id, "family": family, "artifact_id": artifact_id},
+        )
+
+    async def get_prompt_configuration(self, scope_id: str, prompt_key: str) -> PromptConfiguration:
+        """Read the saved selection and Runtime defaults without creating a revision."""
+
+        return await self._request(
+            GET_PROMPT_CONFIGURATION,
+            path_parameters={"scope_id": scope_id, "prompt_key": prompt_key},
+        )
+
+    async def generate_prompt_demonstrations(
+        self, scope_id: str, prompt_key: str, request: GeneratePromptDemonstrationsRequest
+    ) -> PromptDemonstrationResult:
+        """Suggest typed demonstrations without saving or changing a Prompt."""
+
+        return await self._request(
+            GENERATE_PROMPT_DEMONSTRATIONS,
+            request,
+            path_parameters={"scope_id": scope_id, "prompt_key": prompt_key},
         )
 
     async def replace_artifact(

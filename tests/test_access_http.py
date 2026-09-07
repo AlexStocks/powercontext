@@ -632,6 +632,7 @@ def test_access_api_and_handoff_pep_enforce_exact_receiver_visibility() -> None:
                     "memory",
                     "experience",
                     "skill",
+                    "prompt",
                 }
                 roles = await admin.post(
                     "/v1/access/roles/list",

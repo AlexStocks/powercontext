@@ -9,6 +9,8 @@ Custom tags organize Memory, Experience, Skill, and Handoff Artifacts within one
 logical entry inside it have independent tag sets. Tags follow these identities across content revisions; they do not
 change content, lineage, embeddings, or Context Versions.
 
+Prompt configurations are not tag targets. Their content and history remain available through the scoped Prompt APIs.
+
 With access control enabled, tags follow their target's read and write permissions. A viewer of a shared target can read
 its tags but cannot edit them or run a Scope-wide tag query. Queries require `scope.read`. Tags on the entire Memory
 Artifact require `scope.read` to read and `scope.admin` to edit; individual entries use their own `artifact.read` /

@@ -126,6 +126,57 @@ def test_http_tags_cover_families_entries_filters_and_inactive_lifecycle(tmp_pat
     asyncio.run(exercise_tag_http(app))
 
 
+def test_prompt_configuration_is_readable_but_not_a_tag_target(tmp_path: Path) -> None:
+    app = create_server_app(
+        settings=ServerSettings(
+            database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'prompt-tags.db'}"),
+            mcp=McpConfig(enabled=False),
+        )
+    )
+
+    async def scenario() -> None:
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app, raise_app_exceptions=False), base_url="http://testserver"
+            ) as http,
+        ):
+            created_scope = await http.post(
+                "/v1/scopes",
+                json={"title": "Prompt tags", "summary": "Tag boundary regression", "idempotency_key": "prompt-tags"},
+            )
+            assert created_scope.status_code == 201
+            scope = created_scope.json()["scope_id"]
+            prompt = await http.post(
+                f"/v1/scopes/{scope}/artifacts",
+                json={
+                    "family": "prompt",
+                    "prompt_key": "memory.extract",
+                    "content": {
+                        "schema_version": "powercontext.prompt.v1",
+                        "mode": "auto",
+                        "instructions": "",
+                        "demonstrations": [],
+                    },
+                },
+            )
+            assert prompt.status_code == 201
+            path = f"/v1/scopes/{scope}/artifacts/prompt/memory.extract/tags"
+            read = await http.get(path)
+            replace = await http.put(
+                path, json={"tags": ["test"]}, headers={"If-Match": read.headers.get("ETag", '"unused"')}
+            )
+            query = await http.post(
+                f"/v1/scopes/{scope}/artifact-tags/query", json={"tags": ["test"], "families": ["prompt"]}
+            )
+            assert [read.status_code, replace.status_code, query.status_code] == [422, 422, 422]
+            current = await http.get(f"/v1/scopes/{scope}/prompts/memory.extract")
+            assert current.status_code == 200
+            assert current.json()["mode"] == "auto" and current.json()["artifact"]["revision"] == 1
+
+    asyncio.run(scenario())
+
+
 async def exercise_tag_http(app, *, token: str | None = None) -> str:
     async with (
         app.router.lifespan_context(app),

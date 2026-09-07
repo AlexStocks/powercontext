@@ -66,6 +66,7 @@ from powercontext.builtin.artifacts.memory.errors import (
     MemoryEntryInactiveError,
     MemoryEntryNotFoundError,
 )
+from powercontext.builtin.artifacts.prompt import GeneratePromptDemonstrations, PromptError
 from powercontext.builtin.artifacts.skill import (
     AgentKind,
     AgentSkillTarget,
@@ -159,6 +160,9 @@ from powercontext.builtin.records import (
 )
 from powercontext.builtin.records import (
     ArtifactRecordPage as RuntimeArtifactRecordPage,
+)
+from powercontext.builtin.records import (
+    ArtifactRevisionPage as RuntimeArtifactRevisionPage,
 )
 from powercontext.builtin.records import (
     ArtifactWrite as RuntimeArtifactWrite,
@@ -272,6 +276,7 @@ from powercontext.builtin.runtime import (
 from powercontext.builtin.runtime import (
     SubmitSourceObservation as RuntimeSubmitSourceObservation,
 )
+from powercontext.builtin.runtime.application import PromptApplication
 from powercontext.builtin.scope import (
     ScopeApplication,
     ScopeBindingNotFoundError,
@@ -369,6 +374,7 @@ from powercontext.http import (
     ArtifactFamilyAccessCapability,
     ArtifactPage,
     ArtifactRevision,
+    ArtifactRevisionPage,
     BaseArtifactFamily,
     CandidatePermissions,
     Capabilities,
@@ -383,6 +389,7 @@ from powercontext.http import (
     ContinueHandoffRequest,
     CreateAccessBindingRequest,
     CreateArtifactRequest,
+    CreatePromptArtifactRequest,
     CreateRemoteSkillTargetRequest,
     CreateScopeRequest,
     CreateSourceRequest,
@@ -398,6 +405,7 @@ from powercontext.http import (
     FlushMemoryResponse,
     GeneratedCandidateResponse,
     GenerateExperienceRequest,
+    GeneratePromptDemonstrationsRequest,
     GenerateSkillRequest,
     GetArtifactCandidateRequest,
     GetConnectorCheckpointRequest,
@@ -418,6 +426,7 @@ from powercontext.http import (
     ListAccessResourcesRequest,
     ListAccessRolesRequest,
     ListArtifactCandidatesRequest,
+    ListArtifactRevisionsRequest,
     ListArtifactsRequest,
     ListExternalSkillsRequest,
     ListExternalSkillsResponse,
@@ -436,6 +445,9 @@ from powercontext.http import (
     PreparedContext,
     PreparedWorkHandoff,
     PrepareHandoffRequest,
+    PromptConfiguration,
+    PromptDemonstrationResult,
+    PromptKey,
     ProposeExperienceRequest,
     ProposeSkillPackageRequest,
     ProposeSkillRequest,
@@ -567,6 +579,7 @@ from powercontext.http._generated.models import (
     ArtifactTagSet,
     QueryArtifactTagsRequest,
     ReplaceArtifactTagsRequest,
+    TaggableArtifactFamily,
     TagMatch,
 )
 from powercontext.http._generated.models import (
@@ -598,6 +611,7 @@ from powercontext.http._generated.operations import (
     FINALIZE_HANDOFF,
     FLUSH_MEMORY,
     GENERATE_EXPERIENCE,
+    GENERATE_PROMPT_DEMONSTRATIONS,
     GENERATE_SKILL,
     GET_ACCESS_PRINCIPAL,
     GET_ARTIFACT,
@@ -612,6 +626,7 @@ from powercontext.http._generated.operations import (
     GET_LIVENESS,
     GET_MEMORY_ENTRY,
     GET_MEMORY_ENTRY_TAGS,
+    GET_PROMPT_CONFIGURATION,
     GET_READINESS,
     GET_SCOPE,
     GET_SKILL,
@@ -625,6 +640,7 @@ from powercontext.http._generated.operations import (
     LIST_ACCESS_RESOURCES,
     LIST_ACCESS_ROLES,
     LIST_ARTIFACT_CANDIDATES,
+    LIST_ARTIFACT_REVISIONS,
     LIST_ARTIFACTS,
     LIST_EXTERNAL_SKILLS,
     LIST_MANAGED_SKILLS,
@@ -751,6 +767,10 @@ class _SourceApplication(Protocol):
 
 
 class _ScopedRecordApplication(Protocol):
+    async def list_artifact_revisions(
+        self, family: str, artifact_id: str, /, *, limit: int, cursor: str | None
+    ) -> RuntimeArtifactRevisionPage: ...
+
     async def get_tags(self, target: TagTarget) -> RuntimeArtifactTagSet: ...
 
     async def replace_tags(
@@ -1097,6 +1117,7 @@ class _StatisticsApplication(Protocol):
 
 
 class ServerApplication(Protocol):
+    prompts: PromptApplication
     scopes: ScopeApplication | None
     publications: ArtifactPublicationApplication | None
     sources: _SourceApplication
@@ -1210,6 +1231,7 @@ def create_app(
     @app.exception_handler(_RuntimeNotReadyError)
     @app.exception_handler(_PreconditionRequiredError)
     @app.exception_handler(BaseAccessError)
+    @app.exception_handler(PromptError)
     @app.exception_handler(SourceNotEligibleError)
     @app.exception_handler(PowerContextError)
     @app.exception_handler(PersistenceError)
@@ -1269,6 +1291,9 @@ def create_app(
     _add_route(app, GET_ARTIFACT_REVISION, get_artifact_revision)
     _add_route(app, GET_ARTIFACT, get_artifact)
     _add_route(app, LIST_ARTIFACTS, list_artifacts)
+    _add_route(app, LIST_ARTIFACT_REVISIONS, list_artifact_revisions)
+    _add_route(app, GENERATE_PROMPT_DEMONSTRATIONS, generate_prompt_demonstrations)
+    _add_route(app, GET_PROMPT_CONFIGURATION, get_prompt_configuration)
     _add_route(app, REPLACE_ARTIFACT, replace_artifact)
     _add_route(app, CAPTURE_CONTENT_SOURCE, capture_content_source)
     _add_route(app, REGISTER_SOURCE_DEFINITION, register_source_definition)
@@ -2042,9 +2067,68 @@ async def list_artifacts(
     )
 
 
+def _list_artifact_revisions_query(
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    cursor: Annotated[str | None, Query(min_length=1, max_length=4096)] = None,
+) -> ListArtifactRevisionsRequest:
+    return ListArtifactRevisionsRequest(limit=limit, cursor=cursor)
+
+
+async def list_artifact_revisions(
+    scope_id: _ScopePathId,
+    family: Annotated[BaseArtifactFamily, Path()],
+    artifact_id: Annotated[str, Path(min_length=1, max_length=128, pattern=r"^[\x21-\x7E]+$")],
+    request: Annotated[ListArtifactRevisionsRequest, Depends(_list_artifact_revisions_query)],
+    application: Annotated[ServerApplication, Depends(_require_application)],
+) -> ArtifactRevisionPage:
+    result = await application.records.for_scope(scope_id).list_artifact_revisions(
+        family.value, artifact_id, limit=request.limit, cursor=request.cursor
+    )
+    return ArtifactRevisionPage(
+        items=[_artifact_collection_item_response(item) for item in result.items],
+        next_cursor=result.next_cursor,
+    )
+
+
+async def get_prompt_configuration(
+    scope_id: _ScopePathId,
+    prompt_key: Annotated[PromptKey, Path()],
+    response: Response,
+    http_request: Request,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+) -> PromptConfiguration:
+    result = await application.prompts.for_scope(scope_id).read_configuration(prompt_key.value)
+    access = access_control_for_mode(http_request.app.state.access_control, mode=http_request.app.state.access_mode)
+    if access is not None and result.artifact is not None:
+        await access.require(
+            current_principal(),
+            AccessAction.ARTIFACT_READ,
+            ResourceRef.artifact(scope_id, family="prompt", artifact_id=result.artifact.artifact_id),
+            context=_access_audit_context(GET_PROMPT_CONFIGURATION.operation_id),
+        )
+    response.headers["Cache-Control"] = "no-store"
+    return PromptConfiguration.model_validate({
+        **result.model_dump(mode="json"),
+        "artifact_etag": None if result.artifact is None else _artifact_etag(result.artifact.revision),
+    })
+
+
+async def generate_prompt_demonstrations(
+    scope_id: _ScopePathId,
+    prompt_key: Annotated[PromptKey, Path()],
+    request: GeneratePromptDemonstrationsRequest,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+) -> PromptDemonstrationResult:
+    result = await application.prompts.for_scope(scope_id).generate_demonstrations(
+        prompt_key.value,
+        GeneratePromptDemonstrations.model_validate_json(request.model_dump_json()),
+    )
+    return PromptDemonstrationResult.model_validate_json(result.model_dump_json())
+
+
 async def get_artifact_tags(
     scope_id: Annotated[str, Path(min_length=1, max_length=256)],
-    family: Annotated[BaseArtifactFamily, Path()],
+    family: Annotated[TaggableArtifactFamily, Path()],
     artifact_id: Annotated[str, Path(min_length=1, max_length=128)],
     response: Response,
     application: Annotated[ServerApplication, Depends(_require_application)],
@@ -2057,7 +2141,7 @@ async def get_artifact_tags(
 
 async def replace_artifact_tags(
     scope_id: Annotated[str, Path(min_length=1, max_length=256)],
-    family: Annotated[BaseArtifactFamily, Path()],
+    family: Annotated[TaggableArtifactFamily, Path()],
     artifact_id: Annotated[str, Path(min_length=1, max_length=128)],
     request: ReplaceArtifactTagsRequest,
     response: Response,
@@ -2255,9 +2339,12 @@ def _artifact_write(value: CreateArtifactRequest | ReplaceArtifactRequest) -> Ru
     if isinstance(content, TransportHandoffContent):
         content = mapping.runtime_handoff_content(content)
     return RuntimeArtifactWrite(
+        prompt_key=value.root.prompt_key.value if isinstance(value.root, CreatePromptArtifactRequest) else None,
         content=cast(
             dict[str, JsonValue],
-            content.model_dump(mode="json", by_alias=True, exclude_none=True),
+            content.model_dump(
+                mode="json", by_alias=True, exclude_none=not isinstance(value.root.content, TransportHandoffContent)
+            ),
         ),
     )
 
@@ -3721,6 +3808,7 @@ _COLLECTION_CONTENT_OPERATIONS = frozenset({
     "list_artifacts",
     "get_artifact",
     "get_artifact_revision",
+    "list_artifact_revisions",
     "get_artifact_tags",
     "query_artifact_tags",
     "prepare_handoff",
@@ -4031,6 +4119,18 @@ def _path_scope_admin_access(
     return _path_scope_access(payload, action=AccessAction.SCOPE_ADMIN)
 
 
+def _create_artifact_access(
+    payload: Mapping[str, Any],
+    _deployment_id: str,
+) -> tuple[tuple[AccessAction, ResourceRef], ...]:
+    action = (
+        AccessAction.SCOPE_ADMIN
+        if _nested_request_value(payload, "family") == BaseArtifactFamily.PROMPT.value
+        else AccessAction.SCOPE_CONTRIBUTE
+    )
+    return _path_scope_access(payload, action=action)
+
+
 def _path_artifact_access(
     payload: Mapping[str, Any],
     *,
@@ -4069,7 +4169,11 @@ def _path_artifact_write_access(
     payload: Mapping[str, Any],
     _deployment_id: str,
 ) -> tuple[tuple[AccessAction, ResourceRef], ...]:
-    if _path_artifact_family(payload) == BaseArtifactFamily.MEMORY.value:
+    family = _path_artifact_family(payload)
+    if family == BaseArtifactFamily.PROMPT.value:
+        # Prompt configuration affects the whole Scope; retained Artifact ownership is insufficient.
+        return _path_scope_access(payload, action=AccessAction.SCOPE_ADMIN)
+    if family == BaseArtifactFamily.MEMORY.value:
         return _base_memory_write_access(payload)
     return _path_artifact_access(payload, action=AccessAction.ARTIFACT_WRITE)
 
@@ -4216,6 +4320,7 @@ _NAMED_ACCESS_RESOLVERS: dict[
     "acknowledge_handoff_access": _acknowledge_handoff_resolver,
     "continue_handoff_access": _continue_handoff_resolver,
     "commit_handoff_access": _commit_handoff_access,
+    "create_artifact_access": _create_artifact_access,
     "exact_memory_write_access": _exact_memory_write_access,
     "experience_candidate_write_access": _experience_candidate_write_access,
     "exact_experience_access": _exact_experience_access,
@@ -4464,6 +4569,9 @@ def _map_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | None]:
 
 
 def _map_service_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | None] | None:  # noqa: C901
+    if isinstance(error, PromptError):
+        code = 503 if error.during_inference else 500 if error.code == "invalid_prompt_demonstrations" else 422
+        return code, error.code, str(error), None
     if isinstance(error, TagPreconditionError):
         return (
             status.HTTP_412_PRECONDITION_FAILED,
