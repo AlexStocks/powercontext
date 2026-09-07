@@ -21,7 +21,11 @@ from pathlib import Path
 import pytest
 
 from powercontext.artifacts import ArtifactRef
-from powercontext.builtin.artifacts.handoff import HandoffScopeMismatchError
+from powercontext.builtin.artifacts.handoff import (
+    HandoffEvidenceUnavailableError,
+    HandoffScopeMismatchError,
+    PrepareHandoff,
+)
 from powercontext.builtin.artifacts.memory import MemoryEntryInput
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.records import ArtifactWrite
@@ -61,6 +65,36 @@ class _EchoHandoffPipeline:
                 citations=(citation,),
             ),
         )
+
+
+@pytest.mark.parametrize("family", ["unregistered-family", "experience"])
+def test_handoff_batch_error_identifies_missing_artifact_after_valid_source(family) -> None:
+    async def scenario() -> None:
+        async with open_builtin_runtime(
+            BuiltinConfig(database=SQLiteConfig()),
+            handoff_pipeline=_EchoHandoffPipeline(),
+        ) as runtime:
+            assert runtime.scopes is not None
+            scope = await runtime.scopes.create(
+                ScopeDraft(title="Batch evidence", summary="Error identity", idempotency_key="batch-error")
+            )
+            source = await runtime.sources.for_scope(scope.scope_id).capture(
+                CaptureSource(source_id="valid", content="Valid evidence.", metadata={})
+            )
+            missing = HandoffArtifactCitation(
+                artifact_ref=ArtifactRef(family=family, artifact_id="missing", revision=1)
+            )
+            with pytest.raises(HandoffEvidenceUnavailableError) as error:
+                await runtime.handoff.for_scope(scope.scope_id).prepare(
+                    PrepareHandoff(
+                        objective="Report missing evidence.",
+                        evidence=(HandoffSourceCitation(source_ref=source.source_ref), missing),
+                    )
+                )
+            assert error.value.citation == missing
+            assert await runtime.handoff.for_scope(scope.scope_id).latest() is None
+
+    asyncio.run(scenario())
 
 
 def test_runtime_owns_handoff_trigger_activation_and_deduplication() -> None:

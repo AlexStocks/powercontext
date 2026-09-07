@@ -262,7 +262,13 @@ class _ScopedServices:
             embedding_model=self.embedding_model,
             reranker=self.memory_reranker,
             rerank_candidate_limit=self.memory_rerank_candidate_limit,
-            source_resolver=source_resolver,
+            source_resolver=_RelationalMemorySourceResolver(
+                database=self.database,
+                scope_id=self.scope_id,
+                catalog=source_resolver,
+                access=self.generation_sources(),
+                connection=connection,
+            ),
             artifact_resolver=_RelationalArtifactResolver(
                 database=self.database,
                 scope_id=self.scope_id,
@@ -1007,6 +1013,40 @@ class RelationalContexts:
             token_estimator=self._token_estimator,
             source_registry=self.source_registry,
         )
+
+
+class _RelationalMemorySourceResolver:
+    """Admit Memory evidence without changing the ordinary Source catalog."""
+
+    def __init__(
+        self,
+        *,
+        database: AsyncDatabase,
+        scope_id: str,
+        catalog: SourceCatalog,
+        access: GenerationSourceAccess,
+        connection: AsyncConnection | None = None,
+    ) -> None:
+        self._database = database
+        self._scope_id = scope_id
+        self._catalog = catalog
+        self._access = access
+        self._connection = connection
+
+    def as_ref(self, source: Source, /) -> SourceRef:
+        return self._catalog.as_ref(source)
+
+    async def get(self, source: Source, /) -> Source:
+        try:
+            async with self._database.connection(self._connection) as connection:
+                (stored,) = await self._access.require_for_generation(
+                    connection, self._scope_id, (self.as_ref(source),)
+                )
+        except RepositoryNotFoundError:
+            raise SourceNotFoundError(source) from None
+        if type(stored.value) is not type(source) or stored.value != source:
+            raise SourceNotFoundError(source)
+        return stored.value
 
 
 class _RelationalSources:

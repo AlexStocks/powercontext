@@ -31,6 +31,7 @@ from powercontext.builtin.artifacts.memory import MemoryCandidateRequest, Memory
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.records import ArtifactWrite
 from powercontext.builtin.runtime import BuiltinConfig, open_builtin_contexts
+from powercontext.builtin.source_eligibility import SourceNotEligibleError
 from powercontext.builtin.sources import BUILTIN_SOURCE_REGISTRY, ContentCapture, ContentSource, SourceCursor
 
 
@@ -86,6 +87,39 @@ class BlockingCandidatePipeline(EchoCandidatePipeline):
 
 class StateSaveFailure(RuntimeError):
     pass
+
+
+@pytest.mark.parametrize("mode", ["extract", "auto"])
+def test_explicit_memory_extraction_rejects_lineage_only_before_pipeline(mode) -> None:
+    class EmptyPipeline:
+        called = False
+
+        async def extract(self, request):
+            self.called = True
+            return ()
+
+    async def scenario() -> None:
+        pipeline = EmptyPipeline()
+        async with open_builtin_contexts(
+            BuiltinConfig(database=SQLiteConfig()),
+            candidate_pipeline=pipeline,
+        ) as contexts:
+            context = await contexts.get("project")
+            created = await contexts.records.create_artifact(
+                "project",
+                "memory",
+                ArtifactWrite(content={"entries": [{"kind": "fact", "text": "Managed input."}]}),
+            )
+            async with contexts.database.transaction() as connection:
+                stored = await contexts.repositories.sources.get(connection, "project", created.sources[0])
+            assert await context.sources.get(stored.value) == stored.value
+            with pytest.raises(SourceNotEligibleError):
+                await context.artifacts.memory.remember(memory=None, sources=(stored.value,), mode=mode)
+            assert pipeline.called is False
+            head = await contexts.records.get_artifact("project", "memory", created.artifact_id)
+            assert head.revision == 1
+
+    asyncio.run(scenario())
 
 
 def test_provider_uses_one_injected_source_registry_for_routing_and_persistence() -> None:
