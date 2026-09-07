@@ -132,6 +132,7 @@ from powercontext.builtin.runtime.protocols import BuiltinTriggers
 from powercontext.builtin.runtime.recall import RelationalRecallTokenEstimator
 from powercontext.builtin.runtime.statistics import RelationalScopedStatistics
 from powercontext.builtin.scope import ScopeApplication
+from powercontext.builtin.source_eligibility import is_generation_eligible, require_source_eligible
 from powercontext.builtin.sources import (
     BUILTIN_SOURCE_REGISTRY,
     EXTERNAL_SKILL_SNAPSHOT_SOURCE_ADAPTER,
@@ -1124,6 +1125,7 @@ class _RelationalTriggers:
                     raise HandoffEvidenceUnavailableError(
                         HandoffSourceCitation(source_ref=request.boundary_source)
                     ) from None
+                require_source_eligible(request.boundary_source, source.value)
                 state_row = await self._services.repositories.cursors.load(
                     connection,
                     self._services.scope_id,
@@ -1245,7 +1247,9 @@ class _RelationalTriggers:
             after=action.after,
             through=action.through,
         )
-        return tuple(row.value for row in rows)
+        return tuple(
+            row.value for row in rows if row.journal_position <= action.through and is_generation_eligible(row.value)
+        )
 
     async def _prepare_memory(self, sources: tuple[Source, ...]) -> MemoryWritePlan:
         _, source_catalog = self._services.sources()
@@ -1301,7 +1305,8 @@ class _RelationalExperienceIncubator:
             if pipeline is None:
                 raise RuntimeError("Experience incubation pipeline is not configured")  # noqa: TRY003
             action = transition.actions[0]
-            if not rows:
+            eligible_rows = tuple(row for row in rows if is_generation_eligible(row.value))
+            if not eligible_rows:
                 async with self._services.database.transaction() as connection:
                     await self._services.repositories.cursors.save(
                         connection,
@@ -1317,18 +1322,20 @@ class _RelationalExperienceIncubator:
                     source_count=0,
                     candidate_count=0,
                 )
-            plans = await pipeline.incubate(tuple(row.value for row in rows))
-            _validate_experience_plans(plans, rows)
+            plans = await pipeline.incubate(tuple(row.value for row in eligible_rows))
+            _validate_experience_plans(plans, eligible_rows)
+            candidate_ids: list[str] = []
             async with self._services.database.transaction() as connection:
                 review = self._services.review(connection)
                 for plan in plans:
-                    await review.propose_experience(
+                    candidate = await review.propose_experience(
                         plan.proposal,
                         sources=plan.sources,
                         artifacts=(),
                         target=None,
                         reason=plan.reason,
                     )
+                    candidate_ids.append(candidate.candidate_id)
                 await self._services.repositories.cursors.save(
                     connection,
                     self._services.scope_id,
@@ -1340,8 +1347,9 @@ class _RelationalExperienceIncubator:
                 previous_cursor=action.after,
                 high_watermark=high_watermark,
                 current_cursor=action.through,
-                source_count=len(rows),
+                source_count=len(eligible_rows),
                 candidate_count=len(plans),
+                candidate_ids=tuple(candidate_ids),
             )
 
     async def _sources(
