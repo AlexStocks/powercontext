@@ -14,143 +14,190 @@
  * limitations under the License.
  */
 
-import { access, readdir, readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { parse } from 'yaml';
 
 const websiteDirectory = path.resolve('.');
 const repositoryDirectory = path.resolve(websiteDirectory, '..');
 const outputDirectory = path.join(websiteDirectory, 'out');
-const prerenderManifestPath = path.join(websiteDirectory, '.next', 'prerender-manifest.json');
-const pythonDirectory = path.join(websiteDirectory, '.generated', 'python');
+const docsDirectory = path.join(repositoryDirectory, 'docs');
 const locales = ['en', 'zh'] as const;
-const httpMethods = ['get', 'put', 'post', 'delete', 'patch', 'head', 'options', 'trace'] as const;
-const documentationLinkCheckRoutes = locales.map((locale) => `/${locale}/docs/tutorials/codex-quickstart`);
 
-type PythonModule = {
-  path?: string;
-  modules?: Record<string, PythonModule>;
-  classes?: Record<string, { path?: string }>;
-};
+async function collectHtmlFiles(directory: string): Promise<string[]> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files = await Promise.all(
+    entries.map((entry) => {
+      const entryPath = path.join(directory, entry.name);
+      return entry.isDirectory() ? collectHtmlFiles(entryPath) : [entryPath];
+    }),
+  );
 
-function outputPage(route: string) {
-  const segments = route.split('/').filter(Boolean);
-  return path.join(outputDirectory, ...segments, 'index.html');
+  return files.flat().filter((file) => file.endsWith('.html'));
 }
 
-function extractAnchorHrefs(html: string) {
-  return Array.from(html.matchAll(/<a\b[^>]*\bhref=(['"])(.*?)\1/gi), (match) => match[2]);
+function routeFromOutputFile(file: string) {
+  const relativePath = path.relative(outputDirectory, file).split(path.sep).join('/');
+  const routeDirectory = path.posix.dirname(relativePath);
+  return routeDirectory === '.' ? '/' : `/${routeDirectory}`;
 }
 
-async function findBrokenDocumentationLinks(route: string) {
-  const html = await readFile(outputPage(route), 'utf8');
-  const broken: string[] = [];
-
-  for (const href of extractAnchorHrefs(html)) {
-    if (/^(?:[a-z][a-z\d+.-]*:|#)/i.test(href)) continue;
-    if (/\.mdx?(?:[?#]|$)/i.test(href)) {
-      broken.push(`${href} (unresolved Markdown path)`);
-      continue;
-    }
-
-    const target = new URL(href, `https://powercontext.invalid${route}/`);
-    try {
-      await access(outputPage(decodeURIComponent(target.pathname)));
-    } catch {
-      broken.push(`${href} (missing ${target.pathname})`);
-    }
-  }
-
-  return broken;
+function normalizeRoute(pathname: string) {
+  if (pathname === '/') return pathname;
+  return pathname.replace(/\/$/, '');
 }
 
-function collectPythonPaths(module: PythonModule, paths: Set<string>) {
-  if (module.path) paths.add(module.path.replaceAll('.', '/'));
-
-  for (const classDefinition of Object.values(module.classes ?? {})) {
-    if (classDefinition.path) paths.add(classDefinition.path.replaceAll('.', '/'));
-  }
-
-  for (const childModule of Object.values(module.modules ?? {})) {
-    collectPythonPaths(childModule, paths);
-  }
+function renderedMarkup(document: string) {
+  return document.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
 }
 
-const openapi = parse(
-  await readFile(path.join(repositoryDirectory, 'openapi', 'powercontext.yaml'), 'utf8'),
-) as {
-  paths?: Record<string, Record<string, { operationId?: string }>>;
-};
-
-const httpRoutes = new Set<string>(['/api']);
-for (const pathItem of Object.values(openapi.paths ?? {})) {
-  for (const method of httpMethods) {
-    const operationId = pathItem[method]?.operationId;
-    if (!operationId) continue;
-    httpRoutes.add(`/api/${operationId}`);
-  }
-}
-
-const pythonPaths = new Set<string>();
-const pythonFiles = (await readdir(pythonDirectory)).filter((file) => file.endsWith('.json'));
-for (const file of pythonFiles) {
-  const module = JSON.parse(await readFile(path.join(pythonDirectory, file), 'utf8')) as PythonModule;
-  collectPythonPaths(module, pythonPaths);
-}
-
-const pythonRoutes = new Set<string>();
+const rfcRoutes = new Set<string>();
+const developmentRoutes = new Set<string>();
 for (const locale of locales) {
-  pythonRoutes.add(`/${locale}/modules`);
-  for (const pythonPath of pythonPaths) {
-    pythonRoutes.add(`/${locale}/modules/${pythonPath}`);
+  const rfcDirectory = path.join(docsDirectory, locale, 'rfcs');
+  const rfcFiles = (await readdir(rfcDirectory)).filter((file) => file.endsWith('.md'));
+  const developmentDirectory = path.join(docsDirectory, locale, 'development');
+  const developmentFiles = (await readdir(developmentDirectory)).filter((file) => file.endsWith('.md'));
+
+  for (const file of rfcFiles) {
+    const slug = file === 'README.md' ? '' : `/${file.slice(0, -'.md'.length)}`;
+    rfcRoutes.add(`/${locale}/rfcs${slug}`);
+  }
+  for (const file of developmentFiles) {
+    developmentRoutes.add(`/${locale}/development/${file.slice(0, -'.md'.length)}`);
   }
 }
 
-const prerenderManifest = JSON.parse(await readFile(prerenderManifestPath, 'utf8')) as {
-  routes: Record<string, unknown>;
-};
-const prerenderedRoutes = new Set(Object.keys(prerenderManifest.routes));
-const expectedRoutes = [...httpRoutes, ...pythonRoutes];
-const missingFromManifest = expectedRoutes.filter((route) => !prerenderedRoutes.has(route));
-const missingFromOutput: string[] = [];
-const brokenDocumentationLinks = new Map<string, string[]>();
-
-await Promise.all(
-  expectedRoutes.map(async (route) => {
-    try {
-      await access(outputPage(route));
-    } catch {
-      missingFromOutput.push(route);
-    }
-  }),
+const htmlFiles = await collectHtmlFiles(outputDirectory);
+const exportedDocuments = new Map(
+  await Promise.all(
+    htmlFiles.map(async (file) => [routeFromOutputFile(file), await readFile(file, 'utf8')] as const),
+  ),
 );
+const requiredRoutes = ['/', '/en', '/zh', '/en/docs', '/zh/docs', '/api', '/en/modules', '/zh/modules'];
+const missingRequiredRoutes = requiredRoutes.filter((route) => !exportedDocuments.has(route));
+const missingRfcRoutes = [...rfcRoutes].filter((route) => !exportedDocuments.has(route));
+const missingDevelopmentRoutes = [...developmentRoutes].filter((route) => !exportedDocuments.has(route));
 
-await Promise.all(
-  documentationLinkCheckRoutes.map(async (route) => {
-    const broken = await findBrokenDocumentationLinks(route);
-    if (broken.length > 0) brokenDocumentationLinks.set(route, broken);
-  }),
-);
-
-if (missingFromManifest.length > 0 || missingFromOutput.length > 0 || brokenDocumentationLinks.size > 0) {
-  const details = [
-    missingFromManifest.length > 0
-      ? `Missing from Next prerender manifest:\n${missingFromManifest.sort().join('\n')}`
-      : undefined,
-    missingFromOutput.length > 0
-      ? `Missing from static output:\n${missingFromOutput.sort().join('\n')}`
-      : undefined,
-    brokenDocumentationLinks.size > 0
-      ? `Broken Codex tutorial links:\n${Array.from(brokenDocumentationLinks, ([route, links]) =>
-          `${route}:\n${links.map((link) => `  ${link}`).join('\n')}`,
-        ).join('\n')}`
-      : undefined,
-  ].filter(Boolean);
-
-  throw new Error(`Static export verification failed.\n\n${details.join('\n\n')}`);
+if (missingRequiredRoutes.length > 0 || missingRfcRoutes.length > 0 || missingDevelopmentRoutes.length > 0) {
+  const missingRoutes = [...missingRequiredRoutes, ...missingRfcRoutes, ...missingDevelopmentRoutes].sort();
+  throw new Error(`Public pages are missing from the static site:\n${missingRoutes.join('\n')}`);
 }
+
+const brokenLinks = new Set<string>();
+for (const [route, document] of exportedDocuments) {
+  const pageUrl = new URL(route === '/' ? '/' : `${route}/`, 'https://powercontext.oceanbase.io');
+  const markup = renderedMarkup(document);
+
+  for (const match of markup.matchAll(/<a\b[^>]*\bhref="([^"]+)"/g)) {
+    const href = match[1].replaceAll('&amp;', '&');
+    const target = new URL(href, pageUrl);
+    if (target.origin !== pageUrl.origin) continue;
+
+    const targetRoute = normalizeRoute(decodeURIComponent(target.pathname));
+    if (!exportedDocuments.has(targetRoute)) brokenLinks.add(`${route} -> ${targetRoute}`);
+  }
+}
+
+if (brokenLinks.size > 0) {
+  throw new Error(`Public pages contain broken internal links:\n${[...brokenLinks].sort().join('\n')}`);
+}
+
+const rootDocument = exportedDocuments.get('/')!;
+const englishDocument = exportedDocuments.get('/en')!;
+const chineseDocument = exportedDocuments.get('/zh')!;
+const docsDocuments = {
+  en: exportedDocuments.get('/en/docs')!,
+  zh: exportedDocuments.get('/zh/docs')!,
+};
+const siteUrl = 'https://powercontext.oceanbase.io';
+const homeAlternates = [
+  `<link rel="alternate" hrefLang="en" href="${siteUrl}/"`,
+  `<link rel="alternate" hrefLang="zh" href="${siteUrl}/zh/"`,
+  `<link rel="alternate" hrefLang="x-default" href="${siteUrl}/"`,
+];
+
+if (/http-equiv="refresh"/i.test(rootDocument) || !rootDocument.includes('Keep work moving')) {
+  throw new Error('Static root page does not render the default English site.');
+}
+
+if (
+  !rootDocument.includes('<html lang="en"')
+  || !englishDocument.includes('<html lang="en"')
+  || !chineseDocument.includes('<html lang="zh"')
+) {
+  throw new Error('Static localized pages do not declare the expected document language.');
+}
+
+if (
+  !rootDocument.includes(`<link rel="canonical" href="${siteUrl}/"`)
+  || !englishDocument.includes(`<link rel="canonical" href="${siteUrl}/"`)
+  || !chineseDocument.includes(`<link rel="canonical" href="${siteUrl}/zh/"`)
+  || homeAlternates.some(
+    (alternate) =>
+      !rootDocument.includes(alternate)
+      || !englishDocument.includes(alternate)
+      || !chineseDocument.includes(alternate),
+  )
+) {
+  throw new Error('Static home pages do not declare the expected canonical and language alternate URLs.');
+}
+
+if (rootDocument.includes('href="/en/"')) {
+  throw new Error('Static root page links to the duplicate English home URL.');
+}
+
+for (const [locale, document] of Object.entries(docsDocuments)) {
+  const markup = renderedMarkup(document);
+  const apiReferenceLabel = locale === 'en' ? 'API Reference' : 'API 参考';
+  const developerLabel = locale === 'en' ? 'Developer' : '开发者';
+  const productLabel = locale === 'en' ? 'Product' : '产品';
+  const tutorialsLabel = locale === 'en' ? 'Tutorials' : '教程';
+  const howToLabel = locale === 'en' ? 'How to' : '操作指南';
+  const explanationLabel = locale === 'en' ? 'Explanation' : '概念说明';
+  const referenceLabel = locale === 'en' ? 'Reference' : '参考';
+  const developmentLabel = locale === 'en' ? 'Development' : '开发';
+  const productIndex = markup.indexOf(`>${productLabel}</p>`);
+  const tutorialsIndex = markup.indexOf(`>${tutorialsLabel}<`, productIndex);
+  const howToIndex = markup.indexOf(`>${howToLabel}<`, tutorialsIndex);
+  const explanationIndex = markup.indexOf(`>${explanationLabel}<`, howToIndex);
+  const apiReferenceIndex = markup.indexOf(`>${apiReferenceLabel}</p>`);
+  const referenceIndex = markup.indexOf(`>${referenceLabel}<`);
+  const pythonApiIndex = markup.indexOf('>Python API</a>');
+  const developerIndex = markup.indexOf(`>${developerLabel}</p>`);
+  const rfcIndex = markup.indexOf('>RFCs<', developerIndex);
+  const developmentIndex = markup.indexOf(`>${developmentLabel}<`, rfcIndex);
+  const developerSection = markup.slice(developerIndex, apiReferenceIndex);
+  const collapsedFolders = developerSection.match(/aria-expanded="false"/g)?.length ?? 0;
+
+  if (
+    productIndex === -1
+    || tutorialsIndex < productIndex
+    || howToIndex < tutorialsIndex
+    || explanationIndex < howToIndex
+    || referenceIndex < explanationIndex
+    || developerIndex < referenceIndex
+    || rfcIndex < developerIndex
+    || developmentIndex < rfcIndex
+    || apiReferenceIndex < developmentIndex
+    || pythonApiIndex < apiReferenceIndex
+    || collapsedFolders < 2
+  ) {
+    throw new Error(
+      `Static ${locale} documentation does not show the expected Product, Developer, and API Reference sections.`,
+    );
+  }
+}
+
+const exportedRoutes = [...exportedDocuments.keys()];
+const httpApiPageCount = exportedRoutes.filter((route) => route === '/api' || route.startsWith('/api/')).length;
+const pythonApiPageCount = exportedRoutes.filter((route) => /^\/(en|zh)\/modules(?:\/|$)/.test(route)).length;
+const rfcPageCount = exportedRoutes.filter((route) => /^\/(en|zh)\/rfcs(?:\/|$)/.test(route)).length;
+const developmentPageCount = exportedRoutes.filter(
+  (route) => /^\/(en|zh)\/development(?:\/|$)/.test(route),
+).length;
 
 console.log(
-  `Verified ${httpRoutes.size} HTTP API pages, ${pythonRoutes.size} Python API pages, and ` +
-    `${documentationLinkCheckRoutes.length} Codex tutorial pages in the static export.`,
+  `Verified ${exportedDocuments.size} public pages and their internal links `
+  + `(${httpApiPageCount} HTTP API, ${pythonApiPageCount} Python API, ${rfcPageCount} RFC, `
+  + `${developmentPageCount} development).`,
 );
