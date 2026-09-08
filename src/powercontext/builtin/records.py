@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from powercontext.builtin.artifacts.memory import MemoryEntryVersion
     from powercontext.builtin.tags import ArtifactTagSet, TagFilter, TagQuery, TagQueryPage, TagTarget
 
-BaseArtifactFamily = Literal["memory", "experience", "skill", "handoff", "prompt"]
+BaseArtifactFamily = Literal["memory", "experience", "skill", "handoff", "profile", "prompt"]
 
 
 class _RecordModel(BaseModel):
@@ -139,7 +139,7 @@ class BaseAccessError(Exception):
 class BaseValueNotFoundError(BaseAccessError):
     """Report an absent or non-visible Source or Artifact."""
 
-    def __init__(self, kind: Literal["source", "artifact"], identity: object) -> None:
+    def __init__(self, kind: str, identity: object) -> None:
         self.kind = kind
         self.identity = identity
         super().__init__(f"{kind} was not found")
@@ -148,7 +148,7 @@ class BaseValueNotFoundError(BaseAccessError):
 class BaseValueConflictError(BaseAccessError):
     """Report an identity that already names different durable state."""
 
-    def __init__(self, kind: Literal["source", "artifact"], identity: object) -> None:
+    def __init__(self, kind: str, identity: object) -> None:
         self.kind = kind
         self.identity = identity
         super().__init__(f"{kind} identity conflicts with durable state")

@@ -393,6 +393,8 @@ from powercontext.http import (
     CreateRemoteSkillTargetRequest,
     CreateScopeRequest,
     CreateSourceRequest,
+    CreateSubjectSourceRequest,
+    CreateSubjectSourceResponse,
     CreateWorkContractRequest,
     DownloadRemoteSkillPackageRequest,
     EnrollRemoteSkillTargetRequest,
@@ -403,6 +405,8 @@ from powercontext.http import (
     FinalizeHandoffRequest,
     FlushMemoryRequest,
     FlushMemoryResponse,
+    FlushProfileRequest,
+    FlushProfileResponse,
     GeneratedCandidateResponse,
     GenerateExperienceRequest,
     GeneratePromptDemonstrationsRequest,
@@ -445,6 +449,7 @@ from powercontext.http import (
     PreparedContext,
     PreparedWorkHandoff,
     PrepareHandoffRequest,
+    ProfilePolicyResponse,
     PromptConfiguration,
     PromptDemonstrationResult,
     PromptKey,
@@ -453,6 +458,7 @@ from powercontext.http import (
     ProposeSkillRequest,
     PublishArtifactRequest,
     PublishRemoteSkillRequest,
+    PutProfilePolicyRequest,
     ReadinessResponse,
     ReadinessStatus,
     ReconcileRemoteSkillsRequest,
@@ -604,12 +610,14 @@ from powercontext.http._generated.operations import (
     CREATE_REMOTE_SKILL_TARGET,
     CREATE_SCOPE,
     CREATE_SOURCE,
+    CREATE_SUBJECT_SOURCE,
     CREATE_WORK_CONTRACT,
     DOWNLOAD_REMOTE_SKILL_PACKAGE,
     DOWNLOAD_SKILL_PACKAGE,
     ENROLL_REMOTE_SKILL_TARGET,
     FINALIZE_HANDOFF,
     FLUSH_MEMORY,
+    FLUSH_PROFILE,
     GENERATE_EXPERIENCE,
     GENERATE_PROMPT_DEMONSTRATIONS,
     GENERATE_SKILL,
@@ -626,6 +634,7 @@ from powercontext.http._generated.operations import (
     GET_LIVENESS,
     GET_MEMORY_ENTRY,
     GET_MEMORY_ENTRY_TAGS,
+    GET_PROFILE_POLICY,
     GET_PROMPT_CONFIGURATION,
     GET_READINESS,
     GET_SCOPE,
@@ -656,6 +665,7 @@ from powercontext.http._generated.operations import (
     PROPOSE_SKILL_PACKAGE,
     PUBLISH_ARTIFACT,
     PUBLISH_REMOTE_SKILL,
+    PUT_PROFILE_POLICY,
     QUERY_ARTIFACT_TAGS,
     RECONCILE_REMOTE_SKILLS,
     RECORD_REMOTE_SKILL_RECEIPT,
@@ -1117,6 +1127,8 @@ class _StatisticsApplication(Protocol):
 
 class ServerApplication(Protocol):
     prompts: PromptApplication
+    profiles: Any
+    subject_sources: Any
     scopes: ScopeApplication | None
     publications: ArtifactPublicationApplication | None
     sources: _SourceApplication
@@ -1280,6 +1292,10 @@ def create_app(
     if handoff_report_enabled:
         _add_route(app, GET_HANDOFF_REPORT, get_handoff_report)
     _add_route(app, CREATE_SOURCE, create_source)
+    _add_route(app, CREATE_SUBJECT_SOURCE, create_subject_source)
+    _add_route(app, GET_PROFILE_POLICY, get_profile_policy)
+    _add_route(app, PUT_PROFILE_POLICY, put_profile_policy)
+    _add_route(app, FLUSH_PROFILE, flush_profile)
     _add_route(app, GET_SOURCE, get_source)
     _add_route(app, CREATE_ARTIFACT, create_artifact)
     _add_route(app, GET_MEMORY_ENTRY_TAGS, get_memory_entry_tags)
@@ -1534,7 +1550,7 @@ async def _query_authorized_resources(
     application = _require_application(request)
     access = _require_access_control(request)
     scope_ids = await _authorized_scope_ids(request, authorized.parent_constraints)
-    families = (family,) if family is not None else ("handoff", "memory", "experience", "skill")
+    families = (family,) if family is not None else ("handoff", "memory", "experience", "skill", "profile")
     for scope_id in scope_ids:
         if resource_type is AccessResourceType.SCOPE:
             resource = ResourceRef.scope(scope_id)
@@ -1585,11 +1601,11 @@ async def _discover_scope_artifact_resources(
             )
             for entry in entries.entries
         )
-    if family in {"experience", "skill"}:
+    if family in {"experience", "skill", "profile"}:
         return await _committed_artifact_resources(
             application,
             scope_id,
-            cast(Literal["experience", "skill"], family),
+            cast(Literal["experience", "skill", "profile"], family),
         )
     raise AccessInvalidRequestError("artifact-family")
 
@@ -1597,7 +1613,7 @@ async def _discover_scope_artifact_resources(
 async def _committed_artifact_resources(
     application: ServerApplication,
     scope_id: str,
-    family: Literal["experience", "skill"],
+    family: Literal["experience", "skill", "profile"],
 ) -> tuple[ResourceRef, ...]:
     resources: list[ResourceRef] = []
     cursor: str | None = None
@@ -1860,6 +1876,7 @@ async def resolve_scope_binding(
     resolved = await scopes.resolve_binding(
         explicit_scope_id=request.explicit_scope_id,
         binding_keys=tuple(_domain_binding_key(key) for key in request.binding_keys),
+        allow_default=request.allow_default,
     )
     return _scope_descriptor_response(resolved)
 
@@ -1988,6 +2005,120 @@ async def create_source(
     )
     response.headers["Location"] = _source_location(result)
     return _source_record_response(result)
+
+
+async def create_subject_source(
+    scope_id: Annotated[str, Path(min_length=1, max_length=256, pattern=r".*\S.*")],
+    request: CreateSubjectSourceRequest,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+    http_request: Request,
+) -> CreateSubjectSourceResponse:
+    if application.subject_sources is None:
+        raise _RuntimeNotReadyError
+    access = access_control_for_mode(http_request.app.state.access_control, mode=http_request.app.state.access_mode)
+
+    async def authorize(connection, target, new_binding, new_scope):
+        if access is None:
+            return
+        principal = _require_principal()
+        context = _access_audit_context(CREATE_SUBJECT_SOURCE.operation_id)
+        if new_binding:
+            await access.require(
+                principal, AccessAction.SERVER_ADMIN, ResourceRef.server(access.deployment_id), context=context
+            )
+        if new_scope:
+            await access.bootstrap_subject_scope(connection, principal, target, context=context)
+        elif access.uses_static_preset(principal):
+            # The subject Scope is resolved inside the atomic dual-write transaction,
+            # so materialize the fixed static preset through the same connection.
+            await access.with_connection(connection).bootstrap_static_scope(principal, target, context=context)
+        else:
+            await access.require(principal, AccessAction.SCOPE_CONTRIBUTE, ResourceRef.scope(target), context=context)
+
+    target, sources = await application.subject_sources.create(
+        scope_id,
+        request.subject_key,
+        request.content,
+        subject_type=request.subject_type.value,
+        subject_scope_id=request.subject_scope_id,
+        authorize=authorize,
+    )
+    return CreateSubjectSourceResponse.model_validate({
+        "subject_key": request.subject_key,
+        "subject_type": "user",
+        "subject_scope_id": target,
+        "sources": [source.model_dump(mode="json") for source in sources],
+    })
+
+
+async def get_profile_policy(
+    scope_id: Annotated[str, Path(min_length=1, max_length=256, pattern=r".*\S.*")],
+    application: Annotated[ServerApplication, Depends(_require_application)],
+) -> ProfilePolicyResponse:
+    if application.profiles is None:
+        raise _RuntimeNotReadyError
+    return ProfilePolicyResponse.model_validate(
+        (await application.profiles.get_policy(scope_id)).model_dump(mode="json")
+    )
+
+
+async def put_profile_policy(
+    scope_id: Annotated[str, Path(min_length=1, max_length=256, pattern=r".*\S.*")],
+    request: PutProfilePolicyRequest,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+) -> ProfilePolicyResponse:
+    if application.profiles is None:
+        raise _RuntimeNotReadyError
+    policy = await application.profiles.put_policy(
+        scope_id,
+        generation_enabled=request.generation_enabled,
+        activation_mode=request.activation_mode.value,
+        expected_version=request.expected_version,
+    )
+    return ProfilePolicyResponse.model_validate(policy.model_dump(mode="json"))
+
+
+async def flush_profile(
+    request: FlushProfileRequest,
+    application: Annotated[ServerApplication, Depends(_require_application)],
+    http_request: Request,
+) -> FlushProfileResponse:
+    if application.profiles is None:
+        raise _RuntimeNotReadyError
+    access = access_control_for_mode(http_request.app.state.access_control, mode=http_request.app.state.access_mode)
+    resource = ResourceRef.artifact(request.scope_id, family="profile", artifact_id="profile")
+    context = _access_audit_context(FLUSH_PROFILE.operation_id)
+    principal = _require_principal() if access is not None else None
+
+    async def authorize_snapshot(current):
+        if access is not None and current is not None:
+            await access.require(principal, AccessAction.ARTIFACT_WRITE, resource, context=context)
+
+    async def on_commit(connection, artifact, candidate):
+        if access is None:
+            return
+        bound = access.with_connection(connection)
+        if artifact is not None and await bound.artifact_owner(resource) is None:
+            await bound.establish_artifact_owner(
+                resource,
+                principal,
+                idempotency_key=f"profile-owner:{request.scope_id}",
+                context=context,
+            )
+        if candidate is not None:
+            await bound.attest_candidate_owner(
+                scope_id=request.scope_id,
+                candidate_id=candidate.candidate_id,
+                family="profile",
+                proposed_owner=principal,
+                target=None if candidate.target is None else resource,
+                idempotency_key=f"candidate-owner:{request.scope_id}:{candidate.candidate_id}",
+            )
+
+    result = await application.profiles.flush(
+        request.scope_id, authorize_snapshot=authorize_snapshot, on_commit=on_commit
+    )
+    return FlushProfileResponse.model_validate(result.model_dump(mode="json"))
 
 
 async def get_source(
@@ -3201,13 +3332,29 @@ async def _validate_shareable_resource(application: ServerApplication | None, re
         if selector.entry_id not in _memory_manifest_entry_ids(memory):
             raise MemoryEntryNotFoundError(selector.entry_id)
         return
-    if profile.family == "experience":
-        await application.experience.for_scope(resource.scope_id).get(RuntimeGetExperienceRequest(artifact=artifact))
-        return
-    if profile.family == "skill":
-        await application.skill.for_scope(resource.scope_id).get(RuntimeGetSkillRequest(artifact=artifact))
+    if profile.family in {"experience", "skill", "profile"}:
+        await _validate_shareable_managed_artifact(
+            application,
+            resource.scope_id,
+            cast(Literal["experience", "skill", "profile"], profile.family),
+            artifact,
+        )
         return
     raise AccessInvalidRequestError("artifact-family-disabled")
+
+
+async def _validate_shareable_managed_artifact(
+    application: ServerApplication,
+    scope_id: str,
+    family: Literal["experience", "skill", "profile"],
+    artifact: ArtifactRef,
+) -> None:
+    if family == "experience":
+        await application.experience.for_scope(scope_id).get(RuntimeGetExperienceRequest(artifact=artifact))
+    elif family == "skill":
+        await application.skill.for_scope(scope_id).get(RuntimeGetSkillRequest(artifact=artifact))
+    else:
+        await application.records.for_scope(scope_id).get_artifact("profile", artifact.artifact_id)
 
 
 async def _establish_created_owner(
@@ -4711,7 +4858,7 @@ def _map_base_access_error(error: Exception) -> tuple[int, str, str, dict[str, A
     if isinstance(error, BaseValueConflictError):
         return (
             status.HTTP_409_CONFLICT,
-            "idempotency_conflict",
+            "subject_scope_conflict" if error.kind == "subject_scope" else "idempotency_conflict",
             "The stable identity already names different durable state.",
             {"kind": error.kind},
         )
@@ -4748,7 +4895,7 @@ def _map_base_access_error(error: Exception) -> tuple[int, str, str, dict[str, A
         )
         return (
             response_status,
-            "invalid_request",
+            "distinct_scopes_required" if error.reason == "distinct_scopes_required" else "invalid_request",
             "The request is invalid.",
             {"field": error.field, "reason": error.reason},
         )
@@ -4760,7 +4907,9 @@ def _map_scope_error(error: Exception) -> tuple[int, str, str, dict[str, Any] | 
         return (
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             "artifact_publication_unsupported",
-            "The Artifact family cannot be published as complete target state.",
+            "Profile artifacts cannot be copied or published across Scopes."
+            if error.family == "profile"
+            else "The Artifact family cannot be published as complete target state.",
             {"family": error.family},
         )
     if isinstance(error, ArtifactPublicationConflictError):

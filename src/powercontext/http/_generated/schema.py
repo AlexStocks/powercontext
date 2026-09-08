@@ -10,6 +10,152 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
         "version": "0.2.0",
     },
     "paths": {
+        "/v1/scopes/{scope_id}/subject-sources": {
+            "post": {
+                "tags": ["profile"],
+                "summary": "Atomically write Source to business and subject scopes",
+                "operationId": "create_subject_source",
+                "x-powercontext-access": {
+                    "action": "scope.contribute",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
+                    }
+                ],
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/CreateSubjectSourceRequest"}}
+                    },
+                },
+                "responses": {
+                    "201": {
+                        "description": "Operation completed.",
+                        "headers": {"X-PowerContext-Request-ID": {"$ref": "#/components/headers/RequestId"}},
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/CreateSubjectSourceResponse"}}
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "409": {"$ref": "#/components/responses/Conflict"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                },
+            }
+        },
+        "/v1/scopes/{scope_id}/profile-policy": {
+            "get": {
+                "tags": ["profile"],
+                "summary": "Read Profile policy",
+                "operationId": "get_profile_policy",
+                "x-powercontext-access": {
+                    "action": "scope.read",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Operation completed.",
+                        "headers": {"X-PowerContext-Request-ID": {"$ref": "#/components/headers/RequestId"}},
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/ProfilePolicyResponse"}}
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "409": {"$ref": "#/components/responses/Conflict"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                },
+            },
+            "put": {
+                "tags": ["profile"],
+                "summary": "Configure Profile policy",
+                "operationId": "put_profile_policy",
+                "x-powercontext-access": {
+                    "action": "scope.admin",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
+                    }
+                ],
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/PutProfilePolicyRequest"}}
+                    },
+                },
+                "responses": {
+                    "200": {
+                        "description": "Operation completed.",
+                        "headers": {"X-PowerContext-Request-ID": {"$ref": "#/components/headers/RequestId"}},
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/ProfilePolicyResponse"}}
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "409": {"$ref": "#/components/responses/Conflict"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                },
+            },
+        },
+        "/v1/profile/flush": {
+            "post": {
+                "tags": ["profile"],
+                "summary": "Process one Profile source window",
+                "operationId": "flush_profile",
+                "requestBody": {
+                    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FlushProfileRequest"}}},
+                    "required": True,
+                },
+                "responses": {
+                    "200": {
+                        "description": "Operation completed.",
+                        "headers": {"X-PowerContext-Request-ID": {"$ref": "#/components/headers/RequestId"}},
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/FlushProfileResponse"}}
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "409": {"$ref": "#/components/responses/Conflict"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                },
+                "x-powercontext-access": {
+                    "action": "scope.contribute",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+            }
+        },
         "/health/live": {
             "get": {
                 "tags": ["health"],
@@ -109,7 +255,19 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "description": "Memory publication is rejected "
                 "until its complete family-owned "
                 "state can be created atomically "
-                "in the target Scope.",
+                "in the target Scope. Profile "
+                "artifacts cannot be copied or "
+                "published across Scopes, whether "
+                "or not the target already has a "
+                "Profile. Requests for these "
+                "families return HTTP 422 with "
+                "code "
+                "artifact_publication_unsupported "
+                "and details.family. Rejection "
+                "creates no target Artifact or "
+                "publication record; other "
+                "supported families retain their "
+                "existing behavior.",
                 "operationId": "publish_artifact",
                 "requestBody": {
                     "content": {
@@ -3434,6 +3592,140 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
     },
     "components": {
         "schemas": {
+            "CreateSubjectSourceRequest": {
+                "properties": {
+                    "subject_key": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "subject_type": {"type": "string", "enum": ["user"], "default": "user"},
+                    "subject_scope_id": {
+                        "type": "string",
+                        "maxLength": 256,
+                        "minLength": 1,
+                        "pattern": ".*\\S.*",
+                        "nullable": True,
+                    },
+                    "source_type": {"type": "string", "enum": ["content"], "default": "content"},
+                    "content": {"description": "JSON value stored identically in both scopes."},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["subject_key", "content"],
+            },
+            "CreateSubjectSourceResponse": {
+                "properties": {
+                    "subject_key": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "subject_type": {"type": "string", "enum": ["user"]},
+                    "subject_scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "sources": {
+                        "items": {"$ref": "#/components/schemas/SourceRecord"},
+                        "type": "array",
+                        "maxItems": 2,
+                        "minItems": 2,
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["subject_key", "subject_type", "subject_scope_id", "sources"],
+            },
+            "PutProfilePolicyRequest": {
+                "properties": {
+                    "generation_enabled": {"type": "boolean"},
+                    "activation_mode": {
+                        "type": "string",
+                        "enum": ["automatic", "review_required"],
+                        "default": "automatic",
+                    },
+                    "expected_version": {"type": "integer", "minimum": 0.0},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["generation_enabled", "expected_version"],
+            },
+            "ProfilePolicyResponse": {
+                "properties": {
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
+                    "generation_enabled": {"type": "boolean"},
+                    "activation_mode": {"type": "string", "enum": ["automatic", "review_required"]},
+                    "pending_candidate_id": {"type": "string", "nullable": True},
+                    "version": {"type": "integer", "minimum": 1.0},
+                    "updated_at": {"type": "string", "format": "date-time"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": [
+                    "scope_id",
+                    "generation_enabled",
+                    "activation_mode",
+                    "pending_candidate_id",
+                    "version",
+                    "updated_at",
+                ],
+            },
+            "FlushProfileRequest": {
+                "properties": {"scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"}},
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["scope_id"],
+            },
+            "FlushProfileResponse": {
+                "properties": {
+                    "status": {"type": "string", "enum": ["updated", "noop", "review_pending", "disabled", "conflict"]},
+                    "previous_cursor": {"type": "integer", "minimum": 0.0},
+                    "current_cursor": {"type": "integer", "minimum": 0.0},
+                    "high_watermark": {"type": "integer", "minimum": 0.0},
+                    "processed_source_count": {"type": "integer", "minimum": 0.0},
+                    "artifact": {"$ref": "#/components/schemas/ArtifactReference", "nullable": True},
+                    "candidate_id": {"type": "string", "nullable": True},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["status", "previous_cursor", "current_cursor", "high_watermark", "processed_source_count"],
+            },
+            "ProfileWriteContent": {
+                "properties": {
+                    "content": {"type": "string", "minLength": 1},
+                    "restored_from_revision": {"type": "integer", "minimum": 1.0, "nullable": True},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["content"],
+            },
+            "ProfileSourceWindow": {
+                "properties": {
+                    "after": {"type": "integer", "minimum": 0.0},
+                    "through": {"type": "integer", "minimum": 0.0},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["after", "through"],
+            },
+            "ProfileCandidateProposal": {
+                "properties": {
+                    "schema": {"type": "string", "enum": ["powercontext.profile-candidate.v1"]},
+                    "content": {"type": "string", "minLength": 1},
+                    "source_window": {"$ref": "#/components/schemas/ProfileSourceWindow"},
+                    "generator_id": {"type": "string", "minLength": 1},
+                    "generator_version": {"type": "string", "minLength": 1},
+                    "created_at": {"type": "string", "format": "date-time"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["schema", "content", "source_window", "generator_id", "generator_version", "created_at"],
+            },
+            "CreateProfileArtifactRequest": {
+                "properties": {
+                    "family": {"type": "string", "enum": ["profile"]},
+                    "content": {"$ref": "#/components/schemas/ProfileWriteContent"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["family", "content"],
+            },
+            "ReplaceProfileArtifactRequest": {
+                "properties": {"content": {"$ref": "#/components/schemas/ProfileWriteContent"}},
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["content"],
+            },
             "ActivateHandoffRequest": {
                 "properties": {
                     "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
@@ -3739,6 +4031,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             },
             "ResolveScopeBindingRequest": {
                 "properties": {
+                    "allow_default": {"type": "boolean", "default": True},
                     "explicit_scope_id": {
                         "type": "string",
                         "maxLength": 256,
@@ -3801,6 +4094,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "oneOf": [
                             {"$ref": "#/components/schemas/ExperienceProposal"},
                             {"$ref": "#/components/schemas/SkillProposal"},
+                            {"$ref": "#/components/schemas/ProfileCandidateProposal"},
                         ]
                     },
                     "source_refs": {
@@ -6148,6 +6442,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "oneOf": [
                             {"$ref": "#/components/schemas/ExperienceProposal"},
                             {"$ref": "#/components/schemas/SkillProposal"},
+                            {"$ref": "#/components/schemas/ProfileWriteContent"},
                         ]
                     },
                     "source_refs": {
@@ -6299,6 +6594,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     {"$ref": "#/components/schemas/CreateSkillArtifactRequest"},
                     {"$ref": "#/components/schemas/CreateHandoffArtifactRequest"},
                     {"$ref": "#/components/schemas/CreatePromptArtifactRequest"},
+                    {"$ref": "#/components/schemas/CreateProfileArtifactRequest"},
                 ],
                 "discriminator": {
                     "propertyName": "family",
@@ -6308,6 +6604,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "skill": "#/components/schemas/CreateSkillArtifactRequest",
                         "handoff": "#/components/schemas/CreateHandoffArtifactRequest",
                         "prompt": "#/components/schemas/CreatePromptArtifactRequest",
+                        "profile": "#/components/schemas/CreateProfileArtifactRequest",
                     },
                 },
             },
@@ -6642,6 +6939,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     {"$ref": "#/components/schemas/ReplaceSkillArtifactRequest"},
                     {"$ref": "#/components/schemas/ReplaceHandoffArtifactRequest"},
                     {"$ref": "#/components/schemas/ReplacePromptArtifactRequest"},
+                    {"$ref": "#/components/schemas/ReplaceProfileArtifactRequest"},
                 ]
             },
             "ReplacePromptArtifactRequest": {
@@ -6924,9 +7222,12 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "required": ["name", "source_id"],
             },
             "CaptureStatus": {"type": "string", "enum": ["accepted"]},
-            "BaseArtifactFamily": {"type": "string", "enum": ["memory", "experience", "skill", "handoff", "prompt"]},
+            "BaseArtifactFamily": {
+                "type": "string",
+                "enum": ["memory", "experience", "skill", "handoff", "profile", "prompt"],
+            },
             "StatsPeriod": {"type": "string", "enum": ["today", "7d", "30d"]},
-            "CandidateFamily": {"type": "string", "enum": ["experience", "skill"]},
+            "CandidateFamily": {"type": "string", "enum": ["experience", "skill", "profile"]},
             "ExternalSkillInstallationScope": {"type": "string", "enum": ["user", "project", "plugin"]},
             "ExternalSkillResolutionStatus": {"type": "string", "enum": ["available", "unavailable"]},
             "CandidateStatus": {"type": "string", "enum": ["pending", "approved", "rejected"]},

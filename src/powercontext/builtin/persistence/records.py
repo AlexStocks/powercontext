@@ -83,6 +83,7 @@ from powercontext.sources import SourceMaterialization, SourceRef
 Clock = Callable[[], datetime]
 IdFactory = Callable[[str], str]
 
+
 _JSON_OBJECT = TypeAdapter(dict[str, JsonValue])
 _JSON_VALUE = TypeAdapter(JsonValue)
 _DEFAULT_CURSOR_TTL_SECONDS = 3_600
@@ -171,7 +172,11 @@ class RelationalRecordService:
             )
         except ValidationError as error:
             raise InvalidBaseAccessRequestError("content", "does not match the Source adapter") from error
-        return await self._store_source(scope_id, source_type, await CONTENT_SOURCE_ADAPTER.resolve(capture))
+        return await self._store_source(
+            scope_id,
+            source_type,
+            await CONTENT_SOURCE_ADAPTER.resolve(capture),
+        )
 
     async def _store_source(
         self,

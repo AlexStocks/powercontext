@@ -63,6 +63,7 @@ from powercontext.builtin.artifacts.memory.errors import (
     InvalidMemoryCitationError,
     MemoryEntryNotFoundError,
 )
+from powercontext.builtin.artifacts.profile.service import RelationalProfileService
 from powercontext.builtin.artifacts.prompt import (
     GeneratePromptDemonstrations,
     PromptConfiguration,
@@ -190,6 +191,7 @@ from powercontext.builtin.runtime.readiness import (
 )
 from powercontext.builtin.runtime.statistics import RelationalScopedStatistics
 from powercontext.builtin.scope import ScopeApplication, ScopeDescriptor, ScopeSelection
+from powercontext.builtin.scope.subject_sources import SubjectSourceService
 from powercontext.builtin.sources import (
     CONTENT_SOURCE_NAME,
     ContentCapture,
@@ -1909,6 +1911,8 @@ class BuiltinRuntime:
         scope_cache_observer: ScopeCacheObserver | None = None,
         scope_ids: ScopeIds | None = None,
         review_service: ReviewServiceFactory | None = None,
+        profiles: RelationalProfileService | None = None,
+        subject_sources: SubjectSourceService | None = None,
         generation_service: GenerationServiceFactory | None = None,
         experience_recall: ExperienceRecall | None = None,
         skill_recall: SkillRecall | None = None,
@@ -1945,6 +1949,8 @@ class BuiltinRuntime:
         self._provider = provider
         self._capabilities = capabilities
         self._review_service = review_service
+        self.profiles = profiles
+        self.subject_sources = subject_sources
         self._generation_service = generation_service
         self._experience_recall = experience_recall
         self._skill_recall = skill_recall
@@ -2027,16 +2033,19 @@ class BuiltinRuntime:
             checks={"runtime": ReadinessCheckStatus.READY, **dependencies.checks},
         )
 
-    def start_scheduler(
+    def start_scheduler(  # noqa: C901
         self,
         scheduler_path: str | Path,
         schedule_seconds: float | None,
         *,
         experience_schedule_seconds: float | None = None,
+        profile_cron: str | None = None,
+        profile_timezone: str = "Asia/Shanghai",
+        profile_max_concurrency: int = 4,
     ) -> None:
         """Start the APScheduler time adapter for this Runtime."""
 
-        if schedule_seconds is None and experience_schedule_seconds is None:
+        if schedule_seconds is None and experience_schedule_seconds is None and profile_cron is None:
             raise _RuntimeConfigurationError("schedule_seconds")
         if schedule_seconds is not None and schedule_seconds <= 0:
             raise _RuntimeConfigurationError("schedule_seconds")
@@ -2050,6 +2059,7 @@ class BuiltinRuntime:
             raise _RuntimeStateError("scheduler")
         from powercontext.builtin.runtime.scheduler import (
             configure_experience_incubation_job,
+            configure_profile_job,
             configure_source_window_job,
             create_scheduler,
             register_processors,
@@ -2059,8 +2069,15 @@ class BuiltinRuntime:
 
         runtime_key = scheduler_runtime_key(scheduler_path)
         scheduler: AsyncIOScheduler | None = None
+
+        async def process_profiles():
+            async with self._operation():
+                if self.profiles is not None:
+                    await self.profiles.scan(max_concurrency=profile_max_concurrency)
+
         register_processors(
             runtime_key,
+            profile=process_profiles if profile_cron is not None else None,
             source_window=None if schedule_seconds is None or self.processor is None else self.processor.run,
             experience_incubation=(
                 None
@@ -2083,6 +2100,7 @@ class BuiltinRuntime:
                 runtime_key=runtime_key,
                 schedule_seconds=experience_schedule_seconds,
             )
+            configure_profile_job(scheduler, runtime_key=runtime_key, cron=profile_cron, timezone=profile_timezone)
             scheduler.resume()
         except BaseException:
             if scheduler is not None and scheduler.running:

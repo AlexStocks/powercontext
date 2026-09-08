@@ -63,6 +63,8 @@ from powercontext.http import (
     CreateRemoteSkillTargetRequest,
     CreateScopeRequest,
     CreateSourceRequest,
+    CreateSubjectSourceRequest,
+    CreateSubjectSourceResponse,
     CreateWorkContractRequest,
     DownloadRemoteSkillPackageRequest,
     EnrollRemoteSkillTargetRequest,
@@ -72,6 +74,8 @@ from powercontext.http import (
     FinalizeHandoffRequest,
     FlushMemoryRequest,
     FlushMemoryResponse,
+    FlushProfileRequest,
+    FlushProfileResponse,
     GeneratedCandidateResponse,
     GenerateExperienceRequest,
     GeneratePromptDemonstrationsRequest,
@@ -116,6 +120,7 @@ from powercontext.http import (
     PreparedHandoff,
     PreparedWorkHandoff,
     PrepareHandoffRequest,
+    ProfilePolicyResponse,
     PromptConfiguration,
     PromptDemonstrationResult,
     ProposeExperienceRequest,
@@ -123,6 +128,7 @@ from powercontext.http import (
     ProposeSkillRequest,
     PublishArtifactRequest,
     PublishRemoteSkillRequest,
+    PutProfilePolicyRequest,
     ReadinessResponse,
     ReconcileRemoteSkillsRequest,
     ReconcileRemoteSkillsResponse,
@@ -192,12 +198,14 @@ from powercontext.http._generated.operations import (
     CREATE_REMOTE_SKILL_TARGET,
     CREATE_SCOPE,
     CREATE_SOURCE,
+    CREATE_SUBJECT_SOURCE,
     CREATE_WORK_CONTRACT,
     DOWNLOAD_REMOTE_SKILL_PACKAGE,
     DOWNLOAD_SKILL_PACKAGE,
     ENROLL_REMOTE_SKILL_TARGET,
     FINALIZE_HANDOFF,
     FLUSH_MEMORY,
+    FLUSH_PROFILE,
     GENERATE_EXPERIENCE,
     GENERATE_PROMPT_DEMONSTRATIONS,
     GENERATE_SKILL,
@@ -214,6 +222,7 @@ from powercontext.http._generated.operations import (
     GET_LIVENESS,
     GET_MEMORY_ENTRY,
     GET_MEMORY_ENTRY_TAGS,
+    GET_PROFILE_POLICY,
     GET_PROMPT_CONFIGURATION,
     GET_READINESS,
     GET_SCOPE,
@@ -243,6 +252,7 @@ from powercontext.http._generated.operations import (
     PROPOSE_SKILL_PACKAGE,
     PUBLISH_ARTIFACT,
     PUBLISH_REMOTE_SKILL,
+    PUT_PROFILE_POLICY,
     QUERY_ARTIFACT_TAGS,
     RECONCILE_REMOTE_SKILLS,
     RECORD_REMOTE_SKILL_RECEIPT,
@@ -520,6 +530,21 @@ class PowerContextClient:
         """Create one durable Source without invoking generation."""
 
         return await self._request(CREATE_SOURCE, request, path_parameters={"scope_id": scope_id})
+
+    async def create_subject_source(
+        self, scope_id: str, request: CreateSubjectSourceRequest
+    ) -> CreateSubjectSourceResponse:
+        """Resolve a subject binding and atomically write both Sources."""
+        return await self._request(CREATE_SUBJECT_SOURCE, request, path_parameters={"scope_id": scope_id})
+
+    async def get_profile_policy(self, scope_id: str) -> ProfilePolicyResponse:
+        return await self._request(GET_PROFILE_POLICY, path_parameters={"scope_id": scope_id})
+
+    async def put_profile_policy(self, scope_id: str, request: PutProfilePolicyRequest) -> ProfilePolicyResponse:
+        return await self._request(PUT_PROFILE_POLICY, request, path_parameters={"scope_id": scope_id})
+
+    async def flush_profile(self, request: FlushProfileRequest) -> FlushProfileResponse:
+        return await self._request(FLUSH_PROFILE, request)
 
     async def get_source(self, scope_id: str, source_type: str, source_id: str) -> SourceRecord:
         """Read one exact Source in a Scope and Source type."""
