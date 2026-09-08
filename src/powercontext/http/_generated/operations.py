@@ -25,6 +25,9 @@ from powercontext.http._generated.models import (
     ArtifactPage,
     ArtifactPublication,
     ArtifactRevision,
+    ArtifactRevisionPage,
+    ArtifactTagPage,
+    ArtifactTagSet,
     Capabilities,
     CaptureContentSourceRequest,
     CaptureContentSourceResponse,
@@ -50,6 +53,7 @@ from powercontext.http._generated.models import (
     FlushMemoryResponse,
     GeneratedCandidateResponse,
     GenerateExperienceRequest,
+    GeneratePromptDemonstrationsRequest,
     GenerateSkillRequest,
     GetArtifactCandidateRequest,
     GetConnectorCheckpointRequest,
@@ -72,6 +76,7 @@ from powercontext.http._generated.models import (
     ListAccessResourcesRequest,
     ListAccessRolesRequest,
     ListArtifactCandidatesRequest,
+    ListArtifactRevisionsRequest,
     ListArtifactsRequest,
     ListExternalSkillsRequest,
     ListExternalSkillsResponse,
@@ -90,11 +95,14 @@ from powercontext.http._generated.models import (
     PreparedHandoff,
     PreparedWorkHandoff,
     PrepareHandoffRequest,
+    PromptConfiguration,
+    PromptDemonstrationResult,
     ProposeExperienceRequest,
     ProposeSkillPackageRequest,
     ProposeSkillRequest,
     PublishArtifactRequest,
     PublishRemoteSkillRequest,
+    QueryArtifactTagsRequest,
     ReadinessResponse,
     ReconcileRemoteSkillsRequest,
     ReconcileRemoteSkillsResponse,
@@ -112,6 +120,7 @@ from powercontext.http._generated.models import (
     RenameRemoteSkillTargetRequest,
     ReplaceAccessBindingRequest,
     ReplaceArtifactRequest,
+    ReplaceArtifactTagsRequest,
     ResolveExternalSkillRequest,
     ResolveScopeBindingRequest,
     ResolveScopeSelectionRequest,
@@ -2096,9 +2105,7 @@ CREATE_ARTIFACT = Operation[CreateArtifactRequest, ArtifactCreated](
         503: {"$ref": "#/components/responses/Unavailable"},
         500: {"$ref": "#/components/responses/InternalError"},
     },
-    access=AccessRequirement(
-        action="scope.contribute", resource="scope", scope_id_field="scope_id", resolver="request"
-    ),
+    access=AccessRequirement(action=None, resource=None, scope_id_field=None, resolver="create_artifact_access"),
 )
 
 LIST_ARTIFACTS = Operation[ListArtifactsRequest, ArtifactPage](
@@ -2198,6 +2205,167 @@ REPLACE_ARTIFACT = Operation[ReplaceArtifactRequest, ArtifactRevision](
     access=AccessRequirement(action=None, resource=None, scope_id_field=None, resolver="path_artifact_write_access"),
 )
 
+GET_ARTIFACT_TAGS = Operation[None, ArtifactTagSet](
+    method="GET",
+    path="/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}/tags",
+    operation_id="get_artifact_tags",
+    request_type=None,
+    request_location=None,
+    path_parameters=("scope_id", "family", "artifact_id"),
+    response_type=ArtifactTagSet,
+    success_status=200,
+    summary="Read Artifact tags",
+    tags=("artifact-tags",),
+    scope_mode="none",
+    responses={
+        200: {
+            "description": "Complete current target-local tag set.",
+            "headers": {
+                "ETag": {"description": "Opaque target-bound tag state validator.", "schema": {"type": "string"}}
+            },
+        },
+        304: {
+            "description": "The target tag set has not changed.",
+            "headers": {"ETag": {"schema": {"type": "string"}}},
+        },
+        400: {"$ref": "#/components/responses/BadRequest"},
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(action=None, resource=None, scope_id_field=None, resolver="path_artifact_read_access"),
+)
+
+REPLACE_ARTIFACT_TAGS = Operation[ReplaceArtifactTagsRequest, ArtifactTagSet](
+    method="PUT",
+    path="/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}/tags",
+    operation_id="replace_artifact_tags",
+    request_type=ReplaceArtifactTagsRequest,
+    request_location="body",
+    path_parameters=("scope_id", "family", "artifact_id"),
+    response_type=ArtifactTagSet,
+    success_status=200,
+    summary="Replace Artifact tags",
+    tags=("artifact-tags",),
+    scope_mode="none",
+    responses={
+        200: {
+            "description": "Complete current target-local tag set.",
+            "headers": {
+                "ETag": {"description": "Opaque target-bound tag state validator.", "schema": {"type": "string"}}
+            },
+        },
+        412: {"$ref": "#/components/responses/PreconditionFailed"},
+        428: {"$ref": "#/components/responses/PreconditionRequired"},
+        400: {"$ref": "#/components/responses/BadRequest"},
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(
+        action=None, resource=None, scope_id_field=None, resolver="path_artifact_tags_write_access"
+    ),
+)
+
+GET_MEMORY_ENTRY_TAGS = Operation[None, ArtifactTagSet](
+    method="GET",
+    path="/v1/scopes/{scope_id}/artifacts/memory/{artifact_id}/entries/{entry_id}/tags",
+    operation_id="get_memory_entry_tags",
+    request_type=None,
+    request_location=None,
+    path_parameters=("scope_id", "artifact_id", "entry_id"),
+    response_type=ArtifactTagSet,
+    success_status=200,
+    summary="Read Memory entry tags",
+    tags=("artifact-tags",),
+    scope_mode="none",
+    responses={
+        200: {
+            "description": "Complete current target-local tag set.",
+            "headers": {
+                "ETag": {"description": "Opaque target-bound tag state validator.", "schema": {"type": "string"}}
+            },
+        },
+        304: {
+            "description": "The target tag set has not changed.",
+            "headers": {"ETag": {"schema": {"type": "string"}}},
+        },
+        400: {"$ref": "#/components/responses/BadRequest"},
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(action=None, resource=None, scope_id_field=None, resolver="path_memory_entry_read_access"),
+)
+
+REPLACE_MEMORY_ENTRY_TAGS = Operation[ReplaceArtifactTagsRequest, ArtifactTagSet](
+    method="PUT",
+    path="/v1/scopes/{scope_id}/artifacts/memory/{artifact_id}/entries/{entry_id}/tags",
+    operation_id="replace_memory_entry_tags",
+    request_type=ReplaceArtifactTagsRequest,
+    request_location="body",
+    path_parameters=("scope_id", "artifact_id", "entry_id"),
+    response_type=ArtifactTagSet,
+    success_status=200,
+    summary="Replace Memory entry tags",
+    tags=("artifact-tags",),
+    scope_mode="none",
+    responses={
+        200: {
+            "description": "Complete current target-local tag set.",
+            "headers": {
+                "ETag": {"description": "Opaque target-bound tag state validator.", "schema": {"type": "string"}}
+            },
+        },
+        412: {"$ref": "#/components/responses/PreconditionFailed"},
+        428: {"$ref": "#/components/responses/PreconditionRequired"},
+        400: {"$ref": "#/components/responses/BadRequest"},
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(
+        action=None, resource=None, scope_id_field=None, resolver="path_memory_entry_write_access"
+    ),
+)
+
+QUERY_ARTIFACT_TAGS = Operation[QueryArtifactTagsRequest, ArtifactTagPage](
+    method="POST",
+    path="/v1/scopes/{scope_id}/artifact-tags/query",
+    operation_id="query_artifact_tags",
+    request_type=QueryArtifactTagsRequest,
+    request_location="body",
+    path_parameters=("scope_id",),
+    response_type=ArtifactTagPage,
+    success_status=200,
+    summary="Query targets by exact custom tags",
+    tags=("artifact-tags",),
+    scope_mode="none",
+    responses={
+        200: {"description": "Current visible matches in family, target type, Artifact ID, and target ID order."},
+        400: {"$ref": "#/components/responses/BadRequest"},
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        410: {"$ref": "#/components/responses/CursorExpired"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(action=None, resource=None, scope_id_field=None, resolver="path_scope_read_access"),
+)
+
 GET_ARTIFACT_REVISION = Operation[None, ArtifactRevision](
     method="GET",
     path="/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}/revisions/{revision}",
@@ -2223,6 +2391,86 @@ GET_ARTIFACT_REVISION = Operation[None, ArtifactRevision](
         500: {"$ref": "#/components/responses/InternalError"},
     },
     access=AccessRequirement(action=None, resource=None, scope_id_field=None, resolver="path_artifact_read_access"),
+)
+
+LIST_ARTIFACT_REVISIONS = Operation[ListArtifactRevisionsRequest, ArtifactRevisionPage](
+    method="GET",
+    path="/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}/revisions",
+    operation_id="list_artifact_revisions",
+    request_type=ListArtifactRevisionsRequest,
+    request_location="query",
+    path_parameters=("scope_id", "family", "artifact_id"),
+    response_type=ArtifactRevisionPage,
+    success_status=200,
+    summary="List immutable Artifact revisions",
+    tags=("artifacts",),
+    scope_mode="none",
+    responses={
+        200: {"description": "One snapshot-bounded page of immutable revisions without content."},
+        400: {"$ref": "#/components/responses/BadRequest"},
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        410: {"$ref": "#/components/responses/CursorExpired"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(action=None, resource=None, scope_id_field=None, resolver="path_artifact_read_access"),
+)
+
+GET_PROMPT_CONFIGURATION = Operation[None, PromptConfiguration](
+    method="GET",
+    path="/v1/scopes/{scope_id}/prompts/{prompt_key}",
+    operation_id="get_prompt_configuration",
+    request_type=None,
+    request_location=None,
+    path_parameters=("scope_id", "prompt_key"),
+    response_type=PromptConfiguration,
+    success_status=200,
+    summary="Read scoped Prompt configuration and built-in defaults",
+    tags=("prompts",),
+    scope_mode="none",
+    responses={
+        200: {
+            "description": "Current configuration and Runtime-owned default guidance.",
+            "headers": {
+                "Cache-Control": {"schema": {"type": "string", "enum": ["no-store"]}},
+                "X-PowerContext-Request-ID": {"$ref": "#/components/headers/RequestId"},
+            },
+        },
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(action="scope.read", resource="scope", scope_id_field="scope_id", resolver="request"),
+)
+
+GENERATE_PROMPT_DEMONSTRATIONS = Operation[GeneratePromptDemonstrationsRequest, PromptDemonstrationResult](
+    method="POST",
+    path="/v1/scopes/{scope_id}/prompts/{prompt_key}/demonstrations",
+    operation_id="generate_prompt_demonstrations",
+    request_type=GeneratePromptDemonstrationsRequest,
+    request_location="body",
+    path_parameters=("scope_id", "prompt_key"),
+    response_type=PromptDemonstrationResult,
+    success_status=200,
+    summary="Generate editable Prompt demonstrations without saving",
+    tags=("prompts",),
+    scope_mode="none",
+    responses={
+        200: {"description": "Validated suggestions; no Artifact or head was written."},
+        401: {"$ref": "#/components/responses/Unauthorized"},
+        403: {"$ref": "#/components/responses/Forbidden"},
+        404: {"$ref": "#/components/responses/NotFound"},
+        422: {"$ref": "#/components/responses/InvalidRequest"},
+        503: {"$ref": "#/components/responses/Unavailable"},
+        500: {"$ref": "#/components/responses/InternalError"},
+    },
+    access=AccessRequirement(action="scope.admin", resource="scope", scope_id_field="scope_id", resolver="request"),
 )
 
 GET_ACCESS_PRINCIPAL = Operation[None, AccessMeResponse](

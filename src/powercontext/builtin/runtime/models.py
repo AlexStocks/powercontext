@@ -34,6 +34,7 @@ from powercontext.builtin.artifacts.memory.models import (
     MemorySearchMode,
     MemoryUsedSearchMode,
 )
+from powercontext.builtin.artifacts.prompt import PromptCapability
 from powercontext.builtin.artifacts.skill import (
     ExternalSkillProviderScan,
     ExternalSkillResolution,
@@ -49,6 +50,7 @@ from powercontext.builtin.review import (
 )
 from powercontext.builtin.review.generation import SkillGenerationOrigin
 from powercontext.builtin.sources import ExternalSkillImportMode
+from powercontext.builtin.tags import TagFilter
 from powercontext.sources import ConnectorBinding, SourceObservation, SourceRef
 
 PreparedContextSchema: TypeAlias = Literal["powercontext.prepared-context.v1"]
@@ -108,6 +110,7 @@ class RuntimeCapabilities(BaseModel):
     external_skill_registry: bool = False
     memory_search_modes: tuple[MemorySearchMode, ...]
     handoff_generation: bool = False
+    prompts: dict[str, PromptCapability] = Field(default_factory=dict)
     context_versions: tuple[PreparedContextSchema, ...] = (PREPARED_CONTEXT_SCHEMA,)
 
 
@@ -153,6 +156,7 @@ class SearchMemoryRequest(BaseModel):
     query: str
     limit: int = 10
     mode: MemorySearchMode = "auto"
+    tag_filter: TagFilter | None = None
 
 
 class MemorySearchPage(BaseModel):

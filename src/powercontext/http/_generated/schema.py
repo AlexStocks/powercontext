@@ -2306,12 +2306,14 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "Create returns 409 when it "
                 "already exists and callers "
                 "must use Replace to update "
-                "it.",
+                "it. Creating a Prompt "
+                "requires scope.admin "
+                "because its configuration "
+                "affects the whole Scope; "
+                "other families require "
+                "scope.contribute.",
                 "operationId": "create_artifact",
-                "x-powercontext-access": {
-                    "action": "scope.contribute",
-                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
-                },
+                "x-powercontext-access": {"resolver": "create_artifact_access"},
                 "parameters": [
                     {
                         "name": "scope_id",
@@ -2355,6 +2357,25 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 },
                 "parameters": [
                     {
+                        "name": "tag",
+                        "in": "query",
+                        "required": False,
+                        "style": "form",
+                        "explode": True,
+                        "schema": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 16,
+                            "items": {"type": "string", "minLength": 1, "maxLength": 64},
+                        },
+                    },
+                    {
+                        "name": "tag_match",
+                        "in": "query",
+                        "required": False,
+                        "schema": {"$ref": "#/components/schemas/TagMatch"},
+                    },
+                    {
                         "name": "scope_id",
                         "in": "path",
                         "required": True,
@@ -2364,7 +2385,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "name": "family",
                         "in": "path",
                         "required": True,
-                        "schema": {"type": "string", "enum": ["memory", "experience", "skill", "handoff"]},
+                        "schema": {"type": "string", "enum": ["memory", "experience", "skill", "handoff", "prompt"]},
                     },
                     {
                         "name": "limit",
@@ -2412,7 +2433,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "name": "family",
                         "in": "path",
                         "required": True,
-                        "schema": {"type": "string", "enum": ["memory", "experience", "skill", "handoff"]},
+                        "schema": {"type": "string", "enum": ["memory", "experience", "skill", "handoff", "prompt"]},
                     },
                     {
                         "name": "artifact_id",
@@ -2454,7 +2475,44 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             "put": {
                 "tags": ["artifacts"],
                 "summary": "Replace the current Artifact head",
-                "description": "Commit a complete next revision when If-Match identifies the current head.",
+                "description": "Commit "
+                "a "
+                "complete "
+                "next "
+                "revision "
+                "when "
+                "If-Match "
+                "identifies "
+                "the "
+                "current "
+                "head. "
+                "Replacing "
+                "a "
+                "Prompt "
+                "requires "
+                "current "
+                "scope.admin "
+                "authority, "
+                "including "
+                "switching "
+                "to "
+                "Auto "
+                "and "
+                "restoring "
+                "an "
+                "earlier "
+                "revision. "
+                "Artifact "
+                "ownership "
+                "does "
+                "not "
+                "authorize "
+                "Prompt "
+                "replacement "
+                "after "
+                "Scope "
+                "role "
+                "revocation.",
                 "operationId": "replace_artifact",
                 "x-powercontext-access": {"resolver": "path_artifact_write_access"},
                 "parameters": [
@@ -2468,7 +2526,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "name": "family",
                         "in": "path",
                         "required": True,
-                        "schema": {"type": "string", "enum": ["memory", "experience", "skill", "handoff"]},
+                        "schema": {"type": "string", "enum": ["memory", "experience", "skill", "handoff", "prompt"]},
                     },
                     {
                         "name": "artifact_id",
@@ -2509,6 +2567,354 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 },
             },
         },
+        "/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}/tags": {
+            "get": {
+                "tags": ["artifact-tags"],
+                "summary": "Read Artifact tags",
+                "description": "Scope-local "
+                "labels "
+                "follow "
+                "logical "
+                "identity "
+                "without "
+                "changing "
+                "content "
+                "revisions. "
+                "Inactive "
+                "manifest "
+                "entries "
+                "remain "
+                "valid "
+                "targets.",
+                "operationId": "get_artifact_tags",
+                "x-powercontext-access": {"resolver": "path_artifact_read_access"},
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256},
+                    },
+                    {
+                        "name": "family",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"$ref": "#/components/schemas/TaggableArtifactFamily"},
+                    },
+                    {
+                        "name": "artifact_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 128},
+                    },
+                    {
+                        "name": "If-None-Match",
+                        "in": "header",
+                        "required": False,
+                        "schema": {"type": "string", "minLength": 1},
+                    },
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Complete current target-local tag set.",
+                        "headers": {
+                            "ETag": {
+                                "schema": {"type": "string"},
+                                "description": "Opaque target-bound tag state validator.",
+                            }
+                        },
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ArtifactTagSet"}}},
+                    },
+                    "304": {
+                        "description": "The target tag set has not changed.",
+                        "headers": {"ETag": {"schema": {"type": "string"}}},
+                    },
+                    "400": {"$ref": "#/components/responses/BadRequest"},
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            },
+            "put": {
+                "tags": ["artifact-tags"],
+                "summary": "Replace Artifact tags",
+                "description": "Scope-local "
+                "labels "
+                "follow "
+                "logical "
+                "identity "
+                "without "
+                "changing "
+                "content "
+                "revisions. "
+                "Inactive "
+                "manifest "
+                "entries "
+                "remain "
+                "valid "
+                "targets.",
+                "operationId": "replace_artifact_tags",
+                "x-powercontext-access": {"resolver": "path_artifact_tags_write_access"},
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256},
+                    },
+                    {
+                        "name": "family",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"$ref": "#/components/schemas/TaggableArtifactFamily"},
+                    },
+                    {
+                        "name": "artifact_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 128},
+                    },
+                    {
+                        "name": "If-Match",
+                        "in": "header",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1},
+                    },
+                ],
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/ReplaceArtifactTagsRequest"}}
+                    },
+                },
+                "responses": {
+                    "200": {
+                        "description": "Complete current target-local tag set.",
+                        "headers": {
+                            "ETag": {
+                                "schema": {"type": "string"},
+                                "description": "Opaque target-bound tag state validator.",
+                            }
+                        },
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ArtifactTagSet"}}},
+                    },
+                    "412": {"$ref": "#/components/responses/PreconditionFailed"},
+                    "428": {"$ref": "#/components/responses/PreconditionRequired"},
+                    "400": {"$ref": "#/components/responses/BadRequest"},
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            },
+        },
+        "/v1/scopes/{scope_id}/artifacts/memory/{artifact_id}/entries/{entry_id}/tags": {
+            "get": {
+                "tags": ["artifact-tags"],
+                "summary": "Read Memory entry tags",
+                "description": "Scope-local "
+                "labels "
+                "follow "
+                "logical "
+                "identity "
+                "without "
+                "changing "
+                "content "
+                "revisions. "
+                "Inactive "
+                "manifest "
+                "entries "
+                "remain "
+                "valid "
+                "targets.",
+                "operationId": "get_memory_entry_tags",
+                "x-powercontext-access": {"resolver": "path_memory_entry_read_access"},
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256},
+                    },
+                    {
+                        "name": "artifact_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 128},
+                    },
+                    {
+                        "name": "entry_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 128},
+                    },
+                    {
+                        "name": "If-None-Match",
+                        "in": "header",
+                        "required": False,
+                        "schema": {"type": "string", "minLength": 1},
+                    },
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Complete current target-local tag set.",
+                        "headers": {
+                            "ETag": {
+                                "schema": {"type": "string"},
+                                "description": "Opaque target-bound tag state validator.",
+                            }
+                        },
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ArtifactTagSet"}}},
+                    },
+                    "304": {
+                        "description": "The target tag set has not changed.",
+                        "headers": {"ETag": {"schema": {"type": "string"}}},
+                    },
+                    "400": {"$ref": "#/components/responses/BadRequest"},
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            },
+            "put": {
+                "tags": ["artifact-tags"],
+                "summary": "Replace Memory entry tags",
+                "description": "Scope-local "
+                "labels "
+                "follow "
+                "logical "
+                "identity "
+                "without "
+                "changing "
+                "content "
+                "revisions. "
+                "Inactive "
+                "manifest "
+                "entries "
+                "remain "
+                "valid "
+                "targets.",
+                "operationId": "replace_memory_entry_tags",
+                "x-powercontext-access": {"resolver": "path_memory_entry_write_access"},
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256},
+                    },
+                    {
+                        "name": "artifact_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 128},
+                    },
+                    {
+                        "name": "entry_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 128},
+                    },
+                    {
+                        "name": "If-Match",
+                        "in": "header",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1},
+                    },
+                ],
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/ReplaceArtifactTagsRequest"}}
+                    },
+                },
+                "responses": {
+                    "200": {
+                        "description": "Complete current target-local tag set.",
+                        "headers": {
+                            "ETag": {
+                                "schema": {"type": "string"},
+                                "description": "Opaque target-bound tag state validator.",
+                            }
+                        },
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ArtifactTagSet"}}},
+                    },
+                    "412": {"$ref": "#/components/responses/PreconditionFailed"},
+                    "428": {"$ref": "#/components/responses/PreconditionRequired"},
+                    "400": {"$ref": "#/components/responses/BadRequest"},
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            },
+        },
+        "/v1/scopes/{scope_id}/artifact-tags/query": {
+            "post": {
+                "tags": ["artifact-tags"],
+                "summary": "Query targets by exact custom tags",
+                "description": "Match all or any "
+                "normalized "
+                "labels within "
+                "one Scope before "
+                "pagination. Tags "
+                "never grant "
+                "visibility or "
+                "enter model "
+                "prompts.",
+                "operationId": "query_artifact_tags",
+                "x-powercontext-access": {"resolver": "path_scope_read_access"},
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256},
+                    }
+                ],
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/QueryArtifactTagsRequest"}}
+                    },
+                },
+                "responses": {
+                    "200": {
+                        "description": "Current "
+                        "visible "
+                        "matches "
+                        "in "
+                        "family, "
+                        "target "
+                        "type, "
+                        "Artifact "
+                        "ID, "
+                        "and "
+                        "target "
+                        "ID "
+                        "order.",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ArtifactTagPage"}}},
+                    },
+                    "400": {"$ref": "#/components/responses/BadRequest"},
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "410": {"$ref": "#/components/responses/CursorExpired"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            }
+        },
         "/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}/revisions/{revision}": {
             "get": {
                 "tags": ["artifacts"],
@@ -2526,7 +2932,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "name": "family",
                         "in": "path",
                         "required": True,
-                        "schema": {"type": "string", "enum": ["memory", "experience", "skill", "handoff"]},
+                        "schema": {"type": "string", "enum": ["memory", "experience", "skill", "handoff", "prompt"]},
                     },
                     {
                         "name": "artifact_id",
@@ -2541,6 +2947,253 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "description": "The exact immutable Artifact revision.",
                         "headers": {"X-PowerContext-Request-ID": {"$ref": "#/components/headers/RequestId"}},
                         "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ArtifactRevision"}}},
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            }
+        },
+        "/v1/scopes/{scope_id}/artifacts/{family}/{artifact_id}/revisions": {
+            "get": {
+                "tags": ["artifacts"],
+                "summary": "List immutable Artifact revisions",
+                "description": "Descending "
+                "history "
+                "with "
+                "an "
+                "opaque "
+                "cursor "
+                "bound "
+                "to "
+                "the "
+                "Scope, "
+                "Artifact, "
+                "and "
+                "initial "
+                "revision "
+                "snapshot.",
+                "operationId": "list_artifact_revisions",
+                "x-powercontext-access": {"resolver": "path_artifact_read_access"},
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
+                    },
+                    {
+                        "name": "family",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "enum": ["memory", "experience", "skill", "handoff", "prompt"]},
+                    },
+                    {
+                        "name": "artifact_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[\\x21-\\x7E]+$"},
+                    },
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "required": False,
+                        "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
+                    },
+                    {
+                        "name": "cursor",
+                        "in": "query",
+                        "required": False,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 4096},
+                    },
+                ],
+                "responses": {
+                    "200": {
+                        "description": "One snapshot-bounded page of immutable revisions without content.",
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/ArtifactRevisionPage"}}
+                        },
+                    },
+                    "400": {"$ref": "#/components/responses/BadRequest"},
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "410": {"$ref": "#/components/responses/CursorExpired"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            }
+        },
+        "/v1/scopes/{scope_id}/prompts/{prompt_key}": {
+            "get": {
+                "tags": ["prompts"],
+                "summary": "Read scoped Prompt configuration and built-in defaults",
+                "description": "Read one saved "
+                "Prompt head and "
+                "the current "
+                "Runtime's "
+                "built-in "
+                "instructions "
+                "without creating "
+                "a revision or "
+                "calling "
+                "inference. Auto "
+                "selects the "
+                "built-in "
+                "instructions "
+                "even when an "
+                "Auto revision "
+                "exists. Disabled "
+                "built-in "
+                "operations "
+                "remain readable; "
+                "effective and "
+                "builtin are null "
+                "for externally "
+                "managed "
+                "components. "
+                "Status describes "
+                "availability, "
+                "not whether "
+                "returning the "
+                "configured text "
+                "executes it. A "
+                "saved head "
+                "additionally "
+                "requires its "
+                "Artifact read "
+                "permission. "
+                "artifact_etag is "
+                "the condition "
+                "for replacing "
+                "that Artifact; "
+                "it is not an "
+                "ETag for this "
+                "combined view.",
+                "operationId": "get_prompt_configuration",
+                "x-powercontext-access": {
+                    "action": "scope.read",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
+                    },
+                    {
+                        "name": "prompt_key",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"$ref": "#/components/schemas/PromptKey"},
+                    },
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Current configuration and Runtime-owned default guidance.",
+                        "headers": {
+                            "Cache-Control": {"schema": {"type": "string", "enum": ["no-store"]}},
+                            "X-PowerContext-Request-ID": {"$ref": "#/components/headers/RequestId"},
+                        },
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/PromptConfiguration"}}
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Unauthorized"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"$ref": "#/components/responses/NotFound"},
+                    "422": {"$ref": "#/components/responses/InvalidRequest"},
+                    "503": {"$ref": "#/components/responses/Unavailable"},
+                    "500": {"$ref": "#/components/responses/InternalError"},
+                },
+            }
+        },
+        "/v1/scopes/{scope_id}/prompts/{prompt_key}/demonstrations": {
+            "post": {
+                "tags": ["prompts"],
+                "summary": "Generate editable Prompt demonstrations without saving",
+                "description": "Generate "
+                "exactly "
+                "the "
+                "requested "
+                "number "
+                "of "
+                "typed "
+                "input/output "
+                "suggestions "
+                "for "
+                "a "
+                "supported "
+                "built-in "
+                "operation. "
+                "The "
+                "caller "
+                "must "
+                "explicitly "
+                "create "
+                "or "
+                "replace "
+                "a "
+                "Prompt "
+                "Artifact "
+                "to "
+                "save "
+                "suggestions. "
+                "Requires "
+                "scope.admin, "
+                "matching "
+                "Prompt "
+                "creation "
+                "and "
+                "replacement.",
+                "operationId": "generate_prompt_demonstrations",
+                "x-powercontext-access": {
+                    "action": "scope.admin",
+                    "resource": {"type": "scope", "scope-id-from": "scope_id"},
+                },
+                "parameters": [
+                    {
+                        "name": "scope_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": ".*\\S.*"},
+                    },
+                    {
+                        "name": "prompt_key",
+                        "in": "path",
+                        "required": True,
+                        "schema": {
+                            "type": "string",
+                            "enum": [
+                                "memory.extract",
+                                "memory.rerank",
+                                "experience.incubate",
+                                "experience.generate",
+                                "skill.generate",
+                                "handoff.generate",
+                            ],
+                        },
+                    },
+                ],
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": {"$ref": "#/components/schemas/GeneratePromptDemonstrationsRequest"}
+                        }
+                    },
+                },
+                "responses": {
+                    "200": {
+                        "description": "Validated suggestions; no Artifact or head was written.",
+                        "content": {
+                            "application/json": {"schema": {"$ref": "#/components/schemas/PromptDemonstrationResult"}}
+                        },
                     },
                     "401": {"$ref": "#/components/responses/Unauthorized"},
                     "403": {"$ref": "#/components/responses/Forbidden"},
@@ -2828,6 +3481,15 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "items": {"items": {"$ref": "#/components/schemas/ArtifactCollectionItem"}, "type": "array"},
                     "next_cursor": {"type": "string", "nullable": True},
                 },
+                "type": "object",
+                "required": ["items", "next_cursor"],
+            },
+            "ArtifactRevisionPage": {
+                "properties": {
+                    "items": {"items": {"$ref": "#/components/schemas/ArtifactCollectionItem"}, "type": "array"},
+                    "next_cursor": {"type": "string", "nullable": True},
+                },
+                "additionalProperties": False,
                 "type": "object",
                 "required": ["items", "next_cursor"],
             },
@@ -3219,6 +3881,11 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             },
             "Capabilities": {
                 "properties": {
+                    "prompts": {
+                        "additionalProperties": {"$ref": "#/components/schemas/PromptCapability"},
+                        "type": "object",
+                        "default": {},
+                    },
                     "source_types": {"items": {"type": "string"}, "type": "array"},
                     "artifact_families": {"items": {"type": "string"}, "type": "array"},
                     "memory_extraction": {
@@ -4023,6 +4690,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             },
             "HandoffContent": {
                 "properties": {
+                    "generation": {"$ref": "#/components/schemas/HandoffGenerationMetadata", "nullable": True},
                     "schema": {"$ref": "#/components/schemas/HandoffSchema"},
                     "objective": {"type": "string", "maxLength": 8192, "minLength": 1, "pattern": ".*\\S.*"},
                     "state": {
@@ -4045,6 +4713,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             },
             "HandoffDraft": {
                 "properties": {
+                    "generation": {"$ref": "#/components/schemas/HandoffGenerationEnvelope", "nullable": True},
                     "objective": {"type": "string", "maxLength": 8192, "minLength": 1, "pattern": ".*\\S.*"},
                     "state": {
                         "items": {"$ref": "#/components/schemas/HandoffStatement"},
@@ -4166,6 +4835,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             },
             "PreparedHandoff": {
                 "properties": {
+                    "generation": {"$ref": "#/components/schemas/HandoffGenerationEnvelope", "nullable": True},
                     "schema": {"$ref": "#/components/schemas/PreparedHandoffSchema"},
                     "scope_id": {"type": "string"},
                     "base": {"$ref": "#/components/schemas/ArtifactReference", "nullable": True},
@@ -4175,6 +4845,56 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "type": "object",
                 "required": ["schema", "scope_id", "base", "content"],
             },
+            "HandoffGenerationEnvelope": {
+                "properties": {"receipt": {"type": "string", "maxLength": 8192, "minLength": 1}},
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["receipt"],
+                "description": "Transient "
+                "Server-authenticated "
+                "generation receipt. "
+                "Preserve it across "
+                "finalize and commit. It "
+                "grants no additional "
+                "authority and is never "
+                "stored in the Artifact.",
+            },
+            "HandoffGenerationMetadata": {
+                "properties": {
+                    "scope_id": {"type": "string", "maxLength": 256, "minLength": 1},
+                    "prompt_key": {"$ref": "#/components/schemas/HandoffPromptKey"},
+                    "selection": {"type": "string", "enum": ["built_in", "artifact"]},
+                    "artifact": {"$ref": "#/components/schemas/ArtifactReference", "nullable": True},
+                    "definition_version": {"type": "string", "maxLength": 256, "minLength": 1},
+                    "builtin_version": {"type": "string", "maxLength": 256, "minLength": 1},
+                    "compiled_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                    "original_draft_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                    "edit_status": {"type": "string", "enum": ["unchanged", "edited"]},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": [
+                    "scope_id",
+                    "prompt_key",
+                    "selection",
+                    "artifact",
+                    "definition_version",
+                    "builtin_version",
+                    "compiled_digest",
+                    "original_draft_digest",
+                    "edit_status",
+                ],
+                "description": "Server-derived, "
+                "persisted generation "
+                "origin. Raw copied "
+                "metadata is not accepted "
+                "as verified input "
+                "without a valid receipt. "
+                "Prompt references are "
+                "configuration lineage, "
+                "not factual citations.",
+            },
+            "HandoffPromptKey": {"type": "string", "enum": ["handoff.generate"]},
             "PreparedContext": {
                 "properties": {
                     "schema": {"$ref": "#/components/schemas/PreparedContextSchema"},
@@ -5071,6 +5791,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             },
             "ListMemoryEntriesRequest": {
                 "properties": {
+                    "tag_filter": {"$ref": "#/components/schemas/TagFilter"},
                     "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
                     "include_inactive": {
                         "type": "boolean",
@@ -5508,6 +6229,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             },
             "SearchMemoryRequest": {
                 "properties": {
+                    "tag_filter": {"$ref": "#/components/schemas/TagFilter"},
                     "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
                     "query": {"type": "string", "maxLength": 8192, "minLength": 1},
                     "limit": {"type": "integer", "maximum": 50.0, "minimum": 1.0, "default": 10},
@@ -5576,6 +6298,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     {"$ref": "#/components/schemas/CreateExperienceArtifactRequest"},
                     {"$ref": "#/components/schemas/CreateSkillArtifactRequest"},
                     {"$ref": "#/components/schemas/CreateHandoffArtifactRequest"},
+                    {"$ref": "#/components/schemas/CreatePromptArtifactRequest"},
                 ],
                 "discriminator": {
                     "propertyName": "family",
@@ -5584,8 +6307,19 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "experience": "#/components/schemas/CreateExperienceArtifactRequest",
                         "skill": "#/components/schemas/CreateSkillArtifactRequest",
                         "handoff": "#/components/schemas/CreateHandoffArtifactRequest",
+                        "prompt": "#/components/schemas/CreatePromptArtifactRequest",
                     },
                 },
+            },
+            "CreatePromptArtifactRequest": {
+                "properties": {
+                    "family": {"type": "string", "enum": ["prompt"]},
+                    "prompt_key": {"$ref": "#/components/schemas/PromptKey"},
+                    "content": {"$ref": "#/components/schemas/PromptContent"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["family", "prompt_key", "content"],
             },
             "CreateMemoryArtifactRequest": {
                 "properties": {
@@ -5705,8 +6439,196 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "type": "object",
                 "required": ["content"],
             },
+            "TaggableArtifactFamily": {
+                "type": "string",
+                "enum": ["memory", "experience", "skill", "handoff"],
+                "description": "Artifact families supporting logical tags; Prompt configurations are excluded.",
+            },
+            "TagMatch": {"type": "string", "enum": ["all", "any"]},
+            "TagTargetType": {"type": "string", "enum": ["artifact", "memory_entry"]},
+            "ArtifactTagTarget": {
+                "properties": {
+                    "type": {"type": "string", "enum": ["artifact"]},
+                    "family": {"$ref": "#/components/schemas/TaggableArtifactFamily"},
+                    "artifact_id": {"type": "string", "maxLength": 128, "minLength": 1},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["type", "family", "artifact_id"],
+            },
+            "MemoryEntryTagTarget": {
+                "properties": {
+                    "type": {"type": "string", "enum": ["memory_entry"]},
+                    "family": {"type": "string", "enum": ["memory"]},
+                    "artifact_id": {"type": "string", "maxLength": 128, "minLength": 1},
+                    "entry_id": {"type": "string", "maxLength": 128, "minLength": 1},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["type", "family", "artifact_id", "entry_id"],
+            },
+            "TagTarget": {
+                "oneOf": [
+                    {"$ref": "#/components/schemas/ArtifactTagTarget"},
+                    {"$ref": "#/components/schemas/MemoryEntryTagTarget"},
+                ],
+                "discriminator": {
+                    "propertyName": "type",
+                    "mapping": {
+                        "artifact": "#/components/schemas/ArtifactTagTarget",
+                        "memory_entry": "#/components/schemas/MemoryEntryTagTarget",
+                    },
+                },
+            },
+            "TagFilter": {
+                "properties": {
+                    "tags": {
+                        "items": {"type": "string", "maxLength": 64, "minLength": 1},
+                        "type": "array",
+                        "maxItems": 16,
+                        "minItems": 1,
+                    },
+                    "match": {"$ref": "#/components/schemas/TagMatch", "default": "all"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["tags"],
+            },
+            "ReplaceArtifactTagsRequest": {
+                "properties": {
+                    "tags": {
+                        "items": {"type": "string", "maxLength": 64, "minLength": 1},
+                        "type": "array",
+                        "maxItems": 32,
+                        "minItems": 0,
+                    }
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["tags"],
+                "description": "Replace all labels "
+                "atomically. Empty "
+                "clears the set. Labels "
+                "preserve display text, "
+                "use NFC then casefold "
+                "for exact matching, and "
+                "reject normalized "
+                "duplicates, outer "
+                "whitespace, and Unicode "
+                "control, surrogate or "
+                "unassigned characters.",
+            },
+            "QueryArtifactTagsRequest": {
+                "properties": {
+                    "tags": {
+                        "items": {"type": "string", "maxLength": 64, "minLength": 1},
+                        "type": "array",
+                        "maxItems": 16,
+                        "minItems": 1,
+                    },
+                    "match": {"$ref": "#/components/schemas/TagMatch", "default": "all"},
+                    "families": {
+                        "items": {"$ref": "#/components/schemas/TaggableArtifactFamily"},
+                        "type": "array",
+                        "maxItems": 4,
+                        "minItems": 1,
+                        "uniqueItems": True,
+                    },
+                    "target_types": {
+                        "items": {"$ref": "#/components/schemas/TagTargetType"},
+                        "type": "array",
+                        "maxItems": 2,
+                        "minItems": 1,
+                        "uniqueItems": True,
+                    },
+                    "include_inactive": {"type": "boolean", "default": False},
+                    "limit": {"type": "integer", "maximum": 100.0, "minimum": 1.0, "default": 50},
+                    "cursor": {"type": "string", "maxLength": 4096, "minLength": 1, "nullable": True},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["tags"],
+            },
+            "ArtifactTagSet": {
+                "properties": {
+                    "scope_id": {"type": "string"},
+                    "target": {"$ref": "#/components/schemas/TagTarget"},
+                    "tags": {
+                        "items": {"type": "string", "maxLength": 64, "minLength": 1},
+                        "type": "array",
+                        "maxItems": 32,
+                        "minItems": 0,
+                    },
+                    "tag_digest": {
+                        "type": "string",
+                        "pattern": "^sha256:[0-9a-f]{64}$",
+                        "description": "Digest "
+                        "of "
+                        "canonical "
+                        "display "
+                        "labels; "
+                        "informational, "
+                        "not a "
+                        "mutation "
+                        "precondition.",
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["scope_id", "target", "tags", "tag_digest"],
+            },
+            "TaggedTarget": {
+                "properties": {
+                    "scope_id": {"type": "string"},
+                    "target": {"$ref": "#/components/schemas/TagTarget"},
+                    "tags": {
+                        "items": {"type": "string", "maxLength": 64, "minLength": 1},
+                        "type": "array",
+                        "maxItems": 32,
+                        "minItems": 0,
+                    },
+                    "tag_digest": {
+                        "type": "string",
+                        "pattern": "^sha256:[0-9a-f]{64}$",
+                        "description": "Digest "
+                        "of "
+                        "canonical "
+                        "display "
+                        "labels; "
+                        "informational, "
+                        "not a "
+                        "mutation "
+                        "precondition.",
+                    },
+                    "reference": {
+                        "oneOf": [
+                            {"$ref": "#/components/schemas/ArtifactReference"},
+                            {"$ref": "#/components/schemas/MemoryCitation"},
+                        ]
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["scope_id", "target", "tags", "tag_digest", "reference"],
+            },
+            "ArtifactTagPage": {
+                "properties": {
+                    "items": {"items": {"$ref": "#/components/schemas/TaggedTarget"}, "type": "array"},
+                    "next_cursor": {"type": "string", "nullable": True},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["items", "next_cursor"],
+            },
             "ListArtifactsRequest": {
                 "properties": {
+                    "tag": {
+                        "items": {"type": "string", "maxLength": 64, "minLength": 1},
+                        "type": "array",
+                        "maxItems": 16,
+                        "minItems": 1,
+                    },
+                    "tag_match": {"$ref": "#/components/schemas/TagMatch"},
                     "limit": {"type": "integer", "maximum": 100.0, "minimum": 1.0, "default": 50},
                     "cursor": {"type": "string", "maxLength": 4096, "minLength": 1, "nullable": True},
                 },
@@ -5719,7 +6641,182 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     {"$ref": "#/components/schemas/ReplaceExperienceArtifactRequest"},
                     {"$ref": "#/components/schemas/ReplaceSkillArtifactRequest"},
                     {"$ref": "#/components/schemas/ReplaceHandoffArtifactRequest"},
+                    {"$ref": "#/components/schemas/ReplacePromptArtifactRequest"},
                 ]
+            },
+            "ReplacePromptArtifactRequest": {
+                "properties": {"content": {"$ref": "#/components/schemas/PromptContent"}},
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["content"],
+            },
+            "ListArtifactRevisionsRequest": {
+                "properties": {
+                    "limit": {"type": "integer", "maximum": 100.0, "minimum": 1.0, "default": 50},
+                    "cursor": {"type": "string", "maxLength": 4096, "minLength": 1, "nullable": True},
+                },
+                "additionalProperties": False,
+                "type": "object",
+            },
+            "PromptKey": {
+                "type": "string",
+                "enum": [
+                    "memory.extract",
+                    "memory.rerank",
+                    "experience.incubate",
+                    "experience.generate",
+                    "skill.generate",
+                    "handoff.generate",
+                ],
+            },
+            "PromptContent": {
+                "properties": {
+                    "schema_version": {"type": "string", "enum": ["powercontext.prompt.v1"]},
+                    "mode": {"type": "string", "enum": ["auto", "custom"]},
+                    "instructions": {"type": "string", "maxLength": 32768},
+                    "demonstrations": {
+                        "items": {"$ref": "#/components/schemas/PromptDemonstration"},
+                        "type": "array",
+                        "maxItems": 50,
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["schema_version", "mode", "instructions", "demonstrations"],
+                "description": "Canonical content is limited to 256 "
+                "KiB. Auto requires empty "
+                "instructions and demonstrations; "
+                "Custom requires non-blank trimmed "
+                "NFC instructions. Demonstrations "
+                "must match the registered operation "
+                "types.",
+            },
+            "PromptDemonstration": {
+                "properties": {
+                    "input": {"description": "Complete JSON input matching the registered Prompt Definition."},
+                    "expected_output": {
+                        "description": "Desired JSON output matching the registered Prompt Definition."
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["input", "expected_output"],
+                "description": "A typed input/output pair limited to 64 KiB of canonical JSON.",
+            },
+            "PromptCapability": {
+                "properties": {
+                    "status": {"type": "string", "enum": ["supported", "disabled", "unsupported"]},
+                    "reason": {
+                        "type": "string",
+                        "enum": ["operation_disabled", "provider_not_configured", "injected_component", None],
+                        "nullable": True,
+                    },
+                    "definition_version": {"type": "string"},
+                    "builtin_version": {"type": "string"},
+                    "builtin_profile": {"type": "string", "enum": ["coding", "conversation", None], "nullable": True},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["status", "reason", "definition_version", "builtin_version", "builtin_profile"],
+            },
+            "PromptInstructions": {
+                "properties": {
+                    "instructions": {
+                        "type": "string",
+                        "description": "Readable guidance; this is not the persisted Auto content representation.",
+                    },
+                    "demonstrations": {"items": {"$ref": "#/components/schemas/PromptDemonstration"}, "type": "array"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["instructions", "demonstrations"],
+            },
+            "BuiltinPromptInstructions": {
+                "properties": {
+                    "version": {"type": "string"},
+                    "profile": {"type": "string", "enum": ["coding", "conversation", None], "nullable": True},
+                    "instructions": {
+                        "type": "string",
+                        "description": "Exact default instructions from the active Runtime Prompt Definition.",
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["version", "profile", "instructions"],
+            },
+            "PromptConfiguration": {
+                "properties": {
+                    "scope_id": {"type": "string"},
+                    "prompt_key": {"$ref": "#/components/schemas/PromptKey"},
+                    "status": {"type": "string", "enum": ["supported", "disabled", "unsupported"]},
+                    "reason": {
+                        "type": "string",
+                        "enum": ["operation_disabled", "provider_not_configured", "injected_component", None],
+                        "nullable": True,
+                    },
+                    "mode": {"type": "string", "enum": ["auto", "custom"]},
+                    "artifact": {"allOf": [{"$ref": "#/components/schemas/ArtifactReference"}], "nullable": True},
+                    "artifact_etag": {
+                        "type": "string",
+                        "description": "ETag "
+                        "of "
+                        "the "
+                        "saved "
+                        "Artifact "
+                        "head "
+                        "for "
+                        "If-Match; "
+                        "null "
+                        "when "
+                        "no "
+                        "configuration "
+                        "has "
+                        "been "
+                        "saved.",
+                        "nullable": True,
+                    },
+                    "effective": {"allOf": [{"$ref": "#/components/schemas/PromptInstructions"}], "nullable": True},
+                    "builtin": {
+                        "allOf": [{"$ref": "#/components/schemas/BuiltinPromptInstructions"}],
+                        "nullable": True,
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": [
+                    "scope_id",
+                    "prompt_key",
+                    "status",
+                    "reason",
+                    "mode",
+                    "artifact",
+                    "artifact_etag",
+                    "effective",
+                    "builtin",
+                ],
+            },
+            "GeneratePromptDemonstrationsRequest": {
+                "properties": {
+                    "instructions": {"type": "string", "maxLength": 32768, "minLength": 1, "pattern": ".*\\S.*"},
+                    "demonstration_count": {"type": "integer", "maximum": 20.0, "minimum": 1.0},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["instructions", "demonstration_count"],
+            },
+            "PromptDemonstrationResult": {
+                "properties": {
+                    "prompt_key": {"$ref": "#/components/schemas/PromptKey"},
+                    "demonstrations": {
+                        "items": {"$ref": "#/components/schemas/PromptDemonstration"},
+                        "type": "array",
+                        "maxItems": 20,
+                        "minItems": 1,
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["prompt_key", "demonstrations"],
             },
             "ReplaceMemoryArtifactRequest": {
                 "properties": {"content": {"$ref": "#/components/schemas/ReplaceMemoryArtifactContent"}},
@@ -5827,7 +6924,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "required": ["name", "source_id"],
             },
             "CaptureStatus": {"type": "string", "enum": ["accepted"]},
-            "BaseArtifactFamily": {"type": "string", "enum": ["memory", "experience", "skill", "handoff"]},
+            "BaseArtifactFamily": {"type": "string", "enum": ["memory", "experience", "skill", "handoff", "prompt"]},
             "StatsPeriod": {"type": "string", "enum": ["today", "7d", "30d"]},
             "CandidateFamily": {"type": "string", "enum": ["experience", "skill"]},
             "ExternalSkillInstallationScope": {"type": "string", "enum": ["user", "project", "plugin"]},

@@ -144,6 +144,9 @@ class RelationalHandoffEvidenceResolver:
         /,
     ) -> tuple[HandoffGenerationEvidence, ...]:
         requested = tuple(citations)
+        for citation in requested:
+            if isinstance(citation, HandoffArtifactCitation) and citation.artifact_ref.family == "prompt":
+                raise HandoffEvidenceUnavailableError(citation)
         source_refs = tuple(
             citation.source_ref for citation in requested if isinstance(citation, HandoffSourceCitation)
         )

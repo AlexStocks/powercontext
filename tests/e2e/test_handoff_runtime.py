@@ -40,6 +40,7 @@ from powercontext.builtin.runtime import (
     HandoffOmission,
     HandoffSourceCitation,
     HandoffStatement,
+    InferenceConfig,
     PreparedHandoff,
     RememberMemoryRequest,
     open_builtin_runtime,
@@ -97,6 +98,48 @@ def test_handoff_batch_error_identifies_missing_artifact_after_valid_source(fami
                 )
             assert error.value.citation == missing
             assert await runtime.handoff.for_scope(scope.scope_id).latest() is None
+
+    asyncio.run(scenario())
+
+
+def test_handoff_batch_rejects_existing_prompt_as_evidence() -> None:
+    async def scenario() -> None:
+        async with open_builtin_runtime(
+            BuiltinConfig(database=SQLiteConfig(), inference=InferenceConfig(generation_model="test")),
+            handoff_pipeline=_EchoHandoffPipeline(),
+        ) as runtime:
+            assert runtime.scopes is not None
+            scope = await runtime.scopes.create(
+                ScopeDraft(title="Prompt boundary", summary="Evidence isolation", idempotency_key="prompt-evidence")
+            )
+            source = await runtime.sources.for_scope(scope.scope_id).capture(
+                CaptureSource(source_id="valid", content="Valid evidence.", metadata={})
+            )
+            prompt = await runtime.records.for_scope(scope.scope_id).create_artifact(
+                "prompt",
+                ArtifactWrite(
+                    prompt_key="memory.extract",
+                    content={
+                        "schema_version": "powercontext.prompt.v1",
+                        "mode": "custom",
+                        "instructions": "Keep personal preferences.",
+                        "demonstrations": [],
+                    },
+                ),
+            )
+            citation = HandoffArtifactCitation(
+                artifact_ref=ArtifactRef(family="prompt", artifact_id=prompt.artifact_id, revision=prompt.revision)
+            )
+            handoffs = runtime.handoff.for_scope(scope.scope_id)
+            with pytest.raises(HandoffEvidenceUnavailableError) as error:
+                await handoffs.prepare(
+                    PrepareHandoff(
+                        objective="Do not use instructions as evidence.",
+                        evidence=(HandoffSourceCitation(source_ref=source.source_ref), citation),
+                    )
+                )
+            assert error.value.citation == citation
+            assert await handoffs.latest() is None
 
     asyncio.run(scenario())
 
