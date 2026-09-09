@@ -75,8 +75,8 @@ For the complete Codex transfer and acknowledgement workflow, see
 Handoff Report is a read-only projection over a Scope selection. `all` includes every Scope, `exact` includes only the
 listed Scope IDs, and `subtree` includes an organization root and all descendants. Each included Scope contributes its
 latest exact Handoff address or an explicit `no_handoff` result; Parent does not imply Context visibility. Codex fixes
-ordinary Agent report reads to the current Session Scope. Broader selections belong to host and Dashboard views.
-See [Use Handoff Report](../workflows/use-handoff-report.md) for the report UI.
+ordinary Agent report reads to the current Session Scope. Explicit HTTP clients may request broader selections.
+See [Use Handoff Report](../workflows/use-handoff-report.md) for the report API.
 
 ## DeepSeek Harness plugin
 

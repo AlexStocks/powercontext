@@ -48,6 +48,7 @@ Server settings use the `POWERCONTEXT_SERVER_` prefix.
 | `POWERCONTEXT_SERVER_WORKSPACE` | Server startup directory | Resolution root for local project Agent Skill folders |
 | `POWERCONTEXT_SERVER_MCP_ENABLED` | `true` | Enable Streamable HTTP MCP |
 | `POWERCONTEXT_SERVER_MCP_PATH` | `/mcp` | MCP path |
+| `POWERCONTEXT_SERVER_DASHBOARD_ENABLED` | `false` | Personal and demonstration Dashboard; requires static Bearer authentication and does not support injected authentication or authorization Providers |
 | `POWERCONTEXT_SERVER_AUTH_ENABLED` | `false` | Legacy static bearer switch; `true` maps to `ACCESS_MODE=enforced` and requires `AUTH_TOKEN` |
 | `POWERCONTEXT_SERVER_AUTH_TOKEN` | unset | Legacy static bearer token; used as compatibility authentication and mapped to the built-in administrator when no Authentication Provider is injected |
 | `POWERCONTEXT_SERVER_ACCESS_MODE` | `disabled` | The only supported Access switch: `disabled` or `enforced` |
@@ -57,7 +58,6 @@ Server settings use the `POWERCONTEXT_SERVER_` prefix.
 | `POWERCONTEXT_SERVER_PUBLIC_URL` | unset | Remotely reachable base URL used by remote Skill enrollment guidance; HTTPS is required by default |
 | `POWERCONTEXT_SERVER_ALLOW_INSECURE_HTTP` | `false` | Explicitly allow cleartext HTTP for remote Skill Receiver endpoints and guidance |
 | `POWERCONTEXT_SERVER_ALLOW_UNAUTHENTICATED_NON_LOOPBACK` | `false` | Opt in to a non-loopback bind while authentication is disabled |
-| `POWERCONTEXT_SERVER_DASHBOARD_ENABLED` | `true` | Enable the Dashboard at the Server root path `/` |
 | `POWERCONTEXT_SERVER_HANDOFF_REPORT_ENABLED` | `true` | Enable Handoff Report and its API routes |
 | `POWERCONTEXT_SERVER_LOGGING_LEVEL` | `INFO` | Operational log level |
 | `POWERCONTEXT_SERVER_LOGGING_FORMAT` | `console` | `console` or structured `json` output |
@@ -179,9 +179,8 @@ The authenticated `/metrics` endpoint exposes `powercontext_server_artifact_proc
 label: Worker capacity, ready/retry queues, unacknowledged Scopes, discovery and invocation duration, completions,
 failures, and timeouts. Unacknowledged counts reflect the latest discovery; counters reset with the Supervisor instance.
 
-Remote, multi-user, and shared-Dashboard deployments must use `enforced`. In that mode, HTTP, MCP, Dashboard data
-routes, and metrics share one Server PEP. Configured Dashboard scopes are filtered by the current Principal's
-`scope.read` decision before they are returned. `/v1/access/me` reports the `server`/`scope`/`artifact` Resource Kinds,
+Remote and multi-user deployments must use `enforced`. In that mode, HTTP, MCP, and metrics share one Server PEP.
+`/v1/access/me` reports the `server`/`scope`/`artifact` Resource Kinds,
 Provider batch/list/relationship capabilities and Artifact Family profiles. Managed Skill export and installation do
 not introduce separate Access actions: the recipient first needs `artifact.read` on the logical Skill identity, then
 chooses whether and how to install an exact Revision.
@@ -208,26 +207,18 @@ ASGI app, Unix-domain socket, or TLS-terminating proxy, must supply its own `htt
 `trust_transport_security=True` explicitly. See
 [Deploy the Server](deploy-server.md) for a safe Docker and remote-access setup.
 
-The Dashboard is enabled by default and shares the Server listener and port with the HTTP API and MCP. It discovers
-the default Scope and every created Scope from the Server. Dashboard initialization failures are logged with their
-direct cause and do not prevent the Server HTTP API, MCP, or health checks from starting.
-
 By default, the Server treats its startup directory as the workspace and exposes two writable local project targets:
 `<workspace>/.agents/skills` for Codex and `<workspace>/.claude/skills` for Claude Code. Missing directories are harmless
-and are created only after the user confirms an installation in the Dashboard. Set `POWERCONTEXT_SERVER_WORKSPACE` once
-for systemd, containers, or other launchers whose working directory is not the project; the page does not ask users to
-enter Skill paths.
+and are created only by an explicit publication operation. Set `POWERCONTEXT_SERVER_WORKSPACE` once for systemd,
+containers, or other launchers whose working directory is not the project.
 
-Configure `POWERCONTEXT_SERVER_PUBLIC_URL` once when remote Skill Receivers should connect through a different externally
-reachable origin than the one used to open the Dashboard. The Skills Dashboard then generates the enrollment command
-without asking for an address on every target. When it is unset, the Dashboard automatically uses its current HTTPS
-origin, or its current HTTP origin when the explicit insecure switch is enabled. If neither is available, the enrollment
-command relies on the remote CLI's configured Server URL.
+Configure `POWERCONTEXT_SERVER_PUBLIC_URL` when remote Skill Receivers should connect through a stable externally
+reachable origin. Enrollment commands may otherwise use the remote CLI's configured Server URL.
 
 For a first-phase PoC on a protected internal test network, direct HTTP requires explicit consent on both sides. Set
 `POWERCONTEXT_SERVER_ALLOW_INSECURE_HTTP=true`, advertise an `http://` `POWERCONTEXT_SERVER_PUBLIC_URL`, and bind the
-listener to an address reachable by the target. The Dashboard shows a cleartext warning and adds
-`remote-enroll --allow-insecure-http`; a manually entered enrollment command must include the same option. Without the
+listener to an address reachable by the target. The enrollment command must include
+`remote-enroll --allow-insecure-http`. Without the
 Server setting, the remote endpoints reject non-loopback HTTP. Without the Receiver option, the CLI rejects the URL
 before transmitting the one-time enrollment code. The permission is stored in the owner-only Receiver configuration so
 `remote-watch` and its systemd user service keep the same policy without embedding credentials or extra flags in the
@@ -250,19 +241,8 @@ The non-loopback opt-in in this example is independent of the Receiver transport
 Server routes on this listener are reachable without the Server-wide bearer token. Prefer enabling authentication or
 terminating TLS in front of a loopback-bound Server whenever the deployment permits it.
 
-When compatibility static Bearer authentication is enforced, the HTML shells at `/`, `/topics`, `/skills`, `/reviews`, and `/handoff-reports`, plus
-their static assets, remain public so the browser can render the sign-in form. Data requests stay protected. Enter the
-Server token in that form; the browser keeps it only in the current tab's session storage. Disable both Dashboard and
-Handoff Report if even these sign-in pages must not be exposed.
-
-Dashboard scopes are a UI discovery list, not an authorization boundary. The optional bearer token is Server-wide,
-not per user or per scope. The private Topic Memory support routes accept only configured Dashboard scopes, while the
-public API continues to apply its existing scope contract. A deployment that requires per-user or per-scope access
-control must provide that boundary separately.
-
-Handoff Report is independently enabled by default at `/handoff-reports`. When no scope contains a committed Handoff,
-it shows a data-free template preview. See [Use Handoff Report](../workflows/use-handoff-report.md) for scope discovery,
-inspection, Revision writes, and export.
+Handoff Report API routes are independently enabled by default. See
+[Use Handoff Report](../workflows/use-handoff-report.md) for selection, inspection, and export.
 
 The Artifact Processing Supervisor is enabled by the default `all` role. OceanBase deployments may run `api` and
 `background` separately; `powercontext server run --role background` starts no HTTP, MCP, or Dashboard listener, and
@@ -379,20 +359,19 @@ Setting `POWERCONTEXT_SERVER_EXTERNAL_SKILLS` replaces both automatically genera
 `{"host_id": null, "targets": []}` to disable local discovery and publication. Target IDs must be unique. `agent_kind`
 supports `codex` and `claude_code`; installation scopes are `user`, `project`, and `plugin`. PowerContext scans only the
 immediate Skill package directories under default or explicit targets; it does not infer a user home directory, install
-packages, or grant execution authority. The two generated project targets let users explicitly install from the
-Dashboard. Custom targets default `allow_managed_publish` to `false`; when true, the authenticated Skills Library or
-Review page may explicitly create or safely update an approved managed
-Skill in that target. Publication materializes the exact reviewed package, including scripts and references, without
-executing it or injecting a sidecar into the package. The same pages can safely unpublish only an intact package whose
-binding and tree digest still match; local drift and foreign content remain untouched. The page still cannot submit an
-arbitrary path or overwrite a foreign or modified package. The
+packages, or grant execution authority. Custom targets default `allow_managed_publish` to `false`; when true, an
+explicit publication operation may safely create or update an approved managed Skill in that target. Publication
+materializes the exact reviewed package, including scripts and references, without executing it or injecting a sidecar
+into the package. Unpublication succeeds only for an intact package whose binding and tree digest still match; local
+drift and foreign content remain untouched. Publication cannot submit an arbitrary path or overwrite a foreign or
+modified package. The
 `host_id`, locator, and registration are local-environment state, not a cross-host contract. Existing `codex_roots`
 configuration remains accepted as a Codex-only compatibility form; new configuration should use `targets`.
 
 The optional `environment` object contains only observed, secret-free compatibility facts. Command values are version
 labels, and `environment_names` records names only, never values. PowerContext does not probe or execute package scripts
 to construct this profile. When it is absent, packages containing scripts report unknown compatibility; when present,
-the Skills Library compares known script interpreters with the observed command names and displays a reasoned assessment.
+the Skills Library compares known script interpreters with the observed command names and returns a reasoned assessment.
 The assessment does not grant network, filesystem, dependency-install, or environment access.
 
 The Server always creates non-recording OpenTelemetry request context so `X-PowerContext-Request-ID` can be derived from the

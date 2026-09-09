@@ -904,7 +904,6 @@ def test_server_command_does_not_load_client_settings(monkeypatch: pytest.Monkey
     tracing = Mock()
     monkeypatch.setenv("POWERCONTEXT_CLIENT_SERVER_URL", "not-a-url")
     monkeypatch.setenv("POWERCONTEXT_SERVER_ACCESS_MODE", "disabled")
-    monkeypatch.setenv("POWERCONTEXT_SERVER_DASHBOARD_ENABLED", "true")
     monkeypatch.setattr("powercontext.server.cli._run_server", run_server)
     monkeypatch.setattr("powercontext.server.cli.configure_server_logging", lambda _config: None)
     monkeypatch.setattr("powercontext.server.cli.configure_server_tracing", lambda _config: tracing)
@@ -912,7 +911,6 @@ def test_server_command_does_not_load_client_settings(monkeypatch: pytest.Monkey
     result = CliRunner().invoke(create_cli([server_app]), ["server", "run"])
 
     assert result.exit_code == 0
-    assert "PowerContext Dashboard: http://127.0.0.1:8000/" in result.stdout
     assert "Inference capability notice" in result.stdout
     assert "可能影响部分制品功能" in result.stdout
     assert "https://powercontext.oceanbase.io/en/docs/reference/configuration/" in result.stdout

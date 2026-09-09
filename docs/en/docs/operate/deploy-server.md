@@ -148,9 +148,18 @@ docker run --rm \
 Clients then send `Authorization: Bearer <token>`. The liveness and readiness endpoints remain public so an
 orchestrator can probe them. API, MCP, metrics, and `/openapi.json` require authentication. The `/docs` shell remains
 public, but requests made from the interactive reference require authentication.
-The Server's web-page shells and static assets remain public so they can show a sign-in form; they do not return
-protected data without the token. Open the Dashboard, Skills, Review, or Handoff Report page and enter the same token
-there. It remains in the current browser tab's session storage rather than being added to the URL.
+
+Personal or demonstration deployments can additionally set `POWERCONTEXT_SERVER_DASHBOARD_ENABLED=true` to expose
+`/dashboard/home` on the same port. It requires the static Bearer configuration above; startup fails clearly without a
+token. Browser sign-in uses the Server token, not a model API key. Credentials are stored in an HttpOnly,
+SameSite=Strict Cookie restricted to `/dashboard`, for up to eight hours. HTTPS sets Secure. Reverse proxies must
+preserve the external scheme and host for the sign-in same-origin check.
+
+All holders of the static token share one administrator identity. The Dashboard does not support multi-user RBAC or
+provide accounts, SSO, invitations, or grant management. Deployments injecting an Authentication Provider or
+AccessControlService must disable the Dashboard; an incompatible enabled configuration is rejected at startup.
+Disabling it does not affect team API or MCP access. For personal setup, see
+[Install and run](../get-started/install-and-run.md).
 
 ## Check the deployment
 

@@ -15,11 +15,11 @@ description: 配置模型、启动 Server，并验证完整 Memory 闭环。
 | Source capture | 启用 | 启用 |
 | Memory extraction | 关闭 | 启用 |
 | Search mode | `auto, fts` | `auto, fts, vector, hybrid` |
-| Dashboard | 有权访问的 Scope | 有权访问的 Scope |
+| Dashboard | 单独启用，要求静态 token | 单独启用，要求静态 token |
 | MCP endpoint | `/mcp` | `/mcp` |
 
-Server 首次启动时创建一个使用不透明 ID 的默认 Scope。Dashboard 从 Server 发现 Scope descriptor，不使用预配置列表。
-Integration 可以把 Session 或 workspace 绑定到默认 Scope，也可以绑定到其他已经存在的 Scope。
+Server 首次启动时创建一个使用不透明 ID 的默认 Scope。Integration 可以把 Session 或 workspace 绑定到默认 Scope，
+也可以绑定到其他已经存在的 Scope。
 
 ## 1. 安装并生成配置
 
@@ -72,7 +72,7 @@ powercontext capabilities
 Readiness 为 `ready`、Memory extraction 已启用，并且 search mode 包含 `vector` 和 `hybrid` 时，完整 Runtime 可用。
 如果只有 `auto, fts`，检查 Embedding model、profile ID、dimension、credential 和 Base URL。
 
-打开 <http://127.0.0.1:8000/>，确认默认 Scope 可见。获取其不透明 ID，供后续 API 检查使用：
+获取默认 Scope 的不透明 ID，供后续 API 检查使用：
 
 ```bash
 SCOPE_ID="$(curl -fsS http://127.0.0.1:8000/v1/scopes/default \
@@ -139,7 +139,6 @@ Server 验证通过后，按[对应 Agent 的文档](../integrations/index.md)�
 
 | 现象 | 处理方式 |
 | --- | --- |
-| Dashboard 中缺少 Scope | 确认 Scope 已通过 Scope API 创建，然后刷新页面 |
 | Readiness 为 `degraded` | 检查模型标识、credential 和 Base URL |
 | 没有 `vector` 或 `hybrid` | 同时配置 Embedding model、profile ID 和 dimension |
 | Source 一直 pending | 启用 Scheduler，或调用 `/v1/memory/flush` |
