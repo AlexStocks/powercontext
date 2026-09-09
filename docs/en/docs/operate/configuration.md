@@ -7,10 +7,11 @@ description: PowerContext paths, Server, Client, and inference environment varia
 
 Windows support is `experimental`.
 
-PowerContext reads configuration from environment variables when each process starts. The CLI does not search for a
-`.env` file automatically. A command that accepts `--env-file` loads environment assignments from that file, including
-Server and provider settings, and overrides same-named process values. Agent hosts can load their own environment files
-according to their host-specific rules.
+PowerContext reads configuration from environment variables when each process starts. `server run` loads `.env` from the
+current working directory when that file exists. Pass `--env-file <path>` to select a different file without also
+merging `.env`, or pass `--no-env-file` to disable file loading. For `server run`, CLI options override process
+environment variables, process variables override values from the selected file, and defaults apply last. Agent hosts
+can load their own environment files according to their host-specific rules.
 
 For the configuration-file workflow, including generation, redacted inspection, validation, and launch, see
 [Configure a Server environment](../get-started/configure-server-environment.md). Treat every environment file as a

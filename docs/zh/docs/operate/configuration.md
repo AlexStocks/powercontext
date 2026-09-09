@@ -7,8 +7,9 @@ description: PowerContext 路径、Server、Client 和推理环境变量。
 
 Windows 支持为 `experimental`。
 
-PowerContext 进程启动时从环境变量读取配置。CLI 不会自动搜索 `.env` 文件。接受 `--env-file` 的命令会从该文件加载环境变量（包括
-Server 与 provider 设置），并覆盖进程中的同名值。Agent 宿主可按自身规则加载环境文件。
+PowerContext 进程启动时从环境变量读取配置。当前工作目录存在 `.env` 时，`server run` 会自动加载该文件。使用
+`--env-file <path>` 可改为加载指定文件且不再合并 `.env`；使用 `--no-env-file` 可禁用文件加载。`server run` 的配置
+优先级为：CLI 参数、进程环境变量、所选环境文件、默认值。Agent 宿主可按自身规则加载环境文件。
 
 生成、脱敏查看、校验和启动配置文件的完整流程见[配置 Server 环境](../get-started/configure-server-environment.md)。所有环境
 文件都应视为包含机密的部署产物。
