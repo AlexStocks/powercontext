@@ -390,6 +390,7 @@ async def open_builtin_runtime(  # noqa: C901
                     prompts=dict(contexts.prompt_registry.capabilities),
                 ),
                 source_window_limit=config.runtime.source_window_limit,
+                context_assembly_max_entries=config.runtime.context_assembly_max_entries,
                 scope_cache_size=config.runtime.scope_cache_size,
                 scope_evictor=contexts.evict,
                 scope_cache_observer=scope_cache_observer,

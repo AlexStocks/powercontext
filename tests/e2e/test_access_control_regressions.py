@@ -77,6 +77,71 @@ async def _scope(client):
     return result.json()["scope_id"]
 
 
+@pytest.mark.parametrize("assembly", [None, {}, {"sections": [{"family": "profile", "limit": 2}]}])
+def test_prepare_requires_read_access_to_every_referenced_scope(tmp_path, assembly):
+    async def scenario():
+        async with _server(tmp_path) as (_, client, _):
+            shared = await _scope(client)
+            remembered = await client.post(
+                "/v1/memory/remember",
+                json={
+                    "scope_id": shared,
+                    "kind": "fact",
+                    "text": "PRIVATE shared deployment contract.",
+                },
+            )
+            assert remembered.status_code == 200
+            profile = await client.post(
+                f"/v1/scopes/{shared}/artifacts",
+                json={"family": "profile", "content": {"content": "PRIVATE shared deployment contract."}},
+            )
+            assert profile.status_code == 201, profile.text
+            created = await client.post(
+                "/v1/scopes",
+                json={
+                    "title": "Current",
+                    "summary": "References shared evidence",
+                    "idempotency_key": "current",
+                    "context_references": [shared],
+                },
+            )
+            assert created.status_code == 201
+            current = created.json()["scope_id"]
+            await _grant(client, current, "bob", "scope.viewer")
+            payload = {"scope_id": current, "query": "PRIVATE"}
+            if assembly is not None:
+                payload["assembly"] = assembly
+            response = await client.post("/v1/context/prepare", headers={"Authorization": "Bearer bob"}, json=payload)
+            assert response.status_code == 403
+            assert "PRIVATE" not in response.text
+            disabled = await client.post(
+                "/v1/context/prepare",
+                headers={"Authorization": "Bearer bob"},
+                json={
+                    **payload,
+                    "assembly": {"sections": []},
+                },
+            )
+            assert disabled.status_code == 200 and disabled.json()["status"] == "empty"
+            grant = await _grant(client, shared, "bob", "scope.viewer")
+            allowed = await client.post("/v1/context/prepare", headers={"Authorization": "Bearer bob"}, json=payload)
+            assert allowed.status_code == 200
+            assert "PRIVATE shared deployment contract." in allowed.json()["content"]
+            revoked = await client.post(
+                "/v1/access/bindings/revoke",
+                json={
+                    "binding_id": grant["binding_id"],
+                    "expected_version": grant["version"],
+                    "idempotency_key": "revoke-shared-reader",
+                },
+            )
+            assert revoked.status_code == 200, revoked.text
+            denied = await client.post("/v1/context/prepare", headers={"Authorization": "Bearer bob"}, json=payload)
+            assert denied.status_code == 403 and "PRIVATE" not in denied.text
+
+    asyncio.run(scenario())
+
+
 async def _grant(client, scope_id, principal, role, resource=None):
     response = await client.post(
         "/v1/access/bindings/create",
@@ -175,7 +240,20 @@ def test_owner_failure_blocks_collections_and_context_before_content(tmp_path, m
                 )
                 assert created.status_code == 503, created.text
             # The content is durably committed, but the owner did not commit.
+            referencing = await client.post(
+                "/v1/scopes",
+                json={
+                    "title": "Referencing scope",
+                    "summary": "Owner readiness across context references",
+                    "idempotency_key": "referencing-owner-pending",
+                    "context_references": [scope_id],
+                },
+            )
+            assert referencing.status_code == 201
+            current = referencing.json()["scope_id"]
             requests = [
+                ("POST", "/v1/context/prepare", {"scope_id": current, "query": "PRIVATE"}),
+                ("POST", "/v1/context/prepare", {"scope_id": current, "query": "PRIVATE", "assembly": {}}),
                 ("POST", "/v1/memory/entries/list", {"scope_id": scope_id}),
                 ("POST", "/v1/memory/search", {"scope_id": scope_id, "query": "PRIVATE"}),
                 ("POST", "/v1/context/prepare", {"scope_id": scope_id, "query": "PRIVATE"}),

@@ -48,6 +48,7 @@ from powercontext.http import (
     GetTopicMemoryRequest,
     ListArtifactsRequest,
     ListSourcesRequest,
+    PrepareContextRequest,
     ReplaceAccessBindingRequest,
     ReplaceArtifactRequest,
     ReplaceMemoryArtifactContent,
@@ -60,6 +61,50 @@ from powercontext.http import (
     SearchTopicMemoryRequest,
     UpdateScopeRequest,
 )
+
+
+def test_prepare_client_preserves_omitted_and_explicit_assembly() -> None:
+    async def scenario() -> None:
+        bodies = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            bodies.append(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "schema": "powercontext.prepared-context.v1",
+                    "status": "empty",
+                    "content": None,
+                    "content_bytes": 0,
+                },
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http_client:
+            client = PowerContextClient("https://memory.example", http_client=http_client)
+            await client.prepare_context(PrepareContextRequest(scope_id="scope", query="legacy"))
+            await client.prepare_context(
+                PrepareContextRequest.model_validate({
+                    "scope_id": "scope",
+                    "query": "text",
+                    "assembly": {},
+                })
+            )
+            await client.prepare_context(
+                PrepareContextRequest.model_validate({
+                    "scope_id": "scope",
+                    "query": "disabled",
+                    "assembly": {"sections": []},
+                })
+            )
+        assert "assembly" not in bodies[0]
+        assert bodies[1]["assembly"]["format"] == "markdown"
+        assert bodies[1]["assembly"]["sections"] == [
+            {"family": "memory", "limit": 6},
+            {"family": "experience", "limit": 2},
+        ]
+        assert bodies[2]["assembly"]["sections"] == []
+
+    asyncio.run(scenario())
 
 
 def test_client_exposes_all_three_topic_memory_http_operations_without_search_mode() -> None:

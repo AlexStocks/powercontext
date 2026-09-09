@@ -108,6 +108,13 @@ These requests return HTTP 422 (`artifact_publication_unsupported`, `details.fam
 the target already has a Profile. No target state is created or changed. Generate a Profile from the target Scope's
 own Sources, or use its existing Create/Replace API instead. Other supported Artifact Families remain publishable.
 
+## Include the Profile in prepared context
+
+Set `assembly.sections` to `[{"family":"profile","limit":1},{"family":"memory","limit":6}]` in
+`POST /v1/context/prepare` to place a committed Profile before relevant Memory. Profile selection reads existing
+snapshots and does not generate content. Default prepare requests exclude Profile. See
+[Prepare standard context text](prepare-context-text.md#include-profile-snapshots) for Scope order, limits, and plugin configuration.
+
 ## Storage and deployment
 
 Only `pc_profile_policies` is new. Profile content and generation metadata use the existing Artifact BLOB;

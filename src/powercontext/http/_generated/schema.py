@@ -6446,11 +6446,156 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},
                     "query": {"type": "string", "maxLength": 8192, "minLength": 1, "pattern": ".*\\S.*"},
                     "max_bytes": {"type": "integer", "maximum": 32768.0, "minimum": 512.0, "default": 8000},
+                    "assembly": {"$ref": "#/components/schemas/ContextAssembly"},
                 },
                 "additionalProperties": False,
                 "type": "object",
                 "required": ["scope_id", "query"],
             },
+            "ContextAssemblySection": {
+                "properties": {
+                    "family": {"$ref": "#/components/schemas/ContextAssemblyFamily"},
+                    "limit": {
+                        "type": "integer",
+                        "maximum": 8.0,
+                        "minimum": 1.0,
+                        "description": "Maximum "
+                        "included "
+                        "entries. "
+                        "Each "
+                        "Profile "
+                        "entry "
+                        "is "
+                        "one "
+                        "Scope "
+                        "snapshot. "
+                        "Experience "
+                        "is "
+                        "limited "
+                        "to "
+                        "two. "
+                        "All "
+                        "section "
+                        "limits "
+                        "together "
+                        "must "
+                        "not "
+                        "exceed "
+                        "the "
+                        "Server's "
+                        "runtime.context_assembly_max_entries "
+                        "policy "
+                        "(default "
+                        "8); "
+                        "exceeding "
+                        "it "
+                        "returns "
+                        "HTTP "
+                        "422 "
+                        "before "
+                        "recall. "
+                        "The "
+                        "byte "
+                        "budget "
+                        "may "
+                        "reduce "
+                        "the "
+                        "actual "
+                        "output "
+                        "count.",
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["family", "limit"],
+            },
+            "ContextAssembly": {
+                "properties": {
+                    "format": {
+                        "allOf": [{"$ref": "#/components/schemas/ContextAssemblyFormat"}],
+                        "default": "markdown",
+                    },
+                    "sections": {
+                        "items": {"$ref": "#/components/schemas/ContextAssemblySection"},
+                        "type": "array",
+                        "maxItems": 4,
+                        "description": "Unique "
+                        "families "
+                        "in "
+                        "output "
+                        "and "
+                        "byte-budget "
+                        "priority "
+                        "order. "
+                        "Profile "
+                        "explicitly "
+                        "includes "
+                        "the "
+                        "latest "
+                        "committed "
+                        "snapshot "
+                        "from "
+                        "the "
+                        "current "
+                        "Scope "
+                        "and "
+                        "direct "
+                        "Context "
+                        "References, "
+                        "in "
+                        "that "
+                        "order, "
+                        "without "
+                        "query "
+                        "filtering "
+                        "or "
+                        "generation. "
+                        "Topic "
+                        "Memory "
+                        "searches "
+                        "only "
+                        "the "
+                        "current "
+                        "Scope "
+                        "and "
+                        "includes "
+                        "title, "
+                        "summary, "
+                        "and an "
+                        "optional "
+                        "matching "
+                        "snippet, "
+                        "with "
+                        "an "
+                        "exact "
+                        "revision "
+                        "citation. "
+                        "An "
+                        "empty "
+                        "array "
+                        "disables "
+                        "candidate "
+                        "recall.",
+                        "default": [{"family": "memory", "limit": 6}, {"family": "experience", "limit": 2}],
+                    },
+                    "show": {
+                        "items": {"$ref": "#/components/schemas/ContextAssemblyMetadata"},
+                        "type": "array",
+                        "maxItems": 2,
+                        "uniqueItems": True,
+                        "default": [],
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "description": "Explicitly opt into grouped "
+                "Markdown context. Omit assembly to "
+                "preserve the existing context "
+                "format; null is invalid.",
+            },
+            "ContextAssemblyFamily": {"type": "string", "enum": ["memory", "experience", "profile", "topic-memory"]},
+            "ContextAssemblyFormat": {"type": "string", "enum": ["markdown"]},
+            "ContextAssemblyMetadata": {"type": "string", "enum": ["confidence", "recall_rank"]},
             "ProposeExperienceRequest": {
                 "properties": {
                     "scope_id": {"type": "string", "maxLength": 256, "minLength": 1, "pattern": ".*\\S.*"},

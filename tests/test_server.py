@@ -127,6 +127,13 @@ class _SequencedEmbeddingModel:
         return EmbeddingResult(vectors=tuple((1.0, 0.0, 0.0) for _ in texts))
 
 
+@pytest.mark.parametrize("limit", ["0", "-1"])
+def test_configured_assembly_total_limit_rejects_nonpositive_values(monkeypatch, limit):
+    monkeypatch.setenv("POWERCONTEXT_SERVER_RUNTIME_CONTEXT_ASSEMBLY_MAX_ENTRIES", limit)
+    with pytest.raises(ValidationError, match="context_assembly_max_entries"):
+        ServerSettings()
+
+
 def test_settings_load_server_environment(monkeypatch) -> None:
     monkeypatch.delenv("POWERCONTEXT_SERVER_DASHBOARD_ENABLED", raising=False)
     monkeypatch.setenv("POWERCONTEXT_SERVER_HTTP_HOST", "127.0.0.2")
@@ -138,6 +145,7 @@ def test_settings_load_server_environment(monkeypatch) -> None:
     )
     monkeypatch.setenv("POWERCONTEXT_SERVER_RUNTIME_SCOPE_CACHE_SIZE", "64")
     monkeypatch.setenv("POWERCONTEXT_SERVER_RUNTIME_SOURCE_WINDOW_LIMIT", "25")
+    monkeypatch.setenv("POWERCONTEXT_SERVER_RUNTIME_CONTEXT_ASSEMBLY_MAX_ENTRIES", "16")
     monkeypatch.setenv("POWERCONTEXT_SERVER_RUNTIME_MEMORY_EXTRACTION_PROFILE", "conversation")
     monkeypatch.setenv("POWERCONTEXT_SERVER_RUNTIME_MEMORY_RERANK_ENABLED", "true")
     monkeypatch.setenv("POWERCONTEXT_SERVER_RUNTIME_MEMORY_RERANK_CANDIDATE_LIMIT", "40")
@@ -183,6 +191,7 @@ def test_settings_load_server_environment(monkeypatch) -> None:
     assert settings.database.url == "sqlite+aiosqlite:////var/lib/powercontext/test.db"
     assert settings.runtime.scope_cache_size == 64
     assert settings.runtime.source_window_limit == 25
+    assert settings.runtime.context_assembly_max_entries == 16
     assert settings.runtime.memory_extraction_profile is MemoryExtractionProfile.CONVERSATION
     assert settings.runtime.memory_rerank_enabled is True
     assert settings.runtime.memory_rerank_candidate_limit == 40

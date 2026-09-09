@@ -7510,6 +7510,54 @@ components:
           minimum: 512
           maximum: 32768
           default: 8000
+        assembly:
+          $ref: "#/components/schemas/ContextAssembly"
+    ContextAssemblySection:
+      type: object
+      additionalProperties: false
+      required: [family, limit]
+      properties:
+        family:
+          $ref: "#/components/schemas/ContextAssemblyFamily"
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 8
+          description: Maximum included entries. Each Profile entry is one Scope snapshot. Experience is limited to two. All section limits together must not exceed the Server's runtime.context_assembly_max_entries policy (default 8); exceeding it returns HTTP 422 before recall. The byte budget may reduce the actual output count.
+    ContextAssembly:
+      type: object
+      additionalProperties: false
+      description: Explicitly opt into grouped Markdown context. Omit assembly to preserve the existing context format; null is invalid.
+      properties:
+        format:
+          allOf:
+            - $ref: "#/components/schemas/ContextAssemblyFormat"
+          default: markdown
+        sections:
+          type: array
+          maxItems: 4
+          description: Unique families in output and byte-budget priority order. Profile explicitly includes the latest committed snapshot from the current Scope and direct Context References, in that order, without query filtering or generation. Topic Memory searches only the current Scope and includes title, summary, and an optional matching snippet, with an exact revision citation. An empty array disables candidate recall.
+          default:
+            - {family: memory, limit: 6}
+            - {family: experience, limit: 2}
+          items:
+            $ref: "#/components/schemas/ContextAssemblySection"
+        show:
+          type: array
+          maxItems: 2
+          uniqueItems: true
+          default: []
+          items:
+            $ref: "#/components/schemas/ContextAssemblyMetadata"
+    ContextAssemblyFamily:
+      type: string
+      enum: [memory, experience, profile, topic-memory]
+    ContextAssemblyFormat:
+      type: string
+      enum: [markdown]
+    ContextAssemblyMetadata:
+      type: string
+      enum: [confidence, recall_rank]
     ProposeExperienceRequest:
       type: object
       additionalProperties: false

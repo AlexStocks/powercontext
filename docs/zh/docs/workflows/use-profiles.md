@@ -102,6 +102,13 @@ POST /v1/scopes/S_GROUP/artifacts
 不创建或修改目标状态。应基于目标 Scope 自身的 Source 生成画像，或使用其已有 Create/Replace 接口。
 其他支持发布的制品保持原行为。
 
+## 在 PreparedContext 中输出画像
+
+调用 `POST /v1/context/prepare` 时，设置
+`assembly.sections: [{"family":"profile","limit":1},{"family":"memory","limit":6}]`，
+即可先输出正式画像，再输出相关记忆。选择 Profile 只读取已有快照，不触发生成；默认 prepare 请求不包含
+Profile。Scope 顺序、数量限制和插件配置见[输出标准上下文文本](prepare-context-text.md#加入-profile-画像)。
+
 ## 存储与升级边界
 
 仅新增 `pc_profile_policies`；正文和生成信息进入 Artifact BLOB，审核上下文进入 Candidate BLOB。

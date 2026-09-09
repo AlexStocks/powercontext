@@ -889,7 +889,13 @@ class _RemoteIngestionApplication(Protocol):
 
 
 class _ScopedContextApplication(Protocol):
-    async def prepare(self, request: RuntimePrepareContextRequest, /) -> RuntimePreparedContext: ...
+    async def prepare(
+        self,
+        request: RuntimePrepareContextRequest,
+        /,
+        *,
+        authorize_scopes: Callable[[tuple[str, ...]], Awaitable[None]] | None = None,
+    ) -> RuntimePreparedContext: ...
 
 
 class _ContextApplication(Protocol):
@@ -2849,8 +2855,28 @@ async def search_memory(
 async def prepare_context(
     request: PrepareContextRequest,
     application: Annotated[ServerApplication, Depends(_require_application)],
+    http_request: Request,
 ) -> PreparedContext:
-    result = await application.context.for_scope(request.scope_id).prepare(mapping.prepare_context_request(request))
+    prepared_request = mapping.prepare_context_request(request)
+    scoped = application.context.for_scope(request.scope_id)
+    access = access_control_for_mode(
+        http_request.app.state.access_control,
+        mode=http_request.app.state.access_mode,
+    )
+    if access is None:
+        result = await scoped.prepare(prepared_request)
+    else:
+
+        async def authorize_scopes(scope_ids: tuple[str, ...]) -> None:
+            await access.require_all(
+                _require_principal(),
+                tuple((AccessAction.SCOPE_READ, ResourceRef.scope(scope_id)) for scope_id in scope_ids),
+                context=_access_audit_context(PREPARE_CONTEXT.operation_id),
+            )
+            for scope_id in scope_ids[1:]:
+                await require_scope_content_ready(http_request, scope_id)
+
+        result = await scoped.prepare(prepared_request, authorize_scopes=authorize_scopes)
     return mapping.prepared_context_response(result)
 
 

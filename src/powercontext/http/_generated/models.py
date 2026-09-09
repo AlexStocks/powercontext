@@ -1261,13 +1261,20 @@ class MemoryCitation(BaseModel):
     entry_version_id: Annotated[StrictStr, Field(max_length=128, min_length=1, pattern="^[\\x21-\\x7E]+$")]
 
 
-class PrepareContextRequest(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-    )
-    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
-    query: Annotated[StrictStr, Field(max_length=8192, min_length=1, pattern=".*\\S.*")]
-    max_bytes: Annotated[StrictInt, Field(ge=512, le=32768)] = 8000
+class ContextAssemblyFamily(StrEnum):
+    MEMORY = "memory"
+    EXPERIENCE = "experience"
+    PROFILE = "profile"
+    TOPIC_MEMORY = "topic-memory"
+
+
+class ContextAssemblyFormat(StrEnum):
+    MARKDOWN = "markdown"
+
+
+class ContextAssemblyMetadata(StrEnum):
+    CONFIDENCE = "confidence"
+    RECALL_RANK = "recall_rank"
 
 
 class SkillGenerationOrigin(StrEnum):
@@ -2790,6 +2797,40 @@ class MemoryRevisionChanges(BaseModel):
     changes: list[EntryChange]
 
 
+class ContextAssemblySection(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    family: ContextAssemblyFamily
+    limit: Annotated[
+        StrictInt,
+        Field(
+            description="Maximum included entries. Each Profile entry is one Scope snapshot. Experience is limited to two. All section limits together must not exceed the Server's runtime.context_assembly_max_entries policy (default 8); exceeding it returns HTTP 422 before recall. The byte budget may reduce the actual output count.",
+            ge=1,
+            le=8,
+        ),
+    ]
+
+
+class ContextAssembly(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    format: ContextAssemblyFormat = ContextAssemblyFormat.MARKDOWN
+    sections: Annotated[
+        list[ContextAssemblySection],
+        Field(
+            description="Unique families in output and byte-budget priority order. Profile explicitly includes the latest committed snapshot from the current Scope and direct Context References, in that order, without query filtering or generation. Topic Memory searches only the current Scope and includes title, summary, and an optional matching snippet, with an exact revision citation. An empty array disables candidate recall.",
+            max_length=4,
+            validate_default=True,
+        ),
+    ] = [
+        ContextAssemblySection.model_validate({"family": "memory", "limit": 6}),
+        ContextAssemblySection.model_validate({"family": "experience", "limit": 2}),
+    ]
+    show: Annotated[list[ContextAssemblyMetadata], Field(max_length=2)] = []
+
+
 class ProposeExperienceRequest(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -3260,6 +3301,16 @@ class ListMemoryEntriesResponse(BaseModel):
     )
     memory: ArtifactReference | None = None
     entries: list[MemoryEntry]
+
+
+class PrepareContextRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    scope_id: Annotated[StrictStr, Field(max_length=256, min_length=1, pattern=".*\\S.*")]
+    query: Annotated[StrictStr, Field(max_length=8192, min_length=1, pattern=".*\\S.*")]
+    max_bytes: Annotated[StrictInt, Field(ge=512, le=32768)] = 8000
+    assembly: ContextAssembly | None = None
 
 
 class GeneratedCandidateResponse(BaseModel):

@@ -1203,6 +1203,12 @@ def _prepare_request(
         if not isinstance(payload, dict):
             message = "Request must serialize to an object."
             raise TypeError(message)
+        if (
+            operation is PREPARE_CONTEXT
+            and isinstance(request, PrepareContextRequest)
+            and "assembly" not in request.model_fields_set
+        ):
+            payload.pop("assembly", None)
         if operation.request_location == "query":
             request_query.update({key: value for key, value in payload.items() if value is not None})
         else:
