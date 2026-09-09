@@ -102,6 +102,7 @@ from powercontext.builtin.artifacts.topic_memory import (
     MAX_TOPIC_MEMORY_QUERY_LENGTH,
     MAX_TOPIC_MEMORY_QUERY_TERMS,
     MAX_TOPIC_MEMORY_SEARCH_LIMIT,
+    TOPIC_MEMORY_SOURCE_WINDOW_BINDING,
     PublishedTopicMemory,
     TopicMemory,
     TopicMemoryBrowseCursor,
@@ -263,7 +264,7 @@ if TYPE_CHECKING:
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
     from powercontext.builtin.handoff_report.application import HandoffReportApplication
-    from powercontext.builtin.runtime.artifact_processing import ArtifactProcessingSupervisor
+    from powercontext.builtin.runtime.artifact_processing import ArtifactProcessingSupervisors
 
 TopicMemorySearch = Callable[..., Awaitable[TopicMemorySearchResult]]
 TopicMemoryGet = Callable[[str, ArtifactRef], Awaitable[PublishedTopicMemory]]
@@ -2000,7 +2001,7 @@ class ScopedTopicMemoryApplication:
             accepted = await self._runtime._topic_memory_flush(self.scope_id)
         if accepted and self._runtime.artifact_processing_supervisor is not None:
             try:
-                self._runtime.artifact_processing_supervisor.wake()
+                self._runtime.artifact_processing_supervisor.wake(TOPIC_MEMORY_SOURCE_WINDOW_BINDING)
             except Exception as error:
                 log_safely(
                     logger,
@@ -2300,7 +2301,7 @@ class BuiltinRuntime:
         self.remote_skills = RemoteSkillApplication(self)
         self.statistics = StatisticsApplication(self)
         self.handoff_report: HandoffReportApplication | None = None
-        self.artifact_processing_supervisor: ArtifactProcessingSupervisor | None = None
+        self.artifact_processing_supervisor: ArtifactProcessingSupervisors | None = None
         self.processor = None if scope_ids is None else ScheduledSourceProcessor(self, scope_ids)
         self.experience_processor = (
             None if scope_ids is None or experience_incubator is None else ScheduledExperienceProcessor(self, scope_ids)
@@ -2335,6 +2336,14 @@ class BuiltinRuntime:
                 "runtime": ReadinessCheckStatus.READY,
                 **dependencies.checks,
                 "artifact_processing_supervisor": supervisor_status,
+                **(
+                    {}
+                    if self.artifact_processing_supervisor is None
+                    else {
+                        f"artifact_processing.{family}": str(details["status"])
+                        for family, details in self.artifact_processing_supervisor.family_status.items()
+                    }
+                ),
             },
         )
 
@@ -2360,7 +2369,7 @@ class BuiltinRuntime:
             raise _RuntimeConfigurationError("scope_ids")
         if experience_schedule_seconds is not None and self.experience_processor is None:
             raise _RuntimeStateError("experience-incubation")
-        if self._scheduler is not None:
+        if self._scheduler is not None or self.artifact_processing_supervisor is not None:
             raise _RuntimeStateError("scheduler")
         from powercontext.builtin.runtime.scheduler import (
             configure_experience_incubation_job,

@@ -116,7 +116,9 @@ def test_enforced_mode_uses_injected_authentication_and_builtin_access(tmp_path:
 
 
 @pytest.mark.parametrize("scheduled", [False, True])
-def test_generation_model_does_not_require_background_principal_unless_scheduled(tmp_path: Path, scheduled) -> None:
+def test_declared_background_processing_requires_identity_even_without_automatic_schedule(
+    tmp_path: Path, scheduled
+) -> None:
     from powercontext.builtin.runtime.config import InferenceConfig
 
     app = create_server_app(
@@ -128,12 +130,8 @@ def test_generation_model_does_not_require_background_principal_unless_scheduled
         ),
         authentication_provider=_ActingAuthenticationProvider(),
     )
-    if scheduled:
-        with pytest.raises(ValueError, match="BACKGROUND_PRINCIPAL_ID"), TestClient(app):
-            pass
-    else:
-        with TestClient(app) as client:
-            assert client.get("/v1/access/me").status_code == 200
+    with pytest.raises(ValueError, match="BACKGROUND_PRINCIPAL_ID"), TestClient(app):
+        pass
 
 
 @pytest.mark.parametrize("background", [False, True])

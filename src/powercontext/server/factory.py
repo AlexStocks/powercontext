@@ -43,6 +43,7 @@ from powercontext.builtin.runtime import (
 from powercontext.builtin.runtime.application import ScheduledExperienceRunner, ScheduledSourceRunner
 from powercontext.builtin.runtime.composition import open_builtin_runtime
 from powercontext.builtin.runtime.config import BuiltinConfig
+from powercontext.builtin.runtime.processing_registry import processing_capabilities
 from powercontext.builtin.sources import CONTENT_SOURCE_NAME
 from powercontext.http import (
     Capabilities,
@@ -74,6 +75,7 @@ from powercontext.server.cursor_secret import resolve_cursor_secret
 from powercontext.server.mcp import mount_mcp
 from powercontext.server.metrics import CONTENT_TYPE_LATEST, HttpMetricsMiddleware, ServerMetrics
 from powercontext.server.middleware import AuthenticationMiddleware
+from powercontext.server.processing_security import build_worker_security
 from powercontext.server.settings import MissingAuthenticationProviderError, ServerSettings
 from powercontext.server.tracing import HttpTracingMiddleware, ServerTracing
 from powercontext.server.web import mount_web_ui
@@ -108,6 +110,9 @@ class _MetricsEndpoint:
                     request_id=current_request_id(),
                 ),
             )
+        runtime = request.app.state.application
+        supervisor = None if runtime is None else runtime.artifact_processing_supervisor
+        self._metrics.set_processing_families({} if supervisor is None else supervisor.family_status)
         return Response(self._metrics.render(), media_type=CONTENT_TYPE_LATEST)
 
 
@@ -179,6 +184,13 @@ def create_server_app(  # noqa: C901
                 active_access_control,
                 legacy_static_principal=static_principal if legacy_static_admin else None,
             )
+            worker_security = build_worker_security(
+                resolved,
+                active_access_control,
+                legacy_static_principal=static_principal if legacy_static_admin else None,
+                enabled=config.runtime.artifact_processing_role != "api" and bool(processing_capabilities(config)),
+                injected=configured_access_control is not None,
+            )
             runtime = await resources.enter_async_context(
                 open_builtin_runtime(
                     config,
@@ -197,6 +209,7 @@ def create_server_app(  # noqa: C901
                     tracing=resolved_tracing,
                     scheduled_source_runner=scheduled_source_runner,
                     scheduled_experience_runner=scheduled_experience_runner,
+                    worker_security=worker_security,
                     scheduled_profile_runner=_scheduled_profile_runner(
                         resolved,
                         active_access_control,

@@ -2,6 +2,7 @@
   "explanation/core-concepts": "get-started/core-concepts",
   "explanation/experience-and-skill-lifecycle": "workflows/experience-and-skill-lifecycle",
   "explanation/memory-and-handoff": "workflows/memory-and-handoff",
+  "how-to/artifact-processing-migration": "operate/artifact-processing-migration",
   "how-to/configure-agent-plugin": "integrations/agent-plugin",
   "how-to/configure-agent-skill-targets": "workflows/configure-agent-skill-targets",
   "how-to/configure-claude-code": "integrations/claude-code",

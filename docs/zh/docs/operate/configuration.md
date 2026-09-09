@@ -30,8 +30,8 @@ export POWERCONTEXT_HOME=/srv/powercontext
 - macOS：`~/Library/Application Support/powercontext`；
 - Windows：`%LOCALAPPDATA%\\powercontext`。
 
-默认 SQLite 数据库是该目录下的 `powercontext.db`。启用定时处理时，调度状态保存在同一目录的
-`scheduler.db`。
+默认 SQLite 数据库是该目录下的 `powercontext.db`。四类后台处理器的意图与调度检查点保存在同一数据库中。
+已有部署须先完成[停机迁移](artifact-processing-migration.md)。
 
 ## Server
 
@@ -70,15 +70,23 @@ Server 配置使用 `POWERCONTEXT_SERVER_` 前缀。
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_EXTRACTION_PROFILE` | `coding` | Memory 选择策略：`coding` 或 `conversation` |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_RERANK_ENABLED` | `false` | 在 Memory 粗召回后应用 listwise rerank |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_RERANK_CANDIDATE_LIMIT` | `30` | 交给 reranker 的粗排候选池大小 |
-| `POWERCONTEXT_SERVER_RUNTIME_SCHEDULE_SECONDS` | 未设置 | Scheduler 间隔；未设置即不启用 |
-| `POWERCONTEXT_SERVER_RUNTIME_TOPIC_MEMORY_SCHEDULE_SECONDS` | 未设置 | Topic Memory 按 binding 的自动波次间隔；未设置即关闭自动波次 |
-| `POWERCONTEXT_SERVER_RUNTIME_TOPIC_MEMORY_SOURCE_WINDOW_LIMIT` | `10` | 单个 Topic Memory Worker 最多处理的 Source 数量，硬上限为 100 |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_SCHEDULE_SECONDS` | 未设置 | Memory 自动准入间隔；`SCHEDULE_SECONDS` 保留为兼容别名 |
+| `POWERCONTEXT_SERVER_RUNTIME_TOPIC_MEMORY_SCHEDULE_SECONDS` | 未设置 | Topic Memory 自动准入间隔；未设置时不接纳新的自动调用 |
+| `POWERCONTEXT_SERVER_RUNTIME_TOPIC_MEMORY_SOURCE_WINDOW_LIMIT` | `10` | 每个 Topic Memory Window 的 Source 数量上限，硬上限为 100；一次 Scope 调用可完成多个 Window |
 | `POWERCONTEXT_SERVER_RUNTIME_TOPIC_MEMORY_HISTORY_MAX_CANDIDATES` | `20` | 处理时考虑的历史 Topic 候选上限 |
 | `POWERCONTEXT_SERVER_RUNTIME_TOPIC_MEMORY_HISTORY_RRF_THRESHOLD` | `70` | 归一化到 `0..100` 的 RRF 接受阈值 |
 | `POWERCONTEXT_SERVER_RUNTIME_TOPIC_MEMORY_HISTORY_MIN_CANDIDATES` | `5` | 达到阈值的候选过少时保证的最小历史召回数 |
-| `POWERCONTEXT_SERVER_RUNTIME_ARTIFACT_PROCESSING_MAX_WORKERS` | `10` | 所有 Artifact binding 共用的全局子 Worker 并发数 |
-| `POWERCONTEXT_SERVER_RUNTIME_ARTIFACT_PROCESSING_WORKER_TIMEOUT_SECONDS` | `600` | Supervisor 对单个有界 Source Window 子 Worker 的超时 |
+| `POWERCONTEXT_SERVER_RUNTIME_TOPIC_MEMORY_MAX_WORKERS` | `10` | Topic 独立 Worker 额度；`ARTIFACT_PROCESSING_MAX_WORKERS` 是其兼容别名 |
+| `POWERCONTEXT_SERVER_RUNTIME_TOPIC_MEMORY_WORKER_TIMEOUT_SECONDS` | `600` | 包括启动的 Scope 调用总超时；旧 `ARTIFACT_PROCESSING_WORKER_TIMEOUT_SECONDS` 是其兼容别名 |
 | `POWERCONTEXT_SERVER_RUNTIME_ARTIFACT_PROCESSING_ROLE` | `all` | 进程角色：`all`、`api` 或 `background` |
+| `POWERCONTEXT_SERVER_RUNTIME_ARTIFACT_PROCESSING_SUPERVISOR_MODE` | `global` | `global` 一条 Lease；`dedicated` 每个注册 Family 一条 Lease |
+| `POWERCONTEXT_SERVER_RUNTIME_ARTIFACT_PROCESSING_FAMILIES` | 根据模型推导 | JSON Family 列表；API 端可无模型凭据地声明处理能力 |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_MAX_WORKERS` | `1` | Memory 独立 Worker 额度 |
+| `POWERCONTEXT_SERVER_RUNTIME_EXPERIENCE_MAX_WORKERS` | `1` | Experience 独立 Worker 额度 |
+| `POWERCONTEXT_SERVER_RUNTIME_PROFILE_MAX_WORKERS` | `4` | Profile 独立 Worker 额度；别名 `PROFILE_MAX_CONCURRENCY` |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_WORKER_TIMEOUT_SECONDS` | `600` | Memory Scope 总超时 |
+| `POWERCONTEXT_SERVER_RUNTIME_EXPERIENCE_WORKER_TIMEOUT_SECONDS` | `600` | Experience Scope 总超时 |
+| `POWERCONTEXT_SERVER_RUNTIME_PROFILE_WORKER_TIMEOUT_SECONDS` | `600` | Profile Scope 总超时 |
 | `POWERCONTEXT_SERVER_INFERENCE_GENERATION_MODEL` | 未设置 | 配置的 extraction、generation、Handoff 和 rerank 操作共用的 Pydantic AI 模型 |
 | `POWERCONTEXT_SERVER_INFERENCE_GENERATION_BASE_URL` | provider 默认值 | 自定义 generation provider base URL |
 | `POWERCONTEXT_SERVER_INFERENCE_GENERATION_HEADERS` | `{}` | generation client 静态 header JSON object；value 按 secret 处理 |
@@ -101,7 +109,7 @@ Server 配置使用 `POWERCONTEXT_SERVER_` 前缀。
 | `POWERCONTEXT_SERVER_INFERENCE_RERANK_MODEL_SETTINGS` | `{}` | Pydantic AI reranker model settings JSON object |
 | `POWERCONTEXT_SERVER_INFERENCE_RERANK_TIMEOUT_SECONDS` | generation 超时 | LLM reranker 超时 |
 | `POWERCONTEXT_SERVER_INFERENCE_RERANK_MAX_REQUESTS` | generation request limit | 单次 rerank operation 的最大 model request 数量 |
-| `POWERCONTEXT_SERVER_RUNTIME_EXPERIENCE_SCHEDULE_SECONDS` | 未设置 | Experience 孵化间隔；未设置即不启用该 job |
+| `POWERCONTEXT_SERVER_RUNTIME_EXPERIENCE_SCHEDULE_SECONDS` | 未设置 | Experience 自动准入间隔；未设置时保留已接受工作，停止新的自动准入 |
 | `POWERCONTEXT_SERVER_EXTERNAL_SKILLS` | 自动生成本机项目 target | 覆盖默认值的 host identity 和显式 Agent Skill targets JSON object |
 
 Topic Worker 对尚未推进的 Scope Cursor 强制使用持久额度：跨全部重试最多 3 次尝试、512 次预留 provider 请求和
@@ -141,9 +149,21 @@ Authentication 负责建立 Principal，Access Control 负责判断该 Principal
 用户 A 和用户 B。兼容静态 token 会为这个 Principal 显式写入 Server 与各 scope 所需的 role。需要让不同用户或 group
 获得不同权限时，应注入部署侧 Authentication Provider 与相应的 AccessControlService。
 
-定时 Source 处理和 Experience 孵化使用固定静态 Principal，或 `ACCESS_BACKGROUND_PRINCIPAL_ID` 指定的 service Principal。
-该 Principal 必须在每个被处理的 scope 上拥有 `scope.contribute`；新 Memory Entry 和 Candidate 会保留它作为直接 owner 或
-`proposed_owner`。多用户 enforced 部署配置了 schedule 却未显式指定该 Principal 时，Server 会拒绝启动。
+Memory、Topic Memory、Experience、Profile 四类后台优先使用 `ACCESS_BACKGROUND_PRINCIPAL_ID` 指定的 service Principal，
+缺省时回退到固定静态 Principal。该身份须在每个被处理的 scope 上拥有 `scope.contribute`，并拥有被修改的现有 Artifact 的写权限。
+新 Entry、Artifact 与 Candidate 的 owner 或 owner attestation 和处理完成确认同事务提交。
+enforced 部署启用后台能力时，若身份或授权 provider 无法在子进程重建，启动会失败；关闭自动 schedule 仍需恢复已接受的工作，
+因此不能免除此检查。内置 provider 支持重建；注入的 provider 和模型对象仍可用于关闭后台能力
+（`ARTIFACT_PROCESSING_FAMILIES=[]`）的同步 SDK/Server 操作。
+
+未配置 Server 身份的 SDK Worker 不需要 Server 授权依赖。内置后台 Worker 使用内置 Source Definition。
+自定义 Source Registry 须为每个启用的 Family 提供自定义 processing binding，或通过
+`ARTIFACT_PROCESSING_FAMILIES=[]` 关闭内置后台 Family；否则启动在接受工作前失败。
+仅关闭 schedule 不足以满足要求，因为显式请求仍会启动 Worker。同步 SDK Context 和纯 API 组合仍支持自定义 Source Registry。
+
+受鉴权保护的 `/metrics` 暴露 `powercontext_server_artifact_processing_*` 指标，只使用 `family` 标签，涵盖 Worker 额度、
+ready/retry 队列、未确认 Scope 数、发现与调用耗时，以及完成、失败、超时次数。未确认数反映最近一次发现结果；计数器随
+Supervisor 实例重建而重置。
 
 远程、多用户或共享 Dashboard 必须使用 `enforced`。此模式下，HTTP、MCP、Dashboard 数据路由和 metrics 共用同一个
 Server PEP；Dashboard 配置的 scope 会在返回前按当前 Principal 的 `scope.read` 判定过滤。`/v1/access/me` 返回
@@ -222,11 +242,16 @@ Handoff Report 独立默认启用，路径为 `/handoff-reports`。没有任何 
 自动选出一个 active Leader。SQLite 与嵌入式 seekDB 只支持单进程 `all`。未设置正数间隔时，Topic Memory 自动波次
 保持关闭；显式 flush 工作的恢复不依赖该间隔。Topic Worker 要求使用文件 SQLite；内存 SQLite 配合 generation
 model 的配置会在声明处理能力之前被拒绝。请通过 `POWERCONTEXT_SERVER_DATABASE_URL` 指定持久数据库路径，例如
-`sqlite+aiosqlite:////srv/powercontext/runtime.db`。Memory、Experience 与 Profile APScheduler 作业只由 `all` 角色运行：
-任一 split role 与 `POWERCONTEXT_SERVER_RUNTIME_SCHEDULE_SECONDS`、
-`POWERCONTEXT_SERVER_RUNTIME_EXPERIENCE_SCHEDULE_SECONDS` 或启用的
-`POWERCONTEXT_SERVER_RUNTIME_PROFILE_SCHEDULE_ENABLED` 同时配置时，进程会在启动阶段明确拒绝。需要这些旧作业时应继续
-使用 `all`；把旧作业分配到独立进程不属于当前 split-role 合同。
+`sqlite+aiosqlite:////srv/powercontext/runtime.db`。Memory、Topic Memory、Experience、Profile 均使用统一 Supervisor，OceanBase 拆分角色也可启用其周期。
+SQLite 和 embedded seekDB 仍要求单宿主 `all`。两模式均保留逐 Family 独立额度和总超时，不借用其他 Family 空闲额度。
+关闭自动准入仍恢复已接受请求。API 与后台须保持 mode、注册 Family 和可触发能力一致；模型仅在执行端必需。
+切换模式须[协调停机迁移](artifact-processing-migration.md)，不能混用模式启动。
+显式同时配置的新旧别名值不同时拒绝启动，同值接受。
+
+普通 Runtime 启动会初始化并恢复所配置的检索索引。Topic Worker 复用该数据库，不再为每个 Window 重建无关的
+Memory/Experience 检索投影；Topic 索引校验与发布守卫仍然执行。如果空库切换了 Topic 检索形态或 Embedding
+profile，应使用相同配置重新打开已有 Runtime；旧 Runtime 会以 retrieval-shape 错误拒绝 Topic 搜索、精确读取和
+当前 Head 浏览，而不是读取另一个向量空间。
 
 普通 Runtime 启动会初始化并恢复所配置的检索索引。Topic Worker 复用该数据库，不再为每个 Window 重建无关的
 Memory/Experience 检索投影；Topic 索引校验与发布守卫仍然执行。如果空库切换了 Topic 检索形态或 Embedding
@@ -279,11 +304,10 @@ fork/evolution。External Skill 精确导入和完整 package 上传不使用模
 bytes，再创建 package digest 完全相同的 pending Candidate。未配置模型时，语义生成会在持久化 Candidate 前返回
 capability error；Review、package 检查与下载、精确导入、usage recording 和 external Skill scan/list/resolve 仍可使用。
 
-Experience 孵化使用独立的 APScheduler job 和持久化 Source cursor。每次 activation 固定检查最多 32 条 Source，并且只把 metadata 包含 `"kind": "task-outcome"` 的 Content Source
+Experience 孵化使用独立的 Supervisor binding 和持久化 Source cursor。每次调用按 `SOURCE_WINDOW_LIMIT` 检查有限 Source 窗口，只把 metadata 包含 `"kind": "task-outcome"` 的 Content Source
 暴露给模型。该 job 会在 Review Inbox 中创建 pending Experience Candidate；它不会自动批准、进入
-PreparedContext、创建 managed Skill、将它导出到 Agent target 或执行任何内容。Memory 和 Experience job 共用
-`POWERCONTEXT_HOME` 下的 APScheduler sidecar，但拥有独立的 job identity 和业务 cursor；取消其中一个 interval
-只会移除对应 job。
+PreparedContext、创建 managed Skill、将它导出到 Agent target 或执行任何内容。Memory 与 Experience 保持独立的周期、
+Worker 额度和业务 Cursor；关闭某一间隔仅停止该 Family 的新自动准入，保留已接受工作。
 设置与验证步骤见[创建并审核 Experience](../workflows/create-and-review-experience.md)。
 
 ### Agent Skill 目标

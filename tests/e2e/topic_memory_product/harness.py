@@ -46,7 +46,6 @@ from pydantic import AnyHttpUrl, SecretStr
 from sqlalchemy.engine import make_url
 from starlette.middleware import Middleware
 
-from powercontext.builtin.artifacts.memory import EmbeddingProfile
 from powercontext.builtin.artifacts.topic_memory import TOPIC_MEMORY_SOURCE_WINDOW_BINDING
 from powercontext.builtin.artifacts.topic_memory.generation import (
     TopicMemoryEvolveOutput,
@@ -56,7 +55,6 @@ from powercontext.builtin.artifacts.topic_memory.generation import (
     TopicMemoryReconcileOutput,
     TopicMemoryTemporaryOutput,
 )
-from powercontext.builtin.inference import EmbeddingResult, InferenceUnavailableError
 from powercontext.builtin.persistence.cursors import SourceCursorRepository
 from powercontext.builtin.persistence.oceanbase import OceanBaseConfig, OceanBaseProfile
 from powercontext.builtin.persistence.processing import ArtifactProcessingPendingRepository
@@ -166,19 +164,16 @@ class _CodexMcpCall:
     status: str
 
 
-class _FallbackEmbedding:
-    """Deterministically inject one unavailable query embedding for E2."""
+def _unavailable_embedding_app() -> FastAPI:
+    """Fail at the HTTP provider boundary using the reconstructible adapter."""
 
-    def __init__(self, config: _RealEmbeddingConfig) -> None:
-        self.profile = EmbeddingProfile(
-            profile_id=config.profile_id,
-            model=config.model,
-            dimension=config.dimension,
-            normalization=config.normalization,
-        )
+    app = FastAPI()
 
-    async def embed(self, _texts: tuple[str, ...], /) -> EmbeddingResult:
-        raise InferenceUnavailableError("embed")
+    @app.post("/v1/embeddings")
+    async def embeddings() -> None:
+        raise HTTPException(status_code=503, detail="controlled embedding outage")
+
+    return app
 
 
 class _EmbeddingFallbackCapture(logging.Handler):
@@ -1186,6 +1181,7 @@ def run_e2(  # noqa: C901
     timeline = AccessTimeline()
     server = None
     fallback_server = None
+    unavailable_embedding_server = None
     fallback_capture = _EmbeddingFallbackCapture()
     search_logger = logging.getLogger("powercontext.builtin.runtime.application")
     search_logger.addHandler(fallback_capture)
@@ -1251,16 +1247,26 @@ def run_e2(  # noqa: C901
         if not server_closed:
             raise ProductChainError("E2 hybrid server port remained open")
 
+        unavailable_embedding_server = start_loopback_server(_unavailable_embedding_app())
         fallback_settings = ServerSettings(
             auth=BearerAuthConfig(enabled=True, token=SecretStr(_E2_TOKEN)),
             database=database,
-            inference=InferenceConfig(),
+            # The all-role restart retains the deployment's capabilities and
+            # uses a reconstructible provider adapter for the controlled outage.
+            runtime=settings.runtime,
+            inference=settings.inference.model_copy(
+                update={
+                    "embedding_base_url": AnyHttpUrl(f"{unavailable_embedding_server.base_url}/v1"),
+                    "embedding_headers": {},
+                    "embedding_timeout_seconds": 3,
+                }
+            ),
             mcp=McpConfig(enabled=False),
             dashboard=DashboardConfig(enabled=False),
             handoff_report=HandoffReportConfig(enabled=False),
         )
         fallback_server = start_loopback_server(
-            create_server_app(settings=fallback_settings, embedding_model=_FallbackEmbedding(config)),
+            create_server_app(settings=fallback_settings),
             startup_timeout=60,
         )
         fallback_search = asyncio.run(
@@ -1304,7 +1310,7 @@ def run_e2(  # noqa: C901
             },
             "hybrid_chain": chain.as_dict(),
             "controlled_fallback": {
-                "injection": "InferenceUnavailableError at query embedding boundary",
+                "injection": "HTTP 503 at the configured query embedding provider boundary",
                 "search_mode": "fts",
                 "exact_ref": fallback_ref.as_dict(),
                 "signal": expected_fallback,
@@ -1321,6 +1327,8 @@ def run_e2(  # noqa: C901
         search_logger.removeHandler(fallback_capture)
         if fallback_server is not None:
             fallback_server.stop()
+        if unavailable_embedding_server is not None:
+            unavailable_embedding_server.stop()
         if server is not None:
             server.stop()
         inference_server.stop()
@@ -1332,6 +1340,9 @@ def run_e2(  # noqa: C901
     result["cleanup"] = {
         "hybrid_server_port_closed": True,
         "fallback_server_port_closed": True,
+        "unavailable_embedding_port_closed": (
+            unavailable_embedding_server is not None and unavailable_embedding_server.port_is_closed()
+        ),
         "fake_generation_port_closed": inference_server.port_is_closed(),
         "temporary_runtime_removed": not runtime_directory.exists(),
     }
@@ -1704,6 +1715,7 @@ def run_e4(directory: Path, *, generation_timeout: float) -> dict[str, object]: 
     timeline = AccessTimeline()
     server = None
     fts_server = None
+    unavailable_embedding_server = None
     temporary_openai_key = False
     result: dict[str, object] | None = None
     try:
@@ -1769,11 +1781,20 @@ def run_e4(directory: Path, *, generation_timeout: float) -> dict[str, object]: 
         if not hybrid_closed:
             raise ProductChainError("E4 hybrid server port remained open")
 
+        unavailable_embedding_server = start_loopback_server(_unavailable_embedding_app())
         fts_settings = ServerSettings(
             auth=BearerAuthConfig(enabled=True, token=SecretStr(_E4_TOKEN)),
             database=database,
-            runtime=RuntimeConfig(artifact_processing_role="all"),
-            inference=InferenceConfig(),
+            # Preserve the frozen hybrid retrieval shape and single-host all
+            # role; unavailable query embeddings exercise the allowed FTS fallback.
+            runtime=settings.runtime,
+            inference=settings.inference.model_copy(
+                update={
+                    "embedding_base_url": AnyHttpUrl(f"{unavailable_embedding_server.base_url}/v1"),
+                    "embedding_headers": {},
+                    "embedding_timeout_seconds": 3,
+                }
+            ),
             mcp=McpConfig(enabled=False),
             dashboard=DashboardConfig(enabled=False),
             handoff_report=HandoffReportConfig(enabled=False),
@@ -1807,6 +1828,7 @@ def run_e4(directory: Path, *, generation_timeout: float) -> dict[str, object]: 
             "dialect_checks": {
                 "hybrid_mode": "hybrid",
                 "fts_mode_after_restart": "fts",
+                "embedding_outage": "HTTP 503 with the original hybrid profile retained",
                 "same_exact_ref": fts_ref.as_dict(),
             },
             "redaction": {
@@ -1818,6 +1840,8 @@ def run_e4(directory: Path, *, generation_timeout: float) -> dict[str, object]: 
     finally:
         if fts_server is not None:
             fts_server.stop()
+        if unavailable_embedding_server is not None:
+            unavailable_embedding_server.stop()
         if server is not None:
             server.stop()
         inference_server.stop()
@@ -1829,6 +1853,9 @@ def run_e4(directory: Path, *, generation_timeout: float) -> dict[str, object]: 
     result["cleanup"] = {
         "hybrid_server_port_closed": True,
         "fts_server_port_closed": True,
+        "unavailable_embedding_port_closed": (
+            unavailable_embedding_server is not None and unavailable_embedding_server.port_is_closed()
+        ),
         "fake_provider_port_closed": inference_server.port_is_closed(),
         "temporary_seekdb_removed": not runtime_directory.exists(),
     }

@@ -53,9 +53,14 @@ catch-up scan. Configure a generation model and enable scheduling with:
 export POWERCONTEXT_SERVER_RUNTIME_PROFILE_SCHEDULE_ENABLED=true
 export POWERCONTEXT_SERVER_RUNTIME_PROFILE_CRON="0 2 * * *"
 export POWERCONTEXT_SERVER_RUNTIME_PROFILE_TIMEZONE="Asia/Shanghai"
-export POWERCONTEXT_SERVER_RUNTIME_PROFILE_MAX_CONCURRENCY=4
+export POWERCONTEXT_SERVER_RUNTIME_PROFILE_MAX_WORKERS=4
 export POWERCONTEXT_SERVER_RUNTIME_PROFILE_MAX_SOURCES_PER_WINDOW=32
 ```
+
+Automatic cron admission requires a Scope policy with `generation_enabled=true`. Scopes with no policy or a
+disabled policy retain their Sources without creating automatic requests or starting Workers. Enabling the policy
+makes that existing input eligible for a later cron fire. Already accepted explicit requests retain their authorization
+and completion semantics.
 
 Enforced deployments use the existing `POWERCONTEXT_SERVER_ACCESS_BACKGROUND_PRINCIPAL_ID` service identity,
 which must have contribution access and write access to existing Profile Artifacts. Local static-administrator
@@ -68,7 +73,7 @@ Failures retain the cursor; lineage-only Sources are filtered. Unchanged Markdow
 creating an automatic Revision. No new Source means no regeneration.
 
 Windows contain at most 32 raw journal records, or 31 when the previous Profile is also evidence.
-Each scan processes at most 100 windows per Scope. Multiple instances may duplicate model calls, but
+Each admitted Scope invocation processes one finite window; remaining ordinary work stays dirty for the next cron opportunity. Multiple instances may duplicate model calls, but
 Policy/Cursor/Head checks permit only one committed result.
 
 ## Review and manual editing

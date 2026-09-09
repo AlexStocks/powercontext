@@ -26,6 +26,9 @@ from sqlalchemy import func, insert, select, tuple_, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from powercontext.builtin.artifacts.experience import EXPERIENCE_INCUBATION_CURSOR_NAME
+from powercontext.builtin.artifacts.profile.models import PROFILE_SOURCE_WINDOW_BINDING
+from powercontext.builtin.artifacts.topic_memory import TOPIC_MEMORY_SOURCE_WINDOW_BINDING
 from powercontext.builtin.persistence.codec import load_model, stored_bytes
 from powercontext.builtin.persistence.errors import (
     IdentityMismatchError,
@@ -35,14 +38,22 @@ from powercontext.builtin.persistence.errors import (
     RepositoryNotFoundError,
     StoredPayloadConflictError,
 )
+from powercontext.builtin.persistence.processing_intents import ArtifactProcessingIntentRepository
 from powercontext.builtin.persistence.tables import SOURCE_JOURNAL_HEADS_TABLE, SOURCES_TABLE
 from powercontext.builtin.sources.content import ContentSource
+from powercontext.builtin.triggers import SOURCE_WINDOW_TRIGGER_NAME
 from powercontext.errors import SourceDefinitionNotFoundError
 from powercontext.limits import MAX_SCOPE_ID_LENGTH
 from powercontext.sources import Source, SourceAdapter, SourceDefinitionRegistry, SourceObservation, SourceRef
 
 _AnySourceAdapter = SourceAdapter[Any, Any, Any]
 _JSON_OBJECT = TypeAdapter(dict[str, JsonValue])
+SOURCE_PROCESSING_BINDINGS = (
+    SOURCE_WINDOW_TRIGGER_NAME,
+    TOPIC_MEMORY_SOURCE_WINDOW_BINDING,
+    EXPERIENCE_INCUBATION_CURSOR_NAME,
+    PROFILE_SOURCE_WINDOW_BINDING,
+)
 
 
 class _StoredSourcePayload(BaseModel):
@@ -154,6 +165,12 @@ class SourceRepository:
             if stored.value != source:
                 raise StoredPayloadConflictError("source", (scope_id, ref)) from None
             return stored, False
+        # Centralized here so capture, record projection and import all publish
+        # discoverable input atomically. Replayed Source identities do not dirty
+        # a binding again. Disabled processors simply retain ordinary dirty.
+        intents = ArtifactProcessingIntentRepository()
+        for binding_name in SOURCE_PROCESSING_BINDINGS:
+            await intents.mark_dirty(connection, scope_id, binding_name)
         return StoredSource(ref=ref, value=source, journal_position=position), True
 
     async def get(

@@ -129,7 +129,7 @@ Server 验证通过后，按[对应 Agent 的文档](../integrations/index.md)�
 
 ## 数据与重启
 
-没有覆盖数据库设置时，SQLite 在用户数据目录保存 `powercontext.db` 和 `scheduler.db`：
+没有覆盖数据库设置时，SQLite 在用户数据目录保存 `powercontext.db`：
 
 - Linux：`$XDG_DATA_HOME/powercontext`，或 `~/.local/share/powercontext`；
 - macOS：`~/Library/Application Support/powercontext`；

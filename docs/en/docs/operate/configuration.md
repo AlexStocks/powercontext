@@ -34,8 +34,8 @@ Without an override, the default is:
 - macOS: `~/Library/Application Support/powercontext`;
 - Windows: `%LOCALAPPDATA%\\powercontext`.
 
-The default SQLite database is `powercontext.db` in this directory. Scheduled processing uses `scheduler.db` in the
-same directory.
+The default SQLite database is `powercontext.db` in this directory. The four built-in background processors persist
+intents and scheduling checkpoints in the same database. Existing installations require [offline migration](artifact-processing-migration.md).
 
 ## Server
 
@@ -74,15 +74,23 @@ Server settings use the `POWERCONTEXT_SERVER_` prefix.
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_EXTRACTION_PROFILE` | `coding` | Memory selection policy: `coding` or `conversation` |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_RERANK_ENABLED` | `false` | Apply listwise reranking after coarse Memory retrieval |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_RERANK_CANDIDATE_LIMIT` | `30` | Coarse candidate pool supplied to the reranker |
-| `POWERCONTEXT_SERVER_RUNTIME_SCHEDULE_SECONDS` | unset | Scheduler interval; unset disables scheduling |
-| `POWERCONTEXT_SERVER_RUNTIME_TOPIC_MEMORY_SCHEDULE_SECONDS` | unset | Per-binding Topic Memory automatic-wave interval; unset disables automatic waves |
-| `POWERCONTEXT_SERVER_RUNTIME_TOPIC_MEMORY_SOURCE_WINDOW_LIMIT` | `10` | Maximum Sources assigned to one Topic Memory Worker, capped at 100 |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_SCHEDULE_SECONDS` | unset | Memory automatic admission interval; `SCHEDULE_SECONDS` remains a compatibility alias |
+| `POWERCONTEXT_SERVER_RUNTIME_TOPIC_MEMORY_SCHEDULE_SECONDS` | unset | Topic Memory automatic admission interval; unset disables new automatic admission |
+| `POWERCONTEXT_SERVER_RUNTIME_TOPIC_MEMORY_SOURCE_WINDOW_LIMIT` | `10` | Maximum Sources per Topic Memory Window, capped at 100; one Scope invocation can finish several Windows |
 | `POWERCONTEXT_SERVER_RUNTIME_TOPIC_MEMORY_HISTORY_MAX_CANDIDATES` | `20` | Maximum historical Topic candidates considered while processing |
 | `POWERCONTEXT_SERVER_RUNTIME_TOPIC_MEMORY_HISTORY_RRF_THRESHOLD` | `70` | RRF acceptance threshold normalized to `0..100` |
 | `POWERCONTEXT_SERVER_RUNTIME_TOPIC_MEMORY_HISTORY_MIN_CANDIDATES` | `5` | Minimum historical recall count when the threshold returns too few candidates |
-| `POWERCONTEXT_SERVER_RUNTIME_ARTIFACT_PROCESSING_MAX_WORKERS` | `10` | Global child-Worker concurrency across Artifact bindings |
-| `POWERCONTEXT_SERVER_RUNTIME_ARTIFACT_PROCESSING_WORKER_TIMEOUT_SECONDS` | `600` | Supervisor timeout for one child Worker's bounded Source Window |
+| `POWERCONTEXT_SERVER_RUNTIME_TOPIC_MEMORY_MAX_WORKERS` | `10` | Topic Worker quota; `ARTIFACT_PROCESSING_MAX_WORKERS` is its compatibility alias |
+| `POWERCONTEXT_SERVER_RUNTIME_TOPIC_MEMORY_WORKER_TIMEOUT_SECONDS` | `600` | Total Scope invocation timeout, including child startup; old `ARTIFACT_PROCESSING_WORKER_TIMEOUT_SECONDS` is its alias |
 | `POWERCONTEXT_SERVER_RUNTIME_ARTIFACT_PROCESSING_ROLE` | `all` | Process role: `all`, `api`, or `background` |
+| `POWERCONTEXT_SERVER_RUNTIME_ARTIFACT_PROCESSING_SUPERVISOR_MODE` | `global` | `global` owns one Lease; `dedicated` owns one Lease per registered Family |
+| `POWERCONTEXT_SERVER_RUNTIME_ARTIFACT_PROCESSING_FAMILIES` | inferred from models | JSON Family list; API-only instances can declare capabilities without model credentials |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_MAX_WORKERS` | `1` | Independent Memory Worker quota |
+| `POWERCONTEXT_SERVER_RUNTIME_EXPERIENCE_MAX_WORKERS` | `1` | Independent Experience Worker quota |
+| `POWERCONTEXT_SERVER_RUNTIME_PROFILE_MAX_WORKERS` | `4` | Independent Profile Worker quota; alias `PROFILE_MAX_CONCURRENCY` |
+| `POWERCONTEXT_SERVER_RUNTIME_MEMORY_WORKER_TIMEOUT_SECONDS` | `600` | Total Memory Scope timeout |
+| `POWERCONTEXT_SERVER_RUNTIME_EXPERIENCE_WORKER_TIMEOUT_SECONDS` | `600` | Total Experience Scope timeout |
+| `POWERCONTEXT_SERVER_RUNTIME_PROFILE_WORKER_TIMEOUT_SECONDS` | `600` | Total Profile Scope timeout |
 | `POWERCONTEXT_SERVER_INFERENCE_GENERATION_MODEL` | unset | Pydantic AI model used by configured extraction, generation, Handoff, and reranking operations |
 | `POWERCONTEXT_SERVER_INFERENCE_GENERATION_BASE_URL` | provider default | Custom generation provider base URL |
 | `POWERCONTEXT_SERVER_INFERENCE_GENERATION_HEADERS` | `{}` | JSON object of static generation client headers; values are secrets |
@@ -105,7 +113,7 @@ Server settings use the `POWERCONTEXT_SERVER_` prefix.
 | `POWERCONTEXT_SERVER_INFERENCE_RERANK_MODEL_SETTINGS` | `{}` | JSON object of Pydantic AI reranker model settings |
 | `POWERCONTEXT_SERVER_INFERENCE_RERANK_TIMEOUT_SECONDS` | generation timeout | LLM reranker timeout |
 | `POWERCONTEXT_SERVER_INFERENCE_RERANK_MAX_REQUESTS` | generation request limit | Maximum model requests in one rerank operation |
-| `POWERCONTEXT_SERVER_RUNTIME_EXPERIENCE_SCHEDULE_SECONDS` | unset | Experience incubation interval; unset disables that job |
+| `POWERCONTEXT_SERVER_RUNTIME_EXPERIENCE_SCHEDULE_SECONDS` | unset | Experience automatic admission interval; unset preserves accepted work and stops new automatic admission |
 | `POWERCONTEXT_SERVER_EXTERNAL_SKILLS` | automatic local project targets | JSON override containing the host identity and explicit Agent Skill targets |
 
 Topic Workers enforce a durable allowance per unadvanced Scope Cursor: 3 attempts, 512 reserved provider requests,
@@ -152,10 +160,24 @@ built-in static token always represents one service Principal, so it cannot dist
 compatibility token materializes explicit Server and per-scope roles for that Principal. Inject the deployment
 Authentication Provider and corresponding AccessControlService when different users or groups need different access.
 
-Scheduled Source processing and Experience incubation run as the fixed static Principal, or as the service Principal
-selected by `ACCESS_BACKGROUND_PRINCIPAL_ID`. That Principal must have `scope.contribute` for each processed scope;
-new Memory entries and Candidates retain it as their direct proposed owner. An enforced multi-user deployment that
-configures a schedule without this explicit Principal fails at startup.
+Background Memory, Topic Memory, Experience, and Profile processing use the service Principal selected by
+`ACCESS_BACKGROUND_PRINCIPAL_ID`, falling back to the fixed static Principal. That Principal must have
+`scope.contribute` for each processed scope and write permission on existing Artifacts it changes. New entries,
+Artifacts, and Candidates retain its ownership or owner attestation in the same transaction as processing completion.
+An enforced deployment with background capabilities fails startup if its identity or authorization provider cannot
+be reconstructed in a child process, even when automatic schedules are disabled: accepted work still needs recovery.
+The built-in provider supports this reconstruction. Injected providers and model objects remain usable by synchronous
+SDK/Server operations with background capabilities disabled (`ARTIFACT_PROCESSING_FAMILIES=[]`).
+
+SDK workers without a Server identity do not require Server authorization dependencies. Built-in background workers
+use the built-in Source definitions. A custom Source registry requires custom processing bindings for every enabled
+family, or disabling built-in background families with `ARTIFACT_PROCESSING_FAMILIES=[]`; otherwise startup fails
+before accepting work. Turning off schedules alone is insufficient because explicit requests still start workers.
+Custom Source registries remain available to synchronous SDK contexts and API-only composition.
+
+The authenticated `/metrics` endpoint exposes `powercontext_server_artifact_processing_*` observations with only a `family`
+label: Worker capacity, ready/retry queues, unacknowledged Scopes, discovery and invocation duration, completions,
+failures, and timeouts. Unacknowledged counts reflect the latest discovery; counters reset with the Supervisor instance.
 
 Remote, multi-user, and shared-Dashboard deployments must use `enforced`. In that mode, HTTP, MCP, Dashboard data
 routes, and metrics share one Server PEP. Configured Dashboard scopes are filtered by the current Principal's
@@ -249,10 +271,18 @@ only the single-process `all` role. Automatic Topic Memory waves remain disabled
 explicit flush work remains recoverable regardless of that interval. Topic workers need file-backed SQLite: configuring
 a generation model with an in-memory SQLite database is rejected before processing is advertised. Use a persistent
 `POWERCONTEXT_SERVER_DATABASE_URL`, such as `sqlite+aiosqlite:////srv/powercontext/runtime.db`.
-Memory, Experience, and Profile APScheduler jobs belong exclusively to `all`: configuring
-`POWERCONTEXT_SERVER_RUNTIME_SCHEDULE_SECONDS`, `POWERCONTEXT_SERVER_RUNTIME_EXPERIENCE_SCHEDULE_SECONDS`, or enabling
-`POWERCONTEXT_SERVER_RUNTIME_PROFILE_SCHEDULE_ENABLED` with either split role is rejected at startup. Keep `all`
-when those jobs are required; assigning them to a separate process is outside the current split-role contract.
+Memory, Topic Memory, Experience, and Profile all use the Supervisor. OceanBase permits their schedules in split roles.
+SQLite and embedded seekDB retain one `all` host. Every Family has its own quota and timeout in both modes; spare quota
+is not shared. Disabling automatic admission preserves already accepted requests. The API and background instances must
+agree on mode, registered Families and trigger capabilities. Model resources are only required by workers. Changing modes
+requires [coordinated offline migration](artifact-processing-migration.md); mixed modes cannot start.
+Conflicting explicit old/new configuration aliases fail startup; equal values are accepted.
+
+Normal Runtime startup initializes and recovers the configured search indexes. Topic Workers reuse that database
+without rebuilding the unrelated Memory/Experience search projections for each Window; Topic index validation and
+publication guards still apply. If an empty database is reconfigured to another Topic retrieval shape or embedding
+profile, reopen existing Runtimes with the same configuration: stale Runtimes reject Topic search, exact get, and
+current-head browsing with a retrieval-shape error instead of reading another vector space.
 
 Normal Runtime startup initializes and recovers the configured search indexes. Topic Workers reuse that database
 without rebuilding the unrelated Memory/Experience search projections for each Window; Topic index validation and
@@ -300,12 +330,12 @@ and stores the canonical package bytes, then creates a pending Candidate with th
 generation model, semantic generation returns a capability error before persisting a Candidate; Review, package
 inspection and download, exact import, usage recording, and external Skill scan/list/resolve continue to work.
 
-Experience incubation is a separate APScheduler job with its own persisted Source cursor. Each activation inspects a
-fixed window of at most 32 Sources and exposes only Content Sources whose metadata contains
+Experience incubation has its own Supervisor binding and persisted Source cursor. Each invocation inspects a
+finite window controlled by `SOURCE_WINDOW_LIMIT` and exposes only Content Sources whose metadata contains
 `"kind": "task-outcome"` to the model. It creates pending Experience Candidates in the Review Inbox; it does not
 approve them, place them in PreparedContext, create a managed Skill, export it to an Agent target, or execute anything.
-The Memory and Experience jobs share the APScheduler sidecar under `POWERCONTEXT_HOME`, but keep independent job
-identities and business cursors. Unsetting one interval removes only that job.
+Memory and Experience keep independent scheduling intervals, Worker quotas, and business cursors. Unsetting an interval
+stops new automatic admission for that Family while preserving accepted work.
 See [Create and review an Experience](../workflows/create-and-review-experience.md) for setup and verification steps.
 
 ### Agent Skill targets

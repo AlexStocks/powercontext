@@ -432,19 +432,20 @@ def test_server_settings_reject_custom_embedded_seekdb_database(tmp_path, monkey
         ServerSettings()
 
 
-def test_server_scheduler_uses_the_powercontext_data_directory(tmp_path, monkeypatch) -> None:
+def test_supervisor_uses_primary_database_without_scheduler_sidecar(tmp_path, monkeypatch) -> None:
     data_dir = tmp_path / "powercontext-data"
     monkeypatch.setenv("POWERCONTEXT_HOME", str(data_dir))
     app = create_server_app(
         settings=ServerSettings(
             runtime=RuntimeConfig(experience_schedule_seconds=3_600),
+            inference=InferenceConfig(generation_model="test"),
             mcp=McpConfig(enabled=False),
         ),
-        experience_pipeline=_NoopExperiencePipeline(),
     )
 
     with TestClient(app):
-        assert (data_dir / "scheduler.db").is_file()
+        assert (data_dir / "powercontext.db").is_file()
+        assert not (data_dir / "scheduler.db").exists()
 
 
 def test_scheduled_experience_owns_only_candidates_created_by_its_incubation() -> None:
@@ -732,7 +733,7 @@ def test_server_factory_reports_database_failure_as_not_ready(monkeypatch, tmp_p
         "checks": {
             "runtime": "ready",
             "database": "unavailable",
-            "artifact_processing_supervisor": "leader",
+            "artifact_processing_supervisor": "disabled",
             **_access_readiness_checks(),
         },
     }
@@ -777,6 +778,10 @@ def test_server_factory_reports_database_and_configured_generation_readiness(mon
             "database": "ready",
             "inference.generation": "ready",
             "artifact_processing_supervisor": "leader",
+            "artifact_processing.memory": "leader",
+            "artifact_processing.experience": "leader",
+            "artifact_processing.profile": "leader",
+            "artifact_processing.topic-memory": "leader",
             **_access_readiness_checks(),
         },
     }
@@ -841,6 +846,9 @@ def test_server_factory_reports_generation_failure_as_degraded(monkeypatch, tmp_
             "database": "ready",
             "inference.generation": "unavailable",
             "artifact_processing_supervisor": "leader",
+            "artifact_processing.memory": "leader",
+            "artifact_processing.experience": "leader",
+            "artifact_processing.profile": "leader",
             **_access_readiness_checks(),
         },
     }
@@ -872,7 +880,7 @@ def test_server_factory_caches_and_redacts_degraded_embedding_readiness(caplog, 
                 "runtime": "ready",
                 "database": "ready",
                 "inference.embedding": "misconfigured",
-                "artifact_processing_supervisor": "leader",
+                "artifact_processing_supervisor": "disabled",
                 **_access_readiness_checks(),
             },
         }
@@ -902,7 +910,7 @@ def test_server_factory_reports_a_rejected_embedding_request_with_a_redacted_rea
             "runtime": "ready",
             "database": "ready",
             "inference.embedding": "misconfigured: provider-rejected (HTTP 400)",
-            "artifact_processing_supervisor": "leader",
+            "artifact_processing_supervisor": "disabled",
             **_access_readiness_checks(),
         },
     }
@@ -938,7 +946,7 @@ def test_server_factory_reports_transient_embedding_failures_as_degraded(
             "runtime": "ready",
             "database": "ready",
             "inference.embedding": expected_status,
-            "artifact_processing_supervisor": "leader",
+            "artifact_processing_supervisor": "disabled",
             **_access_readiness_checks(),
         },
     }
@@ -1044,7 +1052,7 @@ def test_server_factory_reports_missing_embedding_api_prefix_as_degraded(caplog,
                 "runtime": "ready",
                 "database": "ready",
                 "inference.embedding": "misconfigured: provider-rejected (HTTP 404)",
-                "artifact_processing_supervisor": "leader",
+                "artifact_processing_supervisor": "disabled",
                 **_access_readiness_checks(),
             },
         }

@@ -137,7 +137,7 @@ After verifying the Server, follow the [guide for your Agent](../integrations/in
 
 ## Data and restart behavior
 
-With no database override, SQLite stores `powercontext.db` and `scheduler.db` under the user data directory:
+With no database override, SQLite stores `powercontext.db` under the user data directory:
 
 - Linux: `$XDG_DATA_HOME/powercontext`, or `~/.local/share/powercontext`;
 - macOS: `~/Library/Application Support/powercontext`;

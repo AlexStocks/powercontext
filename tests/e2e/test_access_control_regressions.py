@@ -25,7 +25,7 @@ import httpx
 import pytest
 
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
-from powercontext.builtin.runtime import InferenceConfig
+from powercontext.builtin.runtime import InferenceConfig, RuntimeConfig
 from powercontext.server.authentication import AuthenticationResult, ProviderReadiness
 from powercontext.server.authz import AccessUnavailableError, PrincipalRef
 from powercontext.server.authz.composition import open_builtin_access_control, open_casbin_access_control
@@ -53,6 +53,7 @@ async def _server(tmp_path: Path, backend="builtin", *, inference: InferenceConf
             settings=ServerSettings(
                 database=database,
                 inference=inference or InferenceConfig(),
+                runtime=RuntimeConfig(artifact_processing_families=()),
                 access=AccessControlConfig(mode="enforced", deployment_id="regressions"),
                 mcp=McpConfig(enabled=False),
                 metrics=MetricsConfig(enabled=False),
