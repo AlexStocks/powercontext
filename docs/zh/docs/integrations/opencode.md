@@ -54,7 +54,9 @@ Server 默认 Scope 的顺序解析。解析结果会固定到 Session，resume 
 已存在且由 Server 管理的 Scope。
 
 启用可选 Bearer 鉴权时，将完整请求头写入 `POWERCONTEXT_OPENCODE_AUTHORIZATION`，不要把凭据写入 URL。
-非 loopback 地址必须使用 HTTPS。不应采集当前提示词时，设置 `POWERCONTEXT_OPENCODE_CAPTURE_PROMPTS=false`。
+环回地址默认允许明文 HTTP；非环回地址使用 HTTPS，或显式设置 `POWERCONTEXT_OPENCODE_ALLOW_INSECURE_HTTP=true`，
+HTTPS 证书校验仍然启用。安装与持久化同意见[连接远程 Server](../operate/connect-remote-server.md)。
+不应采集当前提示词时，设置 `POWERCONTEXT_OPENCODE_CAPTURE_PROMPTS=false`。
 
 ## 验证安装
 

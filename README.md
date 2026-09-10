@@ -78,6 +78,10 @@ powercontext doctor codex
 `doctor` verifies integration setup. To verify automatic memory, check that a real prompt becomes a Source,
 produces a Topic, evolves after a related prompt, and can be recalled in a new session using the same Scope.
 
+For a Server on another machine, use HTTPS or follow the
+[remote connection guide](docs/en/docs/operate/connect-remote-server.md). Setup recognizes remote HTTP URLs from
+flags or environment variables and asks for explicit consent; automated setup uses `--allow-insecure-http`.
+
 Codex is `official`; other hosts and Python Agent frameworks are `community`; Bub is `evaluation` only.
 These tags describe PowerContext integration maintenance and use. See the
 [capability matrix](https://frf12.github.io/powercontext/en/docs/integrations/capabilities/) for supported features and availability.

@@ -171,6 +171,7 @@ Scope 由 Hook 绑定，并注入 MCP 数据操作；不要把规划标题或目
 
 | 变量 | 默认值 | 含义 |
 | --- | --- | --- |
+| `POWERCONTEXT_CODEX_ALLOW_INSECURE_HTTP` | `false` | 显式允许 Hook 使用非环回明文 HTTP |
 | `POWERCONTEXT_CODEX_SCOPE_ID` | 未设置 | 显式选择一个已存在 Scope，不再解析 binding 和 Server 默认 Scope |
 | `POWERCONTEXT_CODEX_AUTHORIZATION` | 未设置 | Hook 与 MCP 请求使用的完整 `Bearer <token>` header |
 | `POWERCONTEXT_CODEX_CAPTURE_PROMPTS` | `true` | 把用户提示词采集为 Source 证据 |
@@ -178,6 +179,10 @@ Scope 由 Hook 绑定，并注入 MCP 数据操作；不要把规划标题或目
 | `POWERCONTEXT_CODEX_REQUEST_TIMEOUT_SECONDS` | `1` | Hook 单次请求超时 |
 | `POWERCONTEXT_CODEX_HTTP_BUDGET_SECONDS` | `4` | Hook 共享 HTTP 时间预算 |
 | `POWERCONTEXT_CODEX_FLUSH_MAX_CALLS` | `4` | 每个提示词最多执行的 flush 次数 |
+
+Hook 默认允许环回 HTTP，远程 HTTP 需要显式同意，HTTPS 证书校验仍然启用。setup 会保存同意并更新已安装插件的
+`.mcp.json`，Hook 和原生 MCP 都从该文件读取地址。只修改 Hook 的 URL 环境变量不会改变原生地址；升级覆盖
+`.mcp.json` 后需重新运行 setup。Codex 自身的 MCP 策略仍然生效。参见[连接远程 Server](../operate/connect-remote-server.md)。
 
 Codex Hook 外层超时为十秒。Server 不可用或拒绝鉴权时，恢复、采集和 flush 独立降级，不会阻塞 Codex。未显式指定
 Scope 时，插件依次解析 Session binding、workspace binding 和 Server 默认 Scope。配置变量必须存在于启动 Codex 的

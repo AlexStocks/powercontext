@@ -158,7 +158,9 @@ claude
 Hook 会直接读取该进程环境变量，MCP 配置则把它展开到 `Authorization` header。变量不存在时，MCP header
 使用空值。不要把 token 放入 Server URL、插件选项、`.mcp.json`、Source metadata 或日志。
 
-明文 HTTP 只允许连接 `127.0.0.1`、`localhost` 或 `::1`。Claude Code 连接远程 Server 时必须使用 HTTPS。
+环回地址默认允许明文 HTTP。连接非环回 Server 时，使用 HTTPS，或显式设置
+`POWERCONTEXT_CLAUDE_ALLOW_INSECURE_HTTP=true`。引导安装可以保存该同意，并同时配置 Hook 与原生 MCP 地址；
+宿主自身的 MCP 策略仍然生效。参见[连接远程 Server](../operate/connect-remote-server.md)。
 
 ## 理解失败行为
 
@@ -202,6 +204,7 @@ claude plugin marketplace remove powercontext
 | 变量 | 默认值 | 含义 |
 | --- | --- | --- |
 | `POWERCONTEXT_CLAUDE_SERVER_URL` | `http://127.0.0.1:8000` | Hook 使用的 Server base URL |
+| `POWERCONTEXT_CLAUDE_ALLOW_INSECURE_HTTP` | `false` | 显式允许 PowerContext 请求使用非环回明文 HTTP |
 | `POWERCONTEXT_CLAUDE_SCOPE_ID` | 未设置 | 覆盖持久 binding 和 Server 默认 Scope |
 | `POWERCONTEXT_CLAUDE_AUTHORIZATION` | 未设置 | Hook 与 MCP 请求使用的完整 `Bearer <token>` header |
 | `POWERCONTEXT_CLAUDE_CAPTURE_PROMPTS` | `true` | 把用户 prompt 采集为普通 Source 证据 |
@@ -215,4 +218,4 @@ claude plugin marketplace remove powercontext
 Authorization 只能来自环境变量，不能加入 Server URL 或插件选项。
 
 `UserPromptSubmit` Hook 的外层超时为十秒。召回与采集共用一个 wall-clock 时间预算，但会独立降级。
-明文 HTTP 只允许连接 loopback endpoint；远程 Server 必须使用 HTTPS。修改环境变量后需要重启 Claude Code。
+显式允许 HTTP 不会关闭 HTTPS 证书校验。修改环境变量后需要重启 Claude Code。

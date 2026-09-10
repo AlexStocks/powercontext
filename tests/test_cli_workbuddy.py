@@ -32,6 +32,7 @@ from powercontext.cli.system import doctor_app, setup_app
 _HOOK_MODULES = (
     "workbuddy_powercontext_hook.py",
     "workbuddy_settings.py",
+    "powercontext_client_config.py",
     "prepared_context.py",
 )
 

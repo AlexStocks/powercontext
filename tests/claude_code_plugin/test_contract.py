@@ -137,6 +137,23 @@ def test_environment_override_controls_prompt_capture(
     assert settings_module.ClaudeCodePluginSettings.from_environment().capture_prompts is False
 
 
+def test_saved_plugin_http_option_only_authorizes_its_own_endpoint(settings_module, monkeypatch, tmp_path):
+    monkeypatch.setenv("POWERCONTEXT_CLIENT_CONFIG_FILE", str(tmp_path / "clients.json"))
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_SERVER_URL", "http://memory.example:8000")
+    monkeypatch.setenv("CLAUDE_PLUGIN_OPTION_ALLOW_INSECURE_HTTP", "true")
+    assert settings_module.ClaudeCodePluginSettings.from_environment().allow_insecure_http is True
+
+    monkeypatch.setenv("POWERCONTEXT_CLAUDE_SERVER_URL", "http://another.example:8000")
+    with pytest.raises(ValueError):
+        settings_module.ClaudeCodePluginSettings.from_environment()
+
+    monkeypatch.setenv("POWERCONTEXT_CLIENT_ALLOW_INSECURE_HTTP", "true")
+    assert settings_module.ClaudeCodePluginSettings.from_environment().server_url == "http://another.example:8000"
+    monkeypatch.setenv("POWERCONTEXT_CLAUDE_ALLOW_INSECURE_HTTP", "false")
+    with pytest.raises(ValueError):
+        settings_module.ClaudeCodePluginSettings.from_environment()
+
+
 def test_claude_integration_does_not_embed_machine_specific_windows_paths() -> None:
     roots = (
         REPOSITORY_ROOT / ".claude-plugin",

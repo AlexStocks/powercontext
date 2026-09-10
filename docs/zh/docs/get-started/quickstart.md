@@ -25,7 +25,7 @@ powercontext config init --language zh --output .env
 首次本机体验可以这样选择：
 
 1. **存储**：SQLite 可直接开始；需要体验嵌入式 seekdb 时选择 seekdb，并同意后台安装缺失依赖。
-2. **使用场景**：Agent、浏览器和 Server 都在这台机器时选“只在当前机器”。Server 在另一台机器时，先看[远程部署](../operate/deploy-server.md#通过-ssh-从另一台电脑访问)。
+2. **使用场景**：Agent、浏览器和 Server 都在这台机器时选“只在当前机器”。Server 在另一台机器时，先看[连接远程 Server](../operate/connect-remote-server.md)。
 3. **记忆能力**：选择“完整记忆能力”，填写 Generation 和 Embedding API；不确定协议与维度时看[模型配置](configure-models.md)。
 4. **Dashboard**：开启，便于观察 Source 和记忆。向导会生成或沿用 Server Token。
 5. **后台处理**：可先使用各制品的推荐周期。检查间隔不是完成时限，模型处理还需要时间。

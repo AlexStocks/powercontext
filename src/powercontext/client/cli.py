@@ -173,6 +173,7 @@ class _ClientOptions:
     api_token: SecretStr | None
     timeout: float
     json_output: bool
+    allow_insecure_http: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +181,7 @@ class _ClientOverrides:
     server_url: str | None = None
     timeout: float | None = None
     json_output: bool = False
+    allow_insecure_http: bool | None = None
 
 
 def configure_client(
@@ -188,6 +190,7 @@ def configure_client(
     server_url: str | None,
     timeout: float | None,
     json_output: bool,
+    allow_insecure_http: bool | None = None,
 ) -> None:
     """Store lazy Server connection overrides for content commands."""
 
@@ -195,6 +198,7 @@ def configure_client(
         server_url=server_url,
         timeout=timeout,
         json_output=json_output,
+        allow_insecure_http=allow_insecure_http,
     )
 
 
@@ -822,7 +826,9 @@ async def _create_remote_skill_target(
     options = _options(context)
     token = None if options.api_token is None else options.api_token.get_secret_value()
     try:
-        async with PowerContextClient(options.server_url, token=token, timeout=options.timeout) as client:
+        async with PowerContextClient(
+            options.server_url, token=token, timeout=options.timeout, allow_insecure_http=options.allow_insecure_http
+        ) as client:
             enrollment = await client.create_remote_skill_target(
                 CreateRemoteSkillTargetRequest(scope_id=scope_id, agent_kind=agent_kind, display_name=name)
             )
@@ -976,7 +982,9 @@ async def _enroll_remote_skill_target(
     watch_interval: float,
     allow_insecure_http: bool,
 ) -> None:
-    options = _options(context)
+    # Enrollment applies its own endpoint-bound consent check below before it
+    # sends an enrollment code or creates a Receiver configuration.
+    options = _options(context, allow_insecure_http=True)
     try:
         insecure_http = require_remote_skill_server_url(
             options.server_url,
@@ -1237,14 +1245,20 @@ def _read_receiver_config(path: Path) -> RemoteSkillReceiverConfig:
     return RemoteSkillReceiverConfig.model_validate(value)
 
 
-def _options(context: typer.Context) -> _ClientOptions:
+def _options(context: typer.Context, *, allow_insecure_http: bool | None = None) -> _ClientOptions:
     overrides = context.meta.get("powercontext.client.overrides", _ClientOverrides())
-    settings = ClientSettings()
+    if allow_insecure_http is None:
+        allow_insecure_http = overrides.allow_insecure_http
+    settings = ClientSettings(
+        **({} if overrides.server_url is None else {"server_url": overrides.server_url}),
+        **({} if allow_insecure_http is None else {"allow_insecure_http": allow_insecure_http}),
+    )
     return _ClientOptions(
-        server_url=settings.server_url if overrides.server_url is None else overrides.server_url,
+        server_url=settings.server_url,
         api_token=settings.api_token,
         timeout=settings.timeout if overrides.timeout is None else overrides.timeout,
         json_output=overrides.json_output,
+        allow_insecure_http=settings.allow_insecure_http,
     )
 
 
@@ -1252,7 +1266,9 @@ async def _execute(context: typer.Context, operation: _ClientOperation) -> None:
     options = _options(context)
     try:
         token = None if options.api_token is None else options.api_token.get_secret_value()
-        async with PowerContextClient(options.server_url, token=token, timeout=options.timeout) as client:
+        async with PowerContextClient(
+            options.server_url, token=token, timeout=options.timeout, allow_insecure_http=options.allow_insecure_http
+        ) as client:
             response = await operation(client)
     except ClientError as exc:
         typer.echo(_error_message(exc), err=True)
@@ -1402,7 +1418,9 @@ async def _export_managed_skill(
     options = _options(context)
     try:
         token = None if options.api_token is None else options.api_token.get_secret_value()
-        async with PowerContextClient(options.server_url, token=token, timeout=options.timeout) as client:
+        async with PowerContextClient(
+            options.server_url, token=token, timeout=options.timeout, allow_insecure_http=options.allow_insecure_http
+        ) as client:
             response = await client.get_skill(request)
             if response.content.package is None:
                 exported = export_skill(

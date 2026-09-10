@@ -33,6 +33,9 @@ The 8 Agent Hosts use `official` for PowerContext project maintenance and `commu
 
 Each integration connects to a separately running Server. Follow its guide in the table for installation, connection settings, authentication, and diagnostics.
 
+For remote endpoints, see [Connect to a remote Server](../operate/connect-remote-server.md): PowerContext clients
+allow loopback HTTP by default and require explicit consent for non-loopback HTTP. Host-native MCP policies remain separate.
+
 To select multiple hosts interactively, run:
 
 ```bash

@@ -40,6 +40,17 @@ from powercontext.service.model import (
 )
 
 
+@pytest.fixture(autouse=True)
+def isolated_codex_plugin_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    for marketplace in ("powercontext", "powercontext-local"):
+        cache = tmp_path / "codex" / "plugins" / "cache" / marketplace / "powercontext" / "0.1.0"
+        cache.mkdir(parents=True)
+        (cache / ".mcp.json").write_text(
+            json.dumps({"mcpServers": {"powercontext": {"type": "http", "url": "http://127.0.0.1:8000/mcp"}}})
+        )
+
+
 def test_server_defaults_to_persistent_user_storage(
     tmp_path: Path,
     monkeypatch,
@@ -234,6 +245,7 @@ def test_setup_claude_code_reports_mutations_then_installs_and_verifies(
             "options": {
                 "server_url": "http://127.0.0.1:9000",
                 "capture_prompts": False,
+                "allow_insecure_http": False,
             }
         }
     }
@@ -486,6 +498,7 @@ def test_setup_claude_code_preserves_unrelated_settings_when_updating_options(tm
         "options": {
             "server_url": "http://127.0.0.1:8000",
             "capture_prompts": False,
+            "allow_insecure_http": False,
             "other": 1,
         },
     }

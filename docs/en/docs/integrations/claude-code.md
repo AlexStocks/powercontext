@@ -171,8 +171,9 @@ The Hook reads this process environment value directly, while the MCP configurat
 `Authorization` header. The MCP header defaults to an empty value when the variable is absent. Never put the token in
 the Server URL, plugin options, `.mcp.json`, Source metadata, or logs.
 
-Plain HTTP is accepted only for `127.0.0.1`, `localhost`, or `::1`. Use HTTPS when Claude Code connects to a remote
-Server.
+Plain HTTP is allowed on loopback by default. For a non-loopback Server, use HTTPS or explicitly set
+`POWERCONTEXT_CLAUDE_ALLOW_INSECURE_HTTP=true`. Guided setup can save this consent and configure both the Hook and
+native MCP URL; the host's own MCP policy still applies. See [Connect to a remote Server](../operate/connect-remote-server.md).
 
 ## Understand failure behavior
 
@@ -218,6 +219,7 @@ run with `--keep-data`.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `POWERCONTEXT_CLAUDE_SERVER_URL` | `http://127.0.0.1:8000` | Server base URL used by the Hook |
+| `POWERCONTEXT_CLAUDE_ALLOW_INSECURE_HTTP` | `false` | Explicitly permit non-loopback plaintext HTTP for PowerContext requests |
 | `POWERCONTEXT_CLAUDE_SCOPE_ID` | unset | Override durable bindings and the Server default Scope |
 | `POWERCONTEXT_CLAUDE_AUTHORIZATION` | unset | Complete `Bearer <token>` header for Hook and MCP requests |
 | `POWERCONTEXT_CLAUDE_CAPTURE_PROMPTS` | `true` | Capture user prompts as ordinary Source evidence |
@@ -231,5 +233,5 @@ options. The corresponding `POWERCONTEXT_CLAUDE_*` variables take precedence for
 Authorization is environment-only and must not be added to the Server URL or plugin options.
 
 The outer `UserPromptSubmit` Hook timeout is ten seconds. Recall and capture use one shared wall-clock budget but fail
-independently. Plain HTTP is accepted only for loopback endpoints; use HTTPS for a remote Server. Restart Claude Code
+independently. HTTPS certificate validation remains enabled when HTTP is explicitly permitted. Restart Claude Code
 after changing its environment.

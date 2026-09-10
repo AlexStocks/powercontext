@@ -30,6 +30,9 @@ description: 选择插件、MCP、Skills、Agent Host 或 Python 框架接入。
 
 所有集成都连接独立运行的 Server。安装、连接设置、认证和诊断步骤见上表中的各 Agent 文档。
 
+远程地址配置见[连接远程 Server](../operate/connect-remote-server.md)：PowerContext 客户端默认允许环回 HTTP，
+非环回 HTTP 需要显式同意；宿主原生 MCP 策略独立生效。
+
 需要交互选择多个宿主时，可运行：
 
 ```bash

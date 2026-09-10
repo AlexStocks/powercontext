@@ -14,9 +14,12 @@
  * limitations under the License.
  */
 
+import { resolveTransport } from './transport.ts'
+
 export interface PluginConfig {
   contextAssembly?: Record<string, unknown>
   baseUrl?: string
+  allowInsecureHttp?: boolean
   authorization?: string
   scopeId?: string
   timeoutMs?: number
@@ -31,6 +34,7 @@ export interface ResolvedConfig {
   contextAssembly?: Record<string, unknown>
   sources: { baseUrl: ConfigSource; authorization: ConfigSource; scopeId: ConfigSource }
   baseUrl: string
+  allowInsecureHttp: boolean
   authorization: string | undefined
   scopeId: string | undefined
   timeoutMs: number
@@ -41,11 +45,12 @@ export interface ResolvedConfig {
   flushMaxCalls: number
 }
 
-export type ConfigSource = 'environment' | 'plugin' | 'default'
+export type ConfigSource = 'environment' | 'plugin' | 'saved' | 'default'
 
 const DEFAULTS: ResolvedConfig = {
   sources: { baseUrl: 'default', authorization: 'default', scopeId: 'default' },
   baseUrl: 'http://127.0.0.1:8000',
+  allowInsecureHttp: false,
   authorization: undefined,
   scopeId: undefined,
   timeoutMs: 4000,
@@ -67,10 +72,6 @@ function envBoolean(env: NodeJS.ProcessEnv, name: string): boolean | undefined {
   if (['1', 'true', 'yes', 'on'].includes(value)) return true
   if (['0', 'false', 'no', 'off'].includes(value)) return false
   return undefined
-}
-
-function stripSlash(url: string): string {
-  return url.replace(/\/+$/, '')
 }
 
 function optionalText(value: string | undefined): string | undefined {
@@ -96,6 +97,7 @@ export function resolveConfig(
   config: PluginConfig = {},
   env: NodeJS.ProcessEnv = process.env,
 ): ResolvedConfig {
+  const transport = resolveTransport('dsh', env, config.baseUrl, config.allowInsecureHttp, DEFAULTS.baseUrl)
   const maxBytes = config.maxBytes ?? DEFAULTS.maxBytes
   if (maxBytes < 512 || maxBytes > 32768) {
     throw new Error('maxBytes must be between 512 and 32768')
@@ -103,11 +105,12 @@ export function resolveConfig(
   return {
     contextAssembly: contextAssembly(envString(env, 'POWERCONTEXT_DSH_CONTEXT_ASSEMBLY'), config.contextAssembly),
     sources: {
-      baseUrl: envString(env, 'POWERCONTEXT_DSH_BASE_URL') ? 'environment' : config.baseUrl ? 'plugin' : 'default',
+      baseUrl: transport.source,
       authorization: envString(env, 'POWERCONTEXT_DSH_AUTHORIZATION') ? 'environment' : optionalText(config.authorization) ? 'plugin' : 'default',
       scopeId: envString(env, 'POWERCONTEXT_DSH_SCOPE_ID') ? 'environment' : optionalText(config.scopeId) ? 'plugin' : 'default',
     },
-    baseUrl: stripSlash(envString(env, 'POWERCONTEXT_DSH_BASE_URL') ?? config.baseUrl ?? DEFAULTS.baseUrl),
+    baseUrl: transport.baseUrl!,
+    allowInsecureHttp: transport.allowInsecureHttp,
     authorization: envString(env, 'POWERCONTEXT_DSH_AUTHORIZATION') ?? optionalText(config.authorization),
     scopeId: envString(env, 'POWERCONTEXT_DSH_SCOPE_ID') ?? optionalText(config.scopeId),
     timeoutMs: config.timeoutMs ?? DEFAULTS.timeoutMs,

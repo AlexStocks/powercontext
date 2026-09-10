@@ -28,6 +28,7 @@ from pydantic import TypeAdapter, ValidationError
 from powercontext.client.errors import InvalidResponseError, TransportError, server_response_error
 from powercontext.client.tags import ArtifactTagSetResponse
 from powercontext.client.tracing import ClientSpan
+from powercontext.client.transport_policy import resolve_client_transport
 from powercontext.http import (
     AccessAuditPage,
     AccessBinding,
@@ -310,15 +311,17 @@ class PowerContextClient:
 
     def __init__(
         self,
-        base_url: str,
+        base_url: str | None = None,
         *,
         token: str | None = None,
         timeout: float = 10.0,
         http_client: httpx.AsyncClient | None = None,
         trust_transport_security: bool = False,
-        allow_insecure_http: bool = False,
+        allow_insecure_http: bool | None = None,
     ) -> None:
-        self._base_url = base_url.rstrip("/")
+        self._base_url, allow_insecure_http = resolve_client_transport(
+            "client", server_url=base_url, allow_insecure_http=allow_insecure_http
+        )
         # Plaintext HTTP is only trusted on loopback -- for *any* request, not just an authenticated
         # one. The request body itself carries Memory content, so a missing bearer token does not make
         # an unencrypted non-loopback request safe. When this facade opens the transport itself,
@@ -330,8 +333,7 @@ class PowerContextClient:
         # evidence of safety: the guard stays on for caller-supplied transports too, and a caller that
         # knows its transport is secure must say so explicitly via ``trust_transport_security`` rather
         # than have safety inferred from the argument being set. ``allow_insecure_http`` is the
-        # separate, explicit cleartext escape hatch used by a remote Skill Receiver after its own
-        # protected-network consent check; it does not claim that the transport is secure.
+        # separate, explicit cleartext opt-in; it does not claim that the transport is secure.
         transport_trusted = http_client is not None and trust_transport_security
         if not transport_trusted and not allow_insecure_http and is_plaintext_non_loopback(self._base_url):
             raise ValueError("refusing to send requests over unencrypted non-loopback HTTP")  # noqa: TRY003

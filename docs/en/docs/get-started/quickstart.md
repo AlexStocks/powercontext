@@ -27,7 +27,7 @@ powercontext config init --language en --output .env
 For a first local installation:
 
 1. **Storage**: SQLite works without another database dependency. To try embedded seekdb, select it and approve the background dependency installation.
-2. **Usage scenario**: choose “Only on this machine” when your Agent, browser, and Server share a machine. For a remote Server, first read [SSH access](../operate/deploy-server.md#access-from-another-computer-with-ssh).
+2. **Usage scenario**: choose “Only on this machine” when your Agent, browser, and Server share a machine. For a remote Server, first read [Connect to a remote Server](../operate/connect-remote-server.md).
 3. **Memory capabilities**: select full memory and enter Generation and Embedding API details. See [Configure models](configure-models.md) for protocols and dimensions.
 4. **Dashboard**: enable it to inspect Sources and memories. The wizard creates or reuses a Server token.
 5. **Background processing**: start with the recommended schedule for each Artifact. An inspection interval is not a completion deadline; model processing takes additional time.

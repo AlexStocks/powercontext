@@ -184,6 +184,7 @@ does not prove Source capture. Complete the [Source, topic evolution, and cross-
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
+| `POWERCONTEXT_CODEX_ALLOW_INSECURE_HTTP` | `false` | Explicitly permit non-loopback plaintext HTTP for hooks |
 | `POWERCONTEXT_CODEX_SCOPE_ID` | unset | Explicitly select an existing Scope instead of resolving bindings and the Server default |
 | `POWERCONTEXT_CODEX_AUTHORIZATION` | unset | Complete `Bearer <token>` header for Hook and MCP requests |
 | `POWERCONTEXT_CODEX_CAPTURE_PROMPTS` | `true` | Capture user prompts as Source evidence |
@@ -191,6 +192,12 @@ does not prove Source capture. Complete the [Source, topic evolution, and cross-
 | `POWERCONTEXT_CODEX_REQUEST_TIMEOUT_SECONDS` | `1` | Per-request hook timeout |
 | `POWERCONTEXT_CODEX_HTTP_BUDGET_SECONDS` | `4` | Shared hook HTTP budget |
 | `POWERCONTEXT_CODEX_FLUSH_MAX_CALLS` | `4` | Maximum flush calls per prompt |
+
+Hooks allow loopback HTTP by default; remote HTTP requires explicit consent, and HTTPS certificate validation stays
+enabled. Setup saves consent and updates the installed plugin's `.mcp.json`, which supplies the URL for both hooks
+and native MCP. Changing only a Hook URL variable does not change that native endpoint; rerun setup if an upgrade
+replaces `.mcp.json`. Codex's own MCP policy still applies. See
+[Connect to a remote Server](../operate/connect-remote-server.md).
 
 The outer Codex hook timeout is ten seconds. Recall, capture, and flush fail independently and never block Codex when
 the Server is unavailable or rejects authentication. Without an explicit Scope, the plugin resolves the Session
