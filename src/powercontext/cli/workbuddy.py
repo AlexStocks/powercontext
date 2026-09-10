@@ -79,6 +79,7 @@ class WorkBuddySetupResult:
     workbuddy_home: str
     hooks_dir: str
     data_dir: str
+    authorization_state: str = "not_attempted"
 
 
 def install_workbuddy_plugin(*, source: str, ref: str, server_url: str | None = None) -> WorkBuddySetupResult:
@@ -131,12 +132,23 @@ def install_workbuddy_plugin(*, source: str, ref: str, server_url: str | None = 
         _remove_path(hooks_backup)
         _remove_path(skill_backup)
 
+    from powercontext.cli.authorization import (
+        configure_stored_authorization,
+        setup_authorization_value,
+        setup_server_url,
+    )
+
     return WorkBuddySetupResult(
         plugin=WORKBUDDY_PLUGIN_NAME,
         plugin_path=str(plugin_dir),
         workbuddy_home=str(home),
         hooks_dir=str(hooks_dir),
         data_dir=str(data_dir),
+        authorization_state=configure_stored_authorization(
+            "workbuddy",
+            server_url=setup_server_url("workbuddy", "http://127.0.0.1:8000"),
+            value=setup_authorization_value("workbuddy"),
+        ),
     )
 
 

@@ -19,7 +19,9 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import stat
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from powercontext_client_config import load_client_settings, parse_boolean, resolve_allow_insecure_http
@@ -95,7 +97,12 @@ class ClaudeCodePluginSettings:
             )
             or saved.get("server_url")
             or "http://127.0.0.1:8000",
-            authorization=_first_environment("POWERCONTEXT_CLAUDE_AUTHORIZATION"),
+            authorization=_first_environment("POWERCONTEXT_CLAUDE_AUTHORIZATION")
+            or _stored_authorization(
+                server_url=_first_environment("POWERCONTEXT_CLAUDE_SERVER_URL", "CLAUDE_PLUGIN_OPTION_SERVER_URL")
+                or "http://127.0.0.1:8000",
+                root=Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")).expanduser(),
+            ),
             scope_id=_first_environment("POWERCONTEXT_CLAUDE_SCOPE_ID"),
             context_assembly=_environment_object("POWERCONTEXT_CLAUDE_CONTEXT_ASSEMBLY"),
             capture_prompts=_environment_bool(
@@ -186,6 +193,24 @@ def _authorization_header(value: str | None) -> str | None:
     ):
         raise ValueError("Claude Code authorization must be a valid Bearer header")  # noqa: TRY003
     return normalized
+
+
+def _stored_authorization(*, server_url: str, root: Path) -> str | None:
+    path = root / "powercontext" / "credentials.json"
+    try:
+        if path.is_symlink() or not path.is_file() or (os.name != "nt" and stat.S_IMODE(path.stat().st_mode) & 0o077):
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("version") != 1:
+            return None
+        stored_url, authorization = payload.get("server_url"), payload.get("authorization")
+        if not isinstance(stored_url, str) or not isinstance(authorization, str):
+            return None
+        if _http_base_url(stored_url) != _http_base_url(server_url):
+            return None
+        return _authorization_header(authorization)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
 
 
 def _http_base_url(value: str, *, allow_insecure_http: bool = False) -> str:

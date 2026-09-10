@@ -154,6 +154,23 @@ def test_saved_plugin_http_option_only_authorizes_its_own_endpoint(settings_modu
         settings_module.ClaudeCodePluginSettings.from_environment()
 
 
+@pytest.mark.parametrize(
+    "record",
+    [[], {"version": 1}, {"version": 1, "server_url": "http://127.0.0.1:8000"}],
+)
+def test_claude_settings_ignore_malformed_persisted_authorization_records(
+    settings_module: ModuleType,
+    tmp_path: Path,
+    record: object,
+) -> None:
+    credential = tmp_path / "powercontext" / "credentials.json"
+    credential.parent.mkdir()
+    credential.write_text(json.dumps(record), encoding="utf-8")
+    credential.chmod(0o600)
+
+    assert settings_module._stored_authorization(server_url="http://127.0.0.1:8000", root=tmp_path) is None
+
+
 def test_claude_integration_does_not_embed_machine_specific_windows_paths() -> None:
     roots = (
         REPOSITORY_ROOT / ".claude-plugin",

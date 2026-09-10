@@ -333,6 +333,7 @@ class CodexSetupResult:
     plugin: str
     plugin_version: str
     data_dir: str
+    authorization_state: str = "not_attempted"
 
 
 @dataclass(frozen=True, slots=True)
@@ -343,6 +344,7 @@ class ClaudeCodeSetupResult:
     settings_file: str
     cache_dir: str
     data_dir: str
+    authorization_state: str = "not_attempted"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1077,11 +1079,23 @@ def install_codex_plugin(*, source: str, ref: str, server_url: str | None = None
     plugin = _run_codex_json("plugin", "add", f"{PLUGIN_NAME}@{marketplace_name}")
     if server_url is not None:
         _configure_codex_endpoint(marketplace_name, _required_string(plugin, "version"), server_url)
+    from powercontext.cli.authorization import (
+        configure_stored_authorization,
+        setup_authorization_value,
+        setup_server_url,
+    )
+
+    authorization_state = configure_stored_authorization(
+        "codex",
+        server_url=setup_server_url("codex", server_url or DEFAULT_CLAUDE_CODE_SERVER_URL),
+        value=setup_authorization_value("codex"),
+    )
     return CodexSetupResult(
         marketplace=marketplace_name,
         plugin=_required_string(plugin, "name"),
         plugin_version=_required_string(plugin, "version"),
         data_dir=str(data_dir),
+        authorization_state=authorization_state,
     )
 
 
@@ -1175,6 +1189,11 @@ def install_claude_code_plugin(
         raise
 
     plan = _claude_setup_plan()
+    from powercontext.cli.authorization import configure_stored_authorization, setup_authorization_value
+
+    authorization_state = configure_stored_authorization(
+        "claude-code", server_url=server_url, value=setup_authorization_value("claude-code")
+    )
     return ClaudeCodeSetupResult(
         marketplace=CLAUDE_MARKETPLACE_NAME,
         plugin=PLUGIN_NAME,
@@ -1182,6 +1201,7 @@ def install_claude_code_plugin(
         settings_file=plan["settings_file"],
         cache_dir=plan["cache_dir"],
         data_dir=plan["data_dir"],
+        authorization_state=authorization_state,
     )
 
 

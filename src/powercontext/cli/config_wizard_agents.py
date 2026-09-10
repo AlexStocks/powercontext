@@ -133,21 +133,20 @@ _HOST_METADATA = {
         "CONTEXT_ASSEMBLY",
         executables=("hermes",),
     ),
+    "workbuddy": AgentSpec(
+        "workbuddy",
+        "WorkBuddy",
+        "WorkBuddy",
+        "POWERCONTEXT_WORKBUDDY",
+        "SERVER_URL",
+        "AUTHORIZATION",
+        "CAPTURE_PROMPTS",
+        "SCOPE_ID",
+        "CONTEXT_ASSEMBLY",
+    ),
 }
 
-WORKBUDDY = AgentSpec(
-    "workbuddy",
-    "WorkBuddy",
-    "WorkBuddy",
-    "POWERCONTEXT_WORKBUDDY",
-    "SERVER_URL",
-    "AUTHORIZATION",
-    "CAPTURE_PROMPTS",
-    "SCOPE_ID",
-    "CONTEXT_ASSEMBLY",
-)
-
-AGENT_SPECS: tuple[AgentSpec, ...] = (*(_HOST_METADATA[host.name] for host in FIRST_CLASS_HOSTS), WORKBUDDY)
+AGENT_SPECS: tuple[AgentSpec, ...] = tuple(_HOST_METADATA[host.name] for host in FIRST_CLASS_HOSTS)
 AGENT_SPEC_BY_ID = {spec.identifier: spec for spec in AGENT_SPECS}
 
 

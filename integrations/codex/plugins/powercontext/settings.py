@@ -17,6 +17,9 @@
 from __future__ import annotations
 
 import ipaddress
+import json
+import os
+import stat
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
@@ -85,7 +88,9 @@ class _McpEndpointSettingsSource(PydanticBaseSettingsSource):
 
     @override
     def __call__(self) -> dict[str, Any]:
-        return {"server_url": _server_url_from_mcp_configuration()}
+        server_url = _server_url_from_mcp_configuration()
+        authorization = _stored_authorization(server_url)
+        return {"server_url": server_url, **({"authorization": authorization} if authorization else {})}
 
 
 class CodexPluginSettings(BaseSettings):
@@ -179,6 +184,35 @@ class CodexPluginSettings(BaseSettings):
 def _server_url_from_mcp_configuration() -> str:
     configuration = _McpConfiguration.model_validate_json(_MCP_CONFIGURATION_PATH.read_text())
     return _http_base_url(configuration.mcp_servers["powercontext"].url, allow_insecure_http=True)
+
+
+def _stored_authorization(server_url: str) -> str | None:
+    path = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")).expanduser() / "powercontext" / "credentials.json"
+    try:
+        if path.is_symlink() or not path.is_file() or (os.name != "nt" and stat.S_IMODE(path.stat().st_mode) & 0o077):
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("version") != 1:
+            return None
+        stored_url, authorization = payload.get("server_url"), payload.get("authorization")
+        if not isinstance(stored_url, str) or not isinstance(authorization, str):
+            return None
+        if _http_base_url(f"{stored_url.rstrip('/')}/mcp", allow_insecure_http=True) != _http_base_url(
+            server_url, allow_insecure_http=True
+        ):
+            return None
+        scheme, separator, credential = authorization.partition(" ")
+        if (
+            scheme.casefold() != "bearer"
+            or not separator
+            or not credential
+            or any(character.isspace() for character in credential)
+        ):
+            return None
+        else:
+            return authorization
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
 
 
 def _http_base_url(mcp_url: str, *, allow_insecure_http: bool = False) -> str:

@@ -15,6 +15,9 @@
  */
 
 import { resolveTransport } from './transport.ts'
+import { readFileSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
 export interface PluginConfig {
   contextAssembly?: Record<string, unknown>
@@ -93,6 +96,23 @@ function contextAssembly(raw: string | undefined, fallback?: Record<string, unkn
   return structuredClone(value as Record<string, unknown>)
 }
 
+function storedAuthorization(env: NodeJS.ProcessEnv, baseUrl: string): string | undefined {
+  const root = env.DSH_HOME?.trim() || join(homedir(), '.dsh')
+  const path = join(root, 'powercontext', 'credentials.json')
+  try {
+    if (process.platform !== 'win32' && (statSync(path).mode & 0o077) !== 0) return undefined
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
+    const payload = parsed as Record<string, unknown>
+    if (payload.version !== 1 || typeof payload.server_url !== 'string' || stripSlash(payload.server_url) !== baseUrl) return undefined
+    if (typeof payload.authorization !== 'string') return undefined
+    const authorization = payload.authorization
+    return /^Bearer [^\s]+$/.test(authorization) ? authorization : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export function resolveConfig(
   config: PluginConfig = {},
   env: NodeJS.ProcessEnv = process.env,
@@ -111,7 +131,10 @@ export function resolveConfig(
     },
     baseUrl: transport.baseUrl!,
     allowInsecureHttp: transport.allowInsecureHttp,
-    authorization: envString(env, 'POWERCONTEXT_DSH_AUTHORIZATION') ?? optionalText(config.authorization),
+    authorization:
+      envString(env, 'POWERCONTEXT_DSH_AUTHORIZATION') ??
+      optionalText(config.authorization) ??
+      storedAuthorization(env, transport.baseUrl!),
     scopeId: envString(env, 'POWERCONTEXT_DSH_SCOPE_ID') ?? optionalText(config.scopeId),
     timeoutMs: config.timeoutMs ?? DEFAULTS.timeoutMs,
     requestTimeoutMs: config.requestTimeoutMs ?? DEFAULTS.requestTimeoutMs,

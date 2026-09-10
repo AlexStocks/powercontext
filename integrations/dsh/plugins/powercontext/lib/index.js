@@ -15,7 +15,7 @@
  */
 
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
@@ -2516,6 +2516,21 @@ function contextAssembly(raw, fallback) {
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("PowerContext context assembly must be a JSON object");
 	return structuredClone(value);
 }
+function storedAuthorization(env, baseUrl) {
+	const path = join(env.DSH_HOME?.trim() || join(homedir(), ".dsh"), "powercontext", "credentials.json");
+	try {
+		if (process.platform !== "win32" && (statSync(path).mode & 63) !== 0) return void 0;
+		const parsed = JSON.parse(readFileSync(path, "utf8"));
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return void 0;
+		const payload = parsed;
+		if (payload.version !== 1 || typeof payload.server_url !== "string" || stripSlash(payload.server_url) !== baseUrl) return void 0;
+		if (typeof payload.authorization !== "string") return void 0;
+		const authorization = payload.authorization;
+		return /^Bearer [^\s]+$/.test(authorization) ? authorization : void 0;
+	} catch {
+		return;
+	}
+}
 function resolveConfig(config = {}, env = process.env) {
 	const transport = resolveTransport("dsh", env, config.baseUrl, config.allowInsecureHttp, DEFAULTS.baseUrl);
 	const maxBytes = config.maxBytes ?? DEFAULTS.maxBytes;
@@ -2529,7 +2544,7 @@ function resolveConfig(config = {}, env = process.env) {
 		},
 		baseUrl: transport.baseUrl,
 		allowInsecureHttp: transport.allowInsecureHttp,
-		authorization: envString(env, "POWERCONTEXT_DSH_AUTHORIZATION") ?? optionalText(config.authorization),
+		authorization: envString(env, "POWERCONTEXT_DSH_AUTHORIZATION") ?? optionalText(config.authorization) ?? storedAuthorization(env, transport.baseUrl),
 		scopeId: envString(env, "POWERCONTEXT_DSH_SCOPE_ID") ?? optionalText(config.scopeId),
 		timeoutMs: config.timeoutMs ?? DEFAULTS.timeoutMs,
 		requestTimeoutMs: config.requestTimeoutMs ?? DEFAULTS.requestTimeoutMs,

@@ -144,6 +144,7 @@ def test_setup_select_installs_only_the_requested_hosts(monkeypatch) -> None:
             {"host": "opencode", "status": "skipped"},
             {"host": "pi", "status": "skipped"},
             {"host": "hermes", "status": "skipped"},
+            {"host": "workbuddy", "status": "skipped"},
         ]
     }
     installers["codex"].assert_called_once()
@@ -179,6 +180,7 @@ def test_setup_select_continues_after_a_selected_host_fails(monkeypatch) -> None
             {"host": "opencode", "status": "skipped"},
             {"host": "pi", "status": "skipped"},
             {"host": "hermes", "status": "installed"},
+            {"host": "workbuddy", "status": "skipped"},
         ]
     }
     installers["dsh"].assert_called_once()
