@@ -1,6 +1,7 @@
 - Proposal Name: `recall_sufficiency_gate`
 - Start Date: 2026-09-10
-- RFC PR: [oceanbase/powercontext#0000](https://github.com/oceanbase/powercontext/pull/0000)
+- Status: Proposed
+- RFC PR: [oceanbase/powercontext#1560](https://github.com/oceanbase/powercontext/pull/1560)
 - Tracking Issue: [oceanbase/powercontext#1556](https://github.com/oceanbase/powercontext/issues/1556)
 - Related RFCs: [RFC 0028](0028_context_pack.md), [RFC 0080](0080_memory_search_reranking.md),
   [RFC 0081](0081_end_to_end_evaluation_architecture.md), [RFC 1229](1229_unified_workloads_and_long_horizon_memory_evaluation.md),
