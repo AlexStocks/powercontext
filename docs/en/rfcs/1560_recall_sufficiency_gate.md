@@ -226,6 +226,27 @@ The loop belongs in the Runtime layer that currently performs the per-family sea
 `PreparedContextBuilder.build_scopes_result()`. The Builder itself stays free of I/O, persistence, and reranking, as
 its docstring states; it receives the candidates from the winning round, exactly as it does today.
 
+## Persistence boundary
+
+RFC 0028 states that Context Pack "writes no database or file, enters no Source journal or Memory evidence, starts no
+scheduler work, and is not persisted as telemetry" (`docs/en/rfcs/0028_context_pack.md:518-519`). This RFC stays
+inside that boundary.
+
+`RecallEffort` — including `truncated_items` and `dropped_items` — is a value computed within a single
+`prepare_context` call and attached to the in-process build result. It writes no database row, is not a Source
+observation or Memory evidence, starts no scheduler work, and is not persisted as telemetry. A caller that never
+inspects the in-process result pays nothing and produces no side effect.
+
+This is why the proposal deliberately does **not** include a per-entry recall-outcome ledger that survives across
+sessions, even though that is the more useful signal. Persisting "this entry was selected" or "this entry lost to the
+budget" from the prepare path requires amending the RFC 0028 write-free clause, which is a foundational change and is
+being decided elsewhere: #1554 raised exactly this choice, and the maintainer's steer there is to keep prepare
+read-only for the first scope. Any cross-session variant of this trace therefore needs its own RFC.
+
+One correction worth recording, because it bears on how that future RFC must be argued: the fact that
+`RelationalRecallTokenEstimator` resolves recall lineage inside prepare (`recall.py:106`) is **not** a precedent for
+permitting a write. Both `resolve()` and `estimate()` are reads, and RFC 0028 constrains writes, not work.
+
 ## Budget invariance
 
 Expansion can only increase the number of candidates competing for a fixed budget. Because selection and rendering

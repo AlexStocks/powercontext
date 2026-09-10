@@ -208,6 +208,24 @@ max_entry_content_bytes = 2000
 `ScopedContextApplication._prepare`（`application.py:727`）与 `_recall_scope`（`application.py:814`）。正如 Builder
 的 docstring 所述，Builder 本身保持无 I/O、无持久化、无 rerank；它接收胜出轮次的候选，与今天完全一致。
 
+## 持久化边界
+
+RFC 0028 规定 Context Pack"不写数据库、不写文件、不进入 Source journal、不进入 Memory evidence、不启动 scheduler，也不作为
+telemetry 持久化"（`docs/zh/rfcs/0028_context_pack.md:464`）。本 RFC 保持在该边界之内。
+
+`RecallEffort`——包括 `truncated_items` 与 `dropped_items`——是在单次 `prepare_context` 调用内计算、并挂在进程内构建
+结果上的值。它不写数据库行，不是 Source observation 或 Memory evidence，不启动 scheduler 工作，也不作为 telemetry
+持久化。从不查看进程内结果的调用方不付出任何代价，也不产生任何副作用。
+
+这正是本提案**刻意不**包含跨会话存活的逐条召回结果台账的原因——尽管那才是更有用的信号。从 prepare 路径持久化
+"这条被选中"或"这条输给了预算"，需要修改 RFC 0028 的 write-free 条款，那是一次基础契约变更，且正在别处决定：#1554
+提出的正是这个选择，而 maintainer 在那里的意见是首版保持 prepare 只读。因此本 trace 的任何跨会话版本都需要它自己的
+RFC。
+
+有一点纠正值得记录，因为它关系到未来那个 RFC 该如何论证：`RelationalRecallTokenEstimator` 在 prepare 内解析召回
+血缘（`recall.py:106`）**并不能**作为允许写入的先例。`resolve()` 与 `estimate()` 都是读操作，而 RFC 0028 约束的是
+**写**，不是工作量。
+
 ## 预算不变性
 
 扩展只能增加参与竞争固定预算的候选数量。由于选择与渲染发生在最后一轮之后且逻辑不变，并且 `content_bytes` 仍然
