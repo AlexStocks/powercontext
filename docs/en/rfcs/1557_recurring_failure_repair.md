@@ -20,7 +20,8 @@ PowerContext answers the follow-up question: "the situation came back — did wh
 
 This RFC gives recurring failures a machine-matchable identity, an attribution that names which PowerContext layer a
 repair must touch, and an outcome ledger that counts whether a published record was ever selected, ever recurred, and
-ever came back quiet. Four statements summarize the design:
+ever actually worked — the last scored only on positive evidence, never on a task that stayed quiet. Four statements
+summarize the design:
 
 1. **Recurrence needs identity, and free text is not an identity.** An Experience gains an optional structured
    `failure` block whose signature is the match key. Without it, a re-worded description of the same failure is a new
@@ -74,7 +75,8 @@ nothing distinguishes "this lesson worked" from "this lesson was never in contex
 three times and the failure happened anyway".
 
 The three desired answers are: was the record ever selected, did the failure recur anyway, and — when it recurred — which
-layer was actually broken. Today none of the three is representable.
+layer was actually broken. Today none of the three is representable. The flow below is the smallest case that separates
+them.
 
 ## What this RFC is not
 
@@ -86,6 +88,33 @@ decide *which artifact to propose* and assume the input concept already exists. 
 type those two mechanisms can consolidate and route.
 
 # Guide-level explanation
+
+## The flow this RFC is written around
+
+The case that motivated this proposal: an agent repeatedly edits `openapi/powercontext.yaml` and forgets to regenerate
+the generated sources, so the checked-in code drifts from the contract.
+
+1. The first two occurrences are ordinary Experience proposals, and nothing links them. With the `failure` block from
+   this RFC, the second is recognized as a **recurrence** of the first: the signature matches, the ledger records
+   `recurred`, and because a record already exists, no third lesson is written.
+2. A later task touches the same file. The record is recalled into `prepare_context` and the agent is told to
+   regenerate. That is the `selected` event, reconstructed from the Handoff citation rather than instrumented on the
+   read path (see *Ledger write path* below).
+3. The task reports a Task Outcome, and whether that outcome counts for anything is decided by evidence rather than by
+   the agent saying so. The record's `verification` names the check "the generated sources are in sync with the
+   contract":
+   - the check **ran and passed** → `avoided`;
+   - the check **ran and failed** → `recurred`; and because the check names the contract rather than the agent's memory,
+     the diagnosis points at the record's construction rather than at recall;
+   - the check **did not run** → `unknown`, and no event is written. A task that succeeded without ever exercising the
+     check is not evidence that the record helped.
+4. If the signature accumulates recurrences without ever reaching `avoided`, the revision is surfaced for review. When
+   its `repair_surface` is `recall_policy`, the review question is not "sharpen the lesson" but "why did recall never
+   fire it" — a diagnosis that cannot be written today at all.
+
+Every step uses a mechanism that already exists: Experience revisions, recall of an artifact into `prepare_context`,
+Handoff citations, Task Outcome and `TaskCheck` Sources, and the Review Inbox. The new parts are the match key on the
+record, the `repair_surface` enum, the `verification` binding, and the ledger.
 
 ## Three new concepts
 
@@ -108,15 +137,33 @@ The enum exists to route the repair. A record whose fix belongs in `recall_polic
 it should produce a signal about retrieval. `repair_surface` is proposed by generation and confirmed at Review; it is not
 inferred and then treated as fact.
 
-**Outcome ledger.** Three counters per published Experience revision, all derived from evidence rather than from
+**Outcome ledger.** Three evidence events per published Experience revision, derived from evidence rather than from
 instrumenting the read path:
 
 - `selected` — the revision was cited by a Handoff that a later Task Outcome worked under;
 - `recurred` — a later Task Outcome reported a failure matching this signature;
-- `avoided` — the revision was selected for a Task Outcome that completed, and no recurrence of this signature was
-  reported for it.
+- `avoided` — a later Task Outcome showed the risky situation recurring *and* the check bound to the record passing.
 
-`avoided` is a proxy and the RFC says so plainly: a successful task is not proof that the record prevented anything.
+`avoided` is evidence-gated, and it requires all four of the following. Selection into prepared context is not use, and
+a Task Outcome that merely fails to mention the failure is not avoidance:
+
+1. the revision was cited by a Handoff that a later Task Outcome worked under;
+2. the check bound to the record **ran** under that Task Outcome, and its result is cited. A check that did not run
+   leaves the verdict `unknown`: nothing then establishes that the risky situation came up at all;
+3. that check **passed**;
+4. no `recurred` event was recorded for this signature under the same Task Outcome.
+
+A completed Task Outcome on its own writes no event. Where the trigger condition cannot be shown to have occurred, or
+where the bound check produced no result, the verdict stays **`unknown`** and no event is written — absence of evidence
+is never scored as success, and an evidential gap must not be silently converted into a positive counter.
+
+`unknown` is a *derived verdict, not a ledger event*. Writing a row for every unobserved case would fill an append-only
+ledger with information-free rows and would require capture on paths that must stay write-free; it is instead computed
+as the gap between a revision's `selected` events and its events with a resolved verdict.
+
+`avoided` remains a proxy, and the RFC does not claim otherwise. A passing check shows the outcome was right; it does
+not show that the record caused it. This rule stops a record that is selected and never needed from being scored
+`avoided`, but a record whose check passes for unrelated reasons still will be.
 
 ## How a contributor should think about it
 
@@ -144,6 +191,9 @@ An agent hits `pytest` failing with a port already bound in a sandbox. Outcome s
 Had the surface been `recall_policy`, step 4 would not happen at all. The pipeline would record the recurrence, surface
 it in statistics, and propose no artifact change, because the bug is in retrieval, not in the text.
 
+This example exercises the `recurred` path. The OpenAPI flow above is what exercises `avoided` and `unknown`; between
+them the two cases cover every event the ledger can hold.
+
 # Reference-level explanation
 
 ## Data model
@@ -155,9 +205,14 @@ class FailureSignature(_ExperienceValue):
     recall_cue: Annotated[str, Field(min_length=1, max_length=MAX_FAILURE_CUE_LENGTH)]
     symptom: ExperienceText | None = None
 
+class FailureVerification(_ExperienceValue):
+    condition: ExperienceText                                                 # when this check is meaningful
+    check_subject: Annotated[str, Field(min_length=1, max_length=MAX_FAILURE_CUE_LENGTH)]
+
 class FailureRecord(_ExperienceValue):
     signature: FailureSignature
     repair_surface: RepairSurface
+    verification: FailureVerification
     @model_validator(mode="after")
     def reject_blank_cue(self) -> FailureRecord: ...
 
@@ -172,6 +227,12 @@ class ExperienceContent(_ExperienceValue):
 `RepairSurface = Literal["experience_content", "working_state", "recall_policy", "acceptance_check"]`.
 `MAX_FAILURE_CUE_LENGTH` is a proposed new constant (512) because a match key should not be 8000 characters; the exact
 value is an implementation decision, not a design one.
+
+`verification` is required *inside* `FailureRecord`, and it is what makes the ledger able to say anything beyond "this
+failed again". `condition` states the situation in which the check is meaningful, so that a passing check on an
+unrelated task is not read as avoidance; `check_subject` names the `TaskCheck` that evidences it. A record without a
+check can only ever accumulate `recurred` events, so requiring the field is what keeps `avoided` from degrading into
+"nothing was reported".
 
 **Backwards compatibility.** Artifact content is persisted as JSON and re-validated through the registered content type
 on load, so an optional field is load-compatible with every existing revision. No `schema_version` is introduced: the
@@ -194,10 +255,13 @@ unverifiable record is dropped rather than stored.
    the citation must specifically evidence the failure.
 2. **A single, self-contained cue.** The cue must name a recognisable situation, not a restatement of the outcome field.
 3. **A `repair_surface`.** The record must state which layer a fix must touch.
-4. **No silent near-twin.** If the normalized cue is a near-duplicate of an existing record's cue, the proposal is
+4. **A check that can be run later.** The record must carry a `verification` whose `condition` names the situation in
+   which the check is meaningful and whose `check_subject` names the check. A record with no check can only ever be
+   observed failing again, which is the state this RFC exists to get out of.
+5. **No silent near-twin.** If the normalized cue is a near-duplicate of an existing record's cue, the proposal is
    returned with a warning that names the existing record, so the author can revise that record instead. The proposal is
    not rejected automatically.
-5. **Provenance.** Reuse the existing Review evidence model unchanged; do not add a second evidence mechanism.
+6. **Provenance.** Reuse the existing Review evidence model unchanged; do not add a second evidence mechanism.
 
 Every rejection and every near-duplicate warning is persisted as an immutable Source in the existing Source/Observation
 model ([RFC 1400](1400_source_definition_and_observation_model.md)), so a refusal is auditable without inventing a log
@@ -256,12 +320,18 @@ class RecurrenceObservation(_ArtifactValue):
     event: Literal["selected", "recurred", "avoided"]
     match_basis: Literal["exact", "human_confirmed"]
     task_outcome_ref: SourceRef                    # evidence for recurred/avoided
+    check_ref: SourceRef | None = None             # required for avoided: the TaskCheck that ran and passed
     handoff_ref: ArtifactRef | None = None         # how selection was derived
     observed_at: datetime
 ```
 
 Events are append-only and keyed by `(scope_id, artifact_ref, signature_key)`. Nothing is updated in place, so the
 history of a record's yield is inspectable even after it is revised.
+
+`avoided` is the only event that requires `check_ref`; `selected` carries `handoff_ref`, and `recurred` carries its
+failing observation through `task_outcome_ref`. An observation with no resolved verdict writes no row at all. A
+revision's `unknown` count is therefore derived: its `selected` events under some Task Outcome, minus those that
+acquired a `recurred` or `avoided` under the same Task Outcome.
 
 ## Degradation and the Review interaction
 
@@ -280,13 +350,18 @@ A revision is marked **needing review** when it accumulates a recurrence streak 
   *visible*, not made *inactive*. Real retirement semantics need their own RFC.
 - An `avoided` event clears the streak but changes no artifact state; it returns a record to normal recall, which is the
   only automatic transition this RFC introduces.
+- A revision whose bound check never runs accumulates neither `recurred` nor `avoided`, so it never reaches the streak
+  threshold. That is not silence: it surfaces as a growing `unknown` count, which is the signal that the `verification`
+  binding is wrong — not that the record is fine.
 
 ## Read surface
 
 `ScopeStatistics` ([RFC 0072](0072_scoped_statistics_and_usage.md)) gains a `recurrence` block: per-scope counts of
-`selected` / `recurred` / `avoided`, plus the number of revisions needing review. Because the existing statistics layer
-has no per-artifact usage view, the RFC proposes one bounded read: the top-N revisions by recurrence streak in a scope,
-returned by the existing statistics operation. No new MCP tool is introduced.
+`selected` / `recurred` / `avoided` and of selections still `unknown`, plus the number of revisions needing review. The
+`unknown` count is reported alongside the verdicts rather than folded away, because a scope whose records are all
+`unknown` has no evidence loop at all — a different situation from one whose records are being exercised. Because the
+existing statistics layer has no per-artifact usage view, the RFC proposes one bounded read: the top-N revisions by
+recurrence streak in a scope, returned by the existing statistics operation. No new MCP tool is introduced.
 
 ## Compatibility and blast radius
 
@@ -306,8 +381,11 @@ returned by the existing statistics operation. No new MCP tool is introduced.
   while overcounting produces a confident wrong signal. Neither is free.
 - **The ledger adds persisted rows to a system that deliberately keeps its read path write-free.** Storage growth is
   proportional to consolidation events, not to requests, but it is real.
-- **`avoided` is a proxy.** Task success is not attributable to the presence of a record, and the RFC does not claim
-  otherwise. A record that is always selected and never needed will look successful.
+- **`avoided` rests on a binding that generation proposes.** The `verification` must be bound to the signature's
+  trigger condition. A loose binding scores `avoided` on tasks where the risky situation never arose, which overcounts; a
+  binding that never fires leaves the counter `unknown` indefinitely, which undercounts. Undercounting is preferred, on
+  the same reasoning as the cue above — but it makes this counter only as good as the model-authored check it names, and
+  it means some records can never be scored at all.
 - **Review load increases.** A noisy consolidation pipeline can now flood the Review Inbox with recurrence candidates.
   The streak threshold is the only brake proposed here.
 - **Mixing negative knowledge into `ExperienceContent` widens the family's shape.** RFC 0051 defines Experience as
@@ -316,13 +394,17 @@ returned by the existing statistics operation. No new MCP tool is introduced.
 
 # Rationale and alternatives
 
-**Why extend `ExperienceContent` instead of adding a family.** Adding a family touches the repository tuples, the
-candidate repository, `BaseArtifactFamily`, tags, authorization profiles, artifact resource discovery, the Review
-service's family branches, OpenAPI, the JS integration, docs, and tests — for a record whose shape is Experience-shaped
-(situation, action, outcome, lesson) plus a match key. Consolidation for recurring failures already lands in Experience
-through `incubation.py`, so the identity belongs where consolidation happens. If maintainers judge that a separate
-family is cleaner, the three pieces — signature, `repair_surface`, ledger — move together with no design change; the
-placement is the only open part.
+**Placement: this lands in Experience, and a separate family is deferred.** The design above extends
+`ExperienceContent` rather than adding a family, following the guidance on the tracking issue to use the existing
+Experience and Task Outcome paths and to settle family separation once a concrete case works. Adding a family is the
+larger change — repository tuples, the candidate repository, `BaseArtifactFamily`, tags, authorization profiles,
+artifact resource discovery, the Review service's family branches, OpenAPI, the JS integration, docs, and tests — for a
+record whose shape is Experience-shaped (situation, action, outcome, lesson) plus a match key.
+
+Deferring is not the same as deciding, and the reason to revisit it is concrete: if the `failure` block turns out to be
+carried by only a minority of Experience revisions, then Experience is the wrong container and the cost above becomes
+the right price. The three pieces — signature, `repair_surface`, ledger — move together with no design change; placement
+is the only open part, and it is open deliberately.
 
 **Alternative: a reserved Memory `kind`.** Rejected. Memory entries already have `active`/`inactive` states and
 `MemoryChangeOp`, and RFC 0014 gives them a different admission contract built around statements that change future
@@ -372,8 +454,9 @@ architecture this metric should feed.
 
 # Unresolved questions
 
-1. **Placement.** Extend `ExperienceContent` (recommended here), add a family, or reserve a Memory kind. This is the one
-   question that must be settled before implementation; everything else in the RFC is placement-independent.
+1. **Placement.** This RFC lands the record in `ExperienceContent` and defers the question of a separate Artifact family
+   until the flow above works on a concrete case, per the tracking issue. Revisit it if the `failure` block turns out to
+   be carried by only a minority of Experience revisions. Everything else in the RFC is placement-independent.
 2. **Where does `repair_surface` live** — in the artifact, or as a Review annotation that leaves the artifact content
    untouched? In the artifact it is durable and queryable; in Review it keeps the content immutable and the judgment
    auditable.

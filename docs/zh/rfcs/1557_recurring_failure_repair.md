@@ -19,7 +19,8 @@ Experience 回答的是"在什么情境下、什么动作产生了什么结果�
 后续问题：「那个情境又出现了 —— 我们学到的东西到底起作用了吗？」
 
 本 RFC 给反复出现的失败一个可机器匹配的身份、一个指明"修复必须触碰哪一层"的归因，以及一个记录某条已发布记录是否
-被选中过、是否再次复发过、是否安静收场的结果账本。设计可归纳为四条：
+被选中过、是否再次复发过、是否**真的起过作用**的结果账本 —— 最后一项只凭正面证据判定，绝不由一次"没出事的任务"得来。
+设计可归纳为四条：
 
 1. **复发需要身份，而自由文本不是身份。** Experience 增加一个可选的 `failure` 结构化块，其中 signature 就是匹配键。
    没有它，同一个失败换一种措辞描述就是一条新的 Experience，于是复发无法计数，`lesson` 也无法被证伪。
@@ -64,7 +65,7 @@ automatic retirement or time decay"。用量归因正是本提案缺失的那一
 进过上下文"和"这条 lesson 进过三次上下文，失败照样发生"。
 
 我们想要的三个答案分别是：这条记录是否被选中过；失败是否还是复发了；以及复发时，坏掉的到底是哪一层。今天这三个答案都
-无法表达。
+无法表达。下面的流程是能把这三点区分开的最小案例。
 
 ## 本 RFC 不是什么
 
@@ -74,6 +75,28 @@ Experience，并在配对比较下为 Skill 修订设闸。 #1508 做的事是�
 工作流：Dream 决定*该提出哪个制品*，并假定输入概念已经存在。本 RFC 提供的正是这两个机制可以归整与路由的负面知识类型。
 
 # Guide-level explanation
+
+## 本 RFC 围绕的流程
+
+这是促成本提案的场景：一个 agent 反复修改 `openapi/powercontext.yaml`，却忘了重新生成生成代码，于是签入的代码与契约
+逐渐脱节。
+
+1. 前两次出现是普通的 Experience 提案，彼此毫无关联。有了本 RFC 的 `failure` 块，第二次会被识别为第一次的**复发**：
+   signature 匹配，账本记一次 `recurred`，而因为记录已经存在，不会再写出第三条 lesson。
+2. 后来的一次任务又动了同一个文件。该记录被召回到 `prepare_context`，agent 被告知要重新生成。这就是 `selected` 事件 ——
+   它由 Handoff 引用重建，而不是在读路径上插桩采集（见下文《账本写入路径》）。
+3. 该任务上报一个 Task Outcome。这次 outcome 算不算数，由证据决定，而不由 agent 自己说了算。该记录的 `verification`
+   命名了 check「生成代码与契约保持同步」：
+   - check **运行且通过** → `avoided`；
+   - check **运行且失败** → `recurred`；而且因为这个 check 命名的是契约而不是 agent 的记忆，诊断指向的是记录的构造方式，
+     而不是召回；
+   - check **没有运行** → `unknown`，且不写事件。一次没有触发该 check 的成功任务，不能作为"这条记录帮上了忙"的证据。
+4. 若该 signature 不断累积复发却从未达到 `avoided`，该 revision 会被推到 Review。当其 `repair_surface` 为
+   `recall_policy` 时，Review 要问的不是"把 lesson 打磨得更好"，而是"召回为什么从来没触发它" —— 这是一个今天根本无法
+   写出的诊断。
+
+上述每一步都用的是已经存在的机制：Experience revision、制品被召回进 `prepare_context`、Handoff 引用、Task Outcome 与
+`TaskCheck` Source，以及 Review Inbox。新增的部分只有记录上的匹配键、`repair_surface` 枚举、`verification` 绑定和账本。
 
 ## 三个新概念
 
@@ -94,13 +117,30 @@ Experience，并在配对比较下为 Skill 修订设闸。 #1508 做的事是�
 这个枚举存在的意义是路由修复。一条修复属于 `recall_policy` 的记录不应该再产出另一条 lesson —— 它应该产出一个关于检索的
 信号。`repair_surface` 由生成环节提议、在 Review 确认；它不会被自动推断之后当作事实使用。
 
-**Outcome ledger。** 每条已发布的 Experience revision 配三个计数器，全部从证据派生，而不是从插桩读路径得到：
+**Outcome ledger。** 每条已发布的 Experience revision 配三类证据事件，全部从证据派生，而不是从插桩读路径得到：
 
 - `selected` —— 该 revision 被某个 Handoff 引用过，而后来的 Task Outcome 是在该 Handoff 下完成的；
 - `recurred` —— 更晚的 Task Outcome 报告了与该 signature 匹配的失败；
-- `avoided` —— 该 revision 被选中用于某个已完成的 Task Outcome，且没有为该次任务报告本 signature 的复发。
+- `avoided` —— 更晚的 Task Outcome 显示风险情境再次出现，**且**绑定在该记录上的 check 通过。
 
-`avoided` 是一个代理指标，本 RFC 明确这么说：任务成功并不能证明这条记录阻止了任何事情。
+`avoided` 以证据为闸门，必须同时满足下列四条。"被选进 prepared context"不等于"被用了"，而一次只是没有提到该失败的
+Task Outcome 也不等于"避免了"：
+
+1. 该 revision 被某个 Handoff 引用过，而后来的 Task Outcome 是在该 Handoff 下完成的；
+2. 绑定在该记录上的 check 在那次 Task Outcome 中**运行过**，且其结果被引用。未运行的 check 一律使判定停在 `unknown`：
+   此时没有任何东西能证明那个风险情境出现过；
+3. 该 check **通过**；
+4. 同一次 Task Outcome 下没有为本 signature 记录 `recurred` 事件。
+
+一次已完成的 Task Outcome 本身不写任何事件。无法证明触发条件出现过、或绑定的 check 没有产出结果时，判定保持
+**`unknown`** 且不写事件 —— 证据缺失绝不被记为成功，证据空洞也绝不被静默转成一个正计数。
+
+`unknown` 是*派生判定，不是账本事件*。为每个未被观测的情形写一行，会让只追加的账本塞满不携带信息的行，并要求在必须保持
+不写库的路径上做采集；它改为计算得出：某个 revision 的 `selected` 事件数，减去在同一 Task Outcome 下获得了 `recurred`
+或 `avoided` 的那些。
+
+`avoided` 依然是代理指标，本 RFC 不宣称相反。check 通过说明结果是对的，并不说明这条记录造成了它。这条规则阻止了
+"总被选中却从未被需要"的记录被记成 `avoided`，但一条 check 因无关原因通过的记录仍会被记为 `avoided`。
 
 ## 贡献者该如何理解它
 
@@ -125,6 +165,8 @@ agent 在沙箱里让 `pytest` 因为端口已被占用而失败。Outcome statu
 假如 surface 是 `recall_policy`，第 4 步根本不会发生。流水线会记录这次复发、在统计里暴露它，并且不提出任何制品变更，因为
 坏掉的是检索而不是文本。
 
+这个例子走的是 `recurred` 路径；上面的 OpenAPI 流程走的是 `avoided` 与 `unknown`。两者合起来覆盖了账本能持有的全部事件。
+
 # Reference-level explanation
 
 ## 数据模型
@@ -136,9 +178,14 @@ class FailureSignature(_ExperienceValue):
     recall_cue: Annotated[str, Field(min_length=1, max_length=MAX_FAILURE_CUE_LENGTH)]
     symptom: ExperienceText | None = None
 
+class FailureVerification(_ExperienceValue):
+    condition: ExperienceText                                                 # 该 check 在什么情境下才有意义
+    check_subject: Annotated[str, Field(min_length=1, max_length=MAX_FAILURE_CUE_LENGTH)]
+
 class FailureRecord(_ExperienceValue):
     signature: FailureSignature
     repair_surface: RepairSurface
+    verification: FailureVerification
     @model_validator(mode="after")
     def reject_blank_cue(self) -> FailureRecord: ...
 
@@ -152,6 +199,10 @@ class ExperienceContent(_ExperienceValue):
 
 `RepairSurface = Literal["experience_content", "working_state", "recall_policy", "acceptance_check"]`。
 `MAX_FAILURE_CUE_LENGTH` 是提议新增的常量（512），因为匹配键不该有 8000 字符；具体数值是实现决策，不是设计决策。
+
+`verification` 在 `FailureRecord` **内部**是必填的，正是它让账本能说出"又失败了"以外的话。`condition` 说明该 check 在
+什么情境下才有意义，从而避免把一次无关任务上的通过读成"避免了"；`check_subject` 命名用于提供证据的 `TaskCheck`。一条
+没有 check 的记录只可能不断累积 `recurred` 事件，因此把该字段设为必填，正是防止 `avoided` 退化成"什么都没被报告"的关键。
 
 **向后兼容。** Artifact 内容以 JSON 持久化，加载时经注册内容类型重新校验，因此可选字段对既有所有 revision 都是加载兼容的。
 不引入 `schema_version`：Artifact 家族今天都不带它，为单个可选字段引入会产生第二套版本机制。
@@ -169,9 +220,11 @@ symptom 需要一个渲染形态；否则这条记录可能被选中却永远无
    必要条件但不充分，因为这条引用必须专门为失败提供证据。
 2. **单一、自足的 cue。** cue 必须命名一个可识别的情境，而不是对 outcome 字段的复述。
 3. **必须有 `repair_surface`。** 记录必须说明修复该触碰哪一层。
-4. **不允许静默的近似孪生。** 若归一化后的 cue 与既有记录的 cue 近似重复，候选会带一条指明既有记录的警告返回，以便作者改为
+4. **必须有一个将来能运行的 check。** 记录必须携带 `verification`，其 `condition` 命名该 check 在什么情境下才有意义，
+   `check_subject` 命名该 check。一条没有 check 的记录只能被观测到"又失败了"，而这正是本 RFC 要摆脱的状态。
+5. **不允许静默的近似孪生。** 若归一化后的 cue 与既有记录的 cue 近似重复，候选会带一条指明既有记录的警告返回，以便作者改为
    修订那条记录。候选不会被自动拒绝。
-5. **provenance。** 复用既有 Review 证据模型，不新增第二套证据机制。
+6. **provenance。** 复用既有 Review 证据模型，不新增第二套证据机制。
 
 每一次拒绝、每一条近似重复警告都以不可变 Source 的形式落入既有 Source/Observation 模型
 （[RFC 1400](1400_source_definition_and_observation_model.md)），因此拒绝行为可审计，且无需发明日志文件。
@@ -221,11 +274,16 @@ class RecurrenceObservation(_ArtifactValue):
     event: Literal["selected", "recurred", "avoided"]
     match_basis: Literal["exact", "human_confirmed"]
     task_outcome_ref: SourceRef                    # recurred/avoided 的证据
+    check_ref: SourceRef | None = None             # avoided 必填：运行且通过的 TaskCheck
     handoff_ref: ArtifactRef | None = None         # 选中是如何推导出来的
     observed_at: datetime
 ```
 
 事件只追加，键为 `(scope_id, artifact_ref, signature_key)`。任何内容都不原地更新，因此即使记录后来被修订，它的产出历史仍然可查。
+
+`avoided` 是唯一要求 `check_ref` 的事件；`selected` 携带 `handoff_ref`，`recurred` 通过 `task_outcome_ref` 携带它的失败
+观测。没有得出判定的观测根本不写行。因此某个 revision 的 `unknown` 计数是派生的：它在某个 Task Outcome 下的 `selected`
+事件，减去在同一 Task Outcome 下获得了 `recurred` 或 `avoided` 的那些。
 
 ## 降级与 Review 的交互
 
@@ -241,12 +299,16 @@ class RecurrenceObservation(_ArtifactValue):
   `active`/`inactive` 概念 —— 这与 Memory 条目不同，后者有。低产出的记录被变得*可见*，而不是被*停用*。真正的退休语义需要
   它自己的 RFC。
 - `avoided` 事件会清除连击但不改变任何制品状态；它把记录送回正常召回，这是本 RFC 引入的唯一自动转换。
+- 绑定的 check 从未运行的 revision 既不会累积 `recurred` 也不会累积 `avoided`，因此永远到不了连击阈值。这不是沉默：它会
+  表现为不断增长的 `unknown` 计数 —— 该信号说明 `verification` 的绑定错了，而不是说明这条记录没问题。
 
 ## 读取面
 
 `ScopeStatistics`（[RFC 0072](0072_scoped_statistics_and_usage.md)）增加一个 `recurrence` 块：按 scope 统计
-`selected` / `recurred` / `avoided` 数量，以及处于 needing review 的 revision 数量。因为既有统计层没有按制品的用量视图，
-本 RFC 提议一个有界读取：由既有 statistics 操作返回某 scope 内按复发连击排序的前 N 个 revision。不新增 MCP 工具。
+`selected` / `recurred` / `avoided` 数量、仍处于 `unknown` 的选中次数，以及处于 needing review 的 revision 数量。
+`unknown` 计数与各项判定并列上报而不是被折叠掉，因为一个记录全是 `unknown` 的 scope 根本没有证据环路 —— 这和一个记录
+正被反复检验的 scope 是两种不同处境。因为既有统计层没有按制品的用量视图，本 RFC 提议一个有界读取：由既有 statistics
+操作返回某 scope 内按复发连击排序的前 N 个 revision。不新增 MCP 工具。
 
 ## 兼容性与影响面
 
@@ -264,18 +326,24 @@ class RecurrenceObservation(_ArtifactValue):
 - **cue 是模型书写的自由文本，一个糟糕的 cue 会让整套机制失效。** 含糊的 cue 什么都匹配不到，于是复发被静默少计。这个失效模式
   是刻意选择的：少计只会产出一条安静的记录，而多计会产出一个自信的错误信号。两者都不免费。
 - **账本给一个刻意保持读路径不写库的系统增加了持久化行。** 存储增长与归整事件成正比、与请求量无关，但它是真实存在的。
-- **`avoided` 是代理指标。** 任务成功不可归因于某条记录在场，本 RFC 也不如此宣称。一条总被选中却从未被需要的记录会显得很成功。
+- **`avoided` 依赖于一个由生成环节提议的绑定。** `verification` 必须绑定到 signature 的触发条件。绑定过松会在风险情境从未
+  出现的任务上记 `avoided`，属于多计；绑定从不触发则让该计数永远停在 `unknown`，属于少计。少计是优先接受的，理由与上文 cue
+  相同 —— 但这也意味着这个计数只和它命名的那个 check 一样可靠，而那个 check 是模型书写的，且有些记录可能永远无法被判定。
 - **Review 负担上升。** 嘈杂的归整流水线现在可以用复发候选淹没 Review Inbox。复发连击阈值是这里唯一的刹车。
 - **把负面知识混入 `ExperienceContent` 拓宽了该家族的形态。** RFC 0051 把 Experience 定义为可复用判断；失败记录仍然是判断，
   但一个只期望四个散文字段的读者，现在需要知道何时该多读两个。
 
 # Rationale and alternatives
 
-**为什么扩展 `ExperienceContent` 而不是新增家族。** 新增家族需要触碰仓库元组、candidate 仓库、`BaseArtifactFamily`、标签、
-授权 profile、artifact 资源发现、Review service 的家族分支、OpenAPI、JS 集成、文档与测试 —— 而这条记录的形态本身就是
-Experience 形态（situation、action、outcome、lesson）加一个匹配键。反复失败的归整已经通过 `incubation.py` 落在 Experience
-上，因此身份应该待在归整发生的地方。如果维护者判断独立家族更干净，那么三件东西 —— signature、`repair_surface`、账本 —— 一起
-迁移，无需设计变更；唯一的开放部分就是落点。
+**落点：本 RFC 落在 Experience 上，独立家族的问题明确延后。** 上面的设计扩展 `ExperienceContent` 而不是新增家族，遵循
+tracking issue 上的指引：优先复用既有的 Experience 与 Task Outcome 路径，等一个具体案例跑通之后再决定是否分离家族。新增家族
+是更大的改动 —— 仓库元组、candidate 仓库、`BaseArtifactFamily`、标签、授权 profile、artifact 资源发现、Review service 的
+家族分支、OpenAPI、JS 集成、文档与测试 —— 而这条记录的形态本身就是 Experience 形态（situation、action、outcome、lesson）
+加一个匹配键。
+
+延后不等于已经决定，而重新审视它的理由很具体：如果 `failure` 块最终只被少数 Experience revision 携带，那么 Experience 就是
+错误的容器，上述代价才变成合理的价钱。三件东西 —— signature、`repair_surface`、账本 —— 一起迁移，无需设计变更；落点是唯一
+的开放部分，而且它是被刻意保持开放的。
 
 **备选：保留一个 Memory `kind`。** 拒绝。Memory 条目已经有 `active`/`inactive` 状态与 `MemoryChangeOp`，且 RFC 0014 给它们
 的准入契约是围绕"改变未来判断的陈述"构建的，与本提案不同。失败记录的评审单元应当是 Experience revision，账本也以 revision 为键。
@@ -318,8 +386,9 @@ memory merge"。只有其代码中可核验的常量在此被引用。
 
 # Unresolved questions
 
-1. **落点。** 扩展 `ExperienceContent`（本 RFC 推荐）、新增家族，还是保留一个 Memory kind。这是实现前必须敲定的唯一问题；RFC
-   其余内容与落点无关。
+1. **落点。** 本 RFC 把记录落在 `ExperienceContent` 上，并按 tracking issue 的意见，把"是否分离出独立 Artifact 家族"延后到
+   上面的流程在具体案例上跑通之后。如果 `failure` 块最终只被少数 Experience revision 携带，就重新审视这件事。RFC 其余内容与
+   落点无关。
 2. **`repair_surface` 放在哪里** —— 放进制品，还是作为不触碰制品内容的 Review 注记？放进制品则持久、可查询；放进 Review 则
    保持内容不可变、判断可审计。
 3. **阈值。** 触发 Review 的复发连击次数、`MAX_FAILURE_CUE_LENGTH`、以及 0.8 的近似重复重叠度都是提议值而非实测值。复发连击
