@@ -1,0 +1,398 @@
+- Proposal Name: `recurring_failure_repair`
+- Start Date: 2026-09-10
+- Status: Proposed
+- Tracking Issue: [oceanbase/powercontext#1554](https://github.com/oceanbase/powercontext/issues/1554)
+- Related RFCs: [Product Definition](0001_product_definition_and_vision.md), [Memory Layer Design](0014_memory_layer_design.md),
+  [Context Pack](0028_context_pack.md), [Handoff Artifact](0048_handoff_artifact.md),
+  [Artifact Candidate and Review Inbox](0050_artifact_candidate_review_inbox.md),
+  [Experience and Skill Artifact Families](0051_experience_skill_artifact_families.md),
+  [Scoped Statistics and Usage](0072_scoped_statistics_and_usage.md),
+  [Memory Search Reranking](0080_memory_search_reranking.md),
+  [End-to-End Evaluation Architecture](0081_end_to_end_evaluation_architecture.md),
+  [Source Definition and Observation Model](1400_source_definition_and_observation_model.md),
+  [Prepared Context Text Assembly](1489_prepared_context_text_assembly.md)
+
+# Summary
+
+An Experience answers "in what situation did an action produce an outcome, and what did we learn?". Nothing in
+PowerContext answers the follow-up question: "the situation came back — did what we learned actually help?"
+
+This RFC gives recurring failures a machine-matchable identity, an attribution that names which PowerContext layer a
+repair must touch, and an outcome ledger that counts whether a published record was ever selected, ever recurred, and
+ever came back quiet. Four statements summarize the design:
+
+1. **Recurrence needs identity, and free text is not an identity.** An Experience gains an optional structured
+   `failure` block whose signature is the match key. Without it, a re-worded description of the same failure is a new
+   Experience, so recurrence is uncountable and a `lesson` cannot be falsified.
+2. **Attribution routes a repair; it is not a causal claim.** A required `repair_surface` names the layer a fix must
+   touch, so "the record is right but recall never fires it" becomes an expressible diagnosis instead of an invisible
+   defect.
+3. **Admission is evidence-gated; degradation is Review-gated.** There is no failure record without a cited failing
+   observation, and no automatic retirement, decay, or importance score — the boundary [RFC 0051](0051_experience_skill_artifact_families.md)
+   already recorded stays intact.
+4. **The ledger is derived from evidence already on the write path, never from `prepare_context`.** Selection is
+   reconstructed from Handoff citations; recurrence is decided while consolidating Task Outcome Sources. The read path
+   stays read-only.
+
+# Motivation
+
+## Recurrence is currently uncountable
+
+`LLMExperienceCandidatePipeline.incubate` consolidates `task-outcome` Sources into Experience candidates and deduplicates
+them by `(proposal.model_dump_json(), tuple(source_refs))` — exact content equality plus source identity
+(`src/powercontext/builtin/artifacts/experience/incubation.py`). A semantically identical failure described in different
+words across two sessions is therefore two unrelated Experiences. Two consequences follow:
+
+- **A lesson cannot be proven wrong.** `ReviewService` validates evidence, content, and revision consistency *before*
+  publication. Nothing observes *after* publication whether the recorded knowledge did anything.
+- **A recurring failure looks like progress.** The consolidation pipeline reads failures faithfully — its instructions
+  already forbid turning failed, timed-out, or cancelled checks into success (`artifacts/experience/prompts.py`) — and
+  then emits a positive Experience from each one. The fourth occurrence of the same defect produces a fourth
+  well-formed lesson, which reads like accumulating knowledge.
+
+## The missing concept is already named
+
+[RFC 0014](0014_memory_layer_design.md) lists "validated pitfalls" among the content Memory should prefer, requires that
+a durable entry "will change the judgment or action of a future agent", and stores `decision` and `constraint` as first
+class kinds. It does not define what *validated* means. RFC 0014 also fixes the discipline this RFC must respect: "only
+explicit revision evidence can revise an entry; deactivation still requires an explicit `forget()`".
+
+Meanwhile [RFC 0051](0051_experience_skill_artifact_families.md) lists "retirement, ranking, and usage attribution for
+Experience and Skill" as future work and states that the current Artifact contract "has no retirement semantics, so this
+RFC adds no automatic retirement or time decay". Usage attribution is the missing half of this proposal.
+
+## Concrete scenario
+
+A coding agent fixes a flaky integration test three times over two weeks. Each time, a well-formed Experience is
+proposed; each time a human approves it. At the end of the week the scope holds three near-identical Experiences, and
+nothing distinguishes "this lesson worked" from "this lesson was never in context" from "this lesson was in context
+three times and the failure happened anyway".
+
+The three desired answers are: was the record ever selected, did the failure recur anyway, and — when it recurred — which
+layer was actually broken. Today none of the three is representable.
+
+## What this RFC is not
+
+It is not the same proposal as [#1508](https://github.com/oceanbase/powercontext/issues/1508), which connects recurring
+Task Outcomes to an existing Experience and gates Skill revisions under a paired comparison. #1508 consolidates; it has
+no match key, so it cannot count recurrence, and no repair typing, so "the recall policy is broken" can only be written
+as prose. It is also not the Dream workflows from [#1510](https://github.com/oceanbase/powercontext/pull/1510), which
+decide *which artifact to propose* and assume the input concept already exists. This RFC supplies the negative-knowledge
+type those two mechanisms can consolidate and route.
+
+# Guide-level explanation
+
+## Three new concepts
+
+**Failure signature.** An `ExperienceContent` may carry an optional `failure` block. Its `signature` has two parts: a
+`recall_cue` (the situation in which this record should be recalled) and an optional `symptom` (the observable shape of
+the failure). The cue is the match key: it is what makes "this happened before" a checkable statement. The rest of the
+Experience keeps its existing shape — `situation` / `action` / `outcome` / `lesson` still carry the human-readable
+judgment.
+
+**Repair surface.** A required enum naming the layer that must change for the failure to stop:
+
+| Value | The fix must change |
+| --- | --- |
+| `experience_content` | Memory entry text, `ExperienceContent`, or a managed Skill package |
+| `working_state` | Handoff `objective` / `state[]` / `next_action`, or which Task Outcome fields are recorded |
+| `recall_policy` | Scope recall configuration, how the `prepare` query is constructed, or `assembly.sections` selection |
+| `acceptance_check` | Handoff `disposition` / acceptance criteria, or a verification instruction attached to an Experience or Handoff |
+
+The enum exists to route the repair. A record whose fix belongs in `recall_policy` should not produce another lesson —
+it should produce a signal about retrieval. `repair_surface` is proposed by generation and confirmed at Review; it is not
+inferred and then treated as fact.
+
+**Outcome ledger.** Three counters per published Experience revision, all derived from evidence rather than from
+instrumenting the read path:
+
+- `selected` — the revision was cited by a Handoff that a later Task Outcome worked under;
+- `recurred` — a later Task Outcome reported a failure matching this signature;
+- `avoided` — the revision was selected for a Task Outcome that completed, and no recurrence of this signature was
+  reported for it.
+
+`avoided` is a proxy and the RFC says so plainly: a successful task is not proof that the record prevented anything.
+
+## How a contributor should think about it
+
+Treat a failure record as an Experience that can be **falsified and routed**, not as a second kind of knowledge store.
+If a record's evidence is weak, do not write it — an absent record is better than a wrong one. If a record keeps being
+selected and the failure keeps happening, the answer is not to write another record: it is to check `repair_surface`,
+because the failure may not live in the content at all.
+
+Rejected-approach notes and API pitfalls remain ordinary Experience or Memory content. They are decision knowledge with
+no recurrence to count. Only a *recurring* failure needs a match key and a ledger. Conflating the two — as the reference
+implementation cited below does — forces every rejected approach to carry counters it will never use.
+
+## Worked example
+
+An agent hits `pytest` failing with a port already bound in a sandbox. Outcome status `failed`, check status `failed`.
+
+1. Consolidation matches the failure against the signatures already present in the scope. It returns the cue of an
+   existing Experience whose `repair_surface` is `experience_content`, and cites the failing check as its evidence.
+2. The ledger records `recurred` for that revision, with the Task Outcome as provenance.
+3. This is the record's third recurrence with no `avoided` in between, so it is marked as needing review.
+4. Because the surface is `experience_content`, Review receives a revision candidate whose `reason` states the
+   recurrence count and whose evidence is the same failing observation. A human decides whether to sharpen the record or
+   change its `repair_surface`.
+
+Had the surface been `recall_policy`, step 4 would not happen at all. The pipeline would record the recurrence, surface
+it in statistics, and propose no artifact change, because the bug is in retrieval, not in the text.
+
+# Reference-level explanation
+
+## Data model
+
+The optional block is added to the existing content model, not to a new Artifact family:
+
+```python
+class FailureSignature(_ExperienceValue):
+    recall_cue: Annotated[str, Field(min_length=1, max_length=MAX_FAILURE_CUE_LENGTH)]
+    symptom: ExperienceText | None = None
+
+class FailureRecord(_ExperienceValue):
+    signature: FailureSignature
+    repair_surface: RepairSurface
+    @model_validator(mode="after")
+    def reject_blank_cue(self) -> FailureRecord: ...
+
+class ExperienceContent(_ExperienceValue):
+    situation: ExperienceText
+    action: ExperienceText
+    outcome: ExperienceText
+    lesson: ExperienceText
+    failure: FailureRecord | None = None
+```
+
+`RepairSurface = Literal["experience_content", "working_state", "recall_policy", "acceptance_check"]`.
+`MAX_FAILURE_CUE_LENGTH` is a proposed new constant (512) because a match key should not be 8000 characters; the exact
+value is an implementation decision, not a design one.
+
+**Backwards compatibility.** Artifact content is persisted as JSON and re-validated through the registered content type
+on load, so an optional field is load-compatible with every existing revision. No `schema_version` is introduced: the
+Artifact families do not carry one today, and adding one for a single optional field would create a second versioning
+scheme.
+
+**Two deliberate implementation requirements.** `experience_search_text` currently returns "only user-authored fields so
+renderer labels cannot cause matches" — the signature must be added to that projection explicitly, or the cue will not
+participate in retrieval. `render_experience` feeds bounded context delivery, so the cue and symptom need a rendered
+form; otherwise the record can be selected but never recognized by the agent reading it.
+
+## Admission rules
+
+A failure record is admitted only when all of the following hold. Rules 1 and 2 are the confidence floor: an
+unverifiable record is dropped rather than stored.
+
+1. **A cited failing observation.** The candidate must cite at least one Source whose content records a failure —
+   a Task Outcome with status `failed` or `blocked`, or a `TaskCheck` with status `failed`, `timed_out`, or
+   `unavailable`. The existing Review invariant (at least one exact citation) is necessary but not sufficient, because
+   the citation must specifically evidence the failure.
+2. **A single, self-contained cue.** The cue must name a recognisable situation, not a restatement of the outcome field.
+3. **A `repair_surface`.** The record must state which layer a fix must touch.
+4. **No silent near-twin.** If the normalized cue is a near-duplicate of an existing record's cue, the proposal is
+   returned with a warning that names the existing record, so the author can revise that record instead. The proposal is
+   not rejected automatically.
+5. **Provenance.** Reuse the existing Review evidence model unchanged; do not add a second evidence mechanism.
+
+Every rejection and every near-duplicate warning is persisted as an immutable Source in the existing Source/Observation
+model ([RFC 1400](1400_source_definition_and_observation_model.md)), so a refusal is auditable without inventing a log
+file.
+
+## Matching policy
+
+Matching is the load-bearing mechanism, so it is specified conservatively.
+
+- **Normalization.** Unicode NFKC, case folding, whitespace collapsing, and stripping of leading and trailing
+  punctuation produce the comparison key. Normalization is a comparison aid, not a stored identity.
+- **Candidate-set matching, not free generation.** During consolidation the pipeline is given the existing signatures in
+  the scope and asked which one — if any — the observed failure matches, citing the failing observation. The pipeline
+  returns an existing normalized key verbatim or reports no match. This avoids paraphrase drift: the model selects from
+  a closed set instead of inventing a key that will be compared by string equality later.
+- **Exact match links; fuzzy match only suggests.** A normalized exact match writes a ledger event. A token-bigram
+  overlap at or above 0.8 produces a *suggestion* only, mirroring the reference implementation's threshold, and never
+  writes a counter. Fuzzy matching must not silently increment a recurrence count, because a wrong link silently
+  corrupts the signal the feature exists to produce.
+- **Ambiguity resolves to nothing.** If two records match, no ledger event is written and the conflict is surfaced.
+- **The signature is not a global identity.** The identity of a record remains `(artifact_id, revision)`. The reference
+  implementation keys its cards by a mutable content-derived id so that re-storing edits in place; that is incompatible
+  with immutable revisions, and changing a record must stay an explicit revision.
+
+## Ledger write path
+
+The ledger is written only by the consolidation pipeline that already consumes `task-outcome` Sources. It is never
+written from `prepare_context` or from search.
+
+This is not a preference, it is what the existing contracts require. [RFC 0028](0028_context_pack.md) states that
+Context Pack "writes no database or file, enters no Source journal or Memory evidence, starts no scheduler work, and is
+not persisted as telemetry", and that normal logging "must not record scope, query, snippets, entry IDs, entry version
+IDs, or response bodies". [RFC 1489](1489_prepared_context_text_assembly.md) likewise keeps model calls out of assembly.
+Instrumenting selection on the read path would violate all three.
+
+Selection is instead reconstructed from provenance that already exists:
+
+```
+TaskOutcome.handoff_receipt_ref  ->  Handoff Revision
+                                 ->  HandoffArtifactCitation[]  ->  Experience revisions in context
+                                 ->  HandoffMemoryCitation[]
+```
+
+`HandoffResolution` already carries `selection`, `selected_revision`, `current_revision`, and `evidence_checks`, and
+Handoff activation evidence is already bounded by `MAX_HANDOFF_CITATIONS`. The reconstruction is therefore a read of
+existing data, not a new capture path. Its trust level is `untrusted_history`, and the ledger records that: a citation is
+evidence that the agent's context named the record, not proof that the agent read or obeyed it.
+
+One ledger event per observation:
+
+```python
+class RecurrenceObservation(_ArtifactValue):
+    scope_id: str
+    artifact_ref: ArtifactRef                      # the exact Experience revision
+    signature_key: str                             # the normalized cue that matched
+    event: Literal["selected", "recurred", "avoided"]
+    match_basis: Literal["exact", "human_confirmed"]
+    task_outcome_ref: SourceRef                    # evidence for recurred/avoided
+    handoff_ref: ArtifactRef | None = None         # how selection was derived
+    observed_at: datetime
+```
+
+Events are append-only and keyed by `(scope_id, artifact_ref, signature_key)`. Nothing is updated in place, so the
+history of a record's yield is inspectable even after it is revised.
+
+## Degradation and the Review interaction
+
+A revision is marked **needing review** when it accumulates a recurrence streak — proposed default 3 consecutive
+`recurred` events with no intervening `avoided` — on the same revision. The consequence depends on `repair_surface`:
+
+- `experience_content` — the pipeline proposes a revision candidate through the existing `CandidateRepository`,
+  with the recurrence count in `reason` and the failing observation as evidence. Approval produces a new immutable
+  revision. This reuses the Dream pattern from #1510: candidates are generated automatically and human decisions are
+  mandatory.
+- `working_state`, `recall_policy`, `acceptance_check` — no artifact candidate is proposed. The recurrence is recorded
+  and surfaced in statistics, because the repair is not a content change.
+- **No automatic retirement, decay, importance score, or deactivation.** [RFC 0051](0051_experience_skill_artifact_families.md)
+  forbids it ("this RFC adds no automatic retirement or time decay"), Artifacts have no `state` field at all, and the
+  Experience family has no `active`/`inactive` concept — unlike Memory entries, which do. A low-yield record is made
+  *visible*, not made *inactive*. Real retirement semantics need their own RFC.
+- An `avoided` event clears the streak but changes no artifact state; it returns a record to normal recall, which is the
+  only automatic transition this RFC introduces.
+
+## Read surface
+
+`ScopeStatistics` ([RFC 0072](0072_scoped_statistics_and_usage.md)) gains a `recurrence` block: per-scope counts of
+`selected` / `recurred` / `avoided`, plus the number of revisions needing review. Because the existing statistics layer
+has no per-artifact usage view, the RFC proposes one bounded read: the top-N revisions by recurrence streak in a scope,
+returned by the existing statistics operation. No new MCP tool is introduced.
+
+## Compatibility and blast radius
+
+| Surface | Impact |
+| --- | --- |
+| `openapi/powercontext.yaml` | `ExperienceProposal` gains one optional object; requires `make api-generate` then `make contract-test` |
+| Persistence | No Artifact schema version; the ledger is a new append-only record in the persistence layer |
+| Review | Unchanged contract. #1508-style consolidation continues to work; the recurrence candidate uses the existing `propose_experience` shape |
+| Retrieval (`prepare`) | Read-only and unchanged. The cue is indexed because it becomes part of the content projection |
+| Tags, authorization profiles, artifact resource discovery | Untouched, because no Artifact family is added |
+| Evaluation | Adds an outcome category this feature can be measured by; [#1422](https://github.com/oceanbase/powercontext/issues/1422) is not implemented yet, so the metric is defined here in terms that do not depend on it |
+
+# Drawbacks
+
+- **The cue is model-authored free text, and a bad cue decays the whole mechanism.** A vague cue matches nothing, so
+  recurrence silently undercounts. This failure mode is chosen deliberately: undercounting produces a quiet record,
+  while overcounting produces a confident wrong signal. Neither is free.
+- **The ledger adds persisted rows to a system that deliberately keeps its read path write-free.** Storage growth is
+  proportional to consolidation events, not to requests, but it is real.
+- **`avoided` is a proxy.** Task success is not attributable to the presence of a record, and the RFC does not claim
+  otherwise. A record that is always selected and never needed will look successful.
+- **Review load increases.** A noisy consolidation pipeline can now flood the Review Inbox with recurrence candidates.
+  The streak threshold is the only brake proposed here.
+- **Mixing negative knowledge into `ExperienceContent` widens the family's shape.** RFC 0051 defines Experience as
+  reusable judgment; a failure record is still judgment, but a reader who expects four prose fields now has to know when
+  to read two more.
+
+# Rationale and alternatives
+
+**Why extend `ExperienceContent` instead of adding a family.** Adding a family touches the repository tuples, the
+candidate repository, `BaseArtifactFamily`, tags, authorization profiles, artifact resource discovery, the Review
+service's family branches, OpenAPI, the JS integration, docs, and tests — for a record whose shape is Experience-shaped
+(situation, action, outcome, lesson) plus a match key. Consolidation for recurring failures already lands in Experience
+through `incubation.py`, so the identity belongs where consolidation happens. If maintainers judge that a separate
+family is cleaner, the three pieces — signature, `repair_surface`, ledger — move together with no design change; the
+placement is the only open part.
+
+**Alternative: a reserved Memory `kind`.** Rejected. Memory entries already have `active`/`inactive` states and
+`MemoryChangeOp`, and RFC 0014 gives them a different admission contract built around statements that change future
+judgment. The reviewed unit for failure records should be the Experience revision, and the ledger keys on a revision.
+
+**Alternative: adopt the reference implementation's card verbatim.** Rejected on two points that the immutable-revision
+model makes non-negotiable: automatic deactivation after 5 non-avoided hits (contradicts RFC 0051 and the absence of
+artifact state) and a mutable content-derived card id (contradicts immutable revisions). Its confidence floor — drop
+rather than store — and its near-duplicate *suggestion* semantics are adopted.
+
+**Alternative: do nothing until #1422 lands.** Reasonable sequencing, and the reason the tracking issue was filed first.
+But the metric this feature needs must be requested from #1422, otherwise it will not exist when the loop is built.
+
+**Impact of not doing this.** Recurrence stays uncountable, the recall-policy failure class stays unwritable, and no
+record can ever be shown to have failed. Experience accumulates monotonically and unfalsifiably.
+
+# Prior art
+
+**Recuris** — Zhaochen Yu, Yingcheng Wu, Zhenfei Yin, Kaiyuan Chen, Zhe Zhao, Mengdi Wang, Shuicheng Yan, and Ling Yang,
+*Recursive Experiential-Working Memory Evolution for Long-Horizon Agent Harnesses*, arXiv:2608.24876v1, 25 August 2026
+([paper](https://arxiv.org/abs/2608.24876), [code](https://github.com/Gen-Verse/Recuris), Apache-2.0). It models the
+harness memory-control layer as `M_k = (E_k, W_k, rho_k, C_k)` and defines that tuple as the **patch space**: a failure is
+localized onto a component rather than merely summarized. Three elements are carried over: localization instead of
+summarization; the framing of attribution as *"a repair decision rather than a claim of causal identification"*, which
+matches PowerContext's evidence discipline; and validation-gated admission.
+
+Its limits bound what can be copied. **It has no per-failure recurrence counter** — reuse and avoidance are measured
+through aggregate proxies only (`Reach`, held-out success gains, dev-set regression rate). Admission also assumes a
+held-out development set that a production recall loop does not have. The authors' reported gains (+17.8 points on
+tau-bench for one model, up to 80% fewer long-horizon failures) are self-reported single-paper numbers and are not
+reproduced here. This RFC therefore extends past the published baseline — the ledger is new work, not a reproduction.
+
+**claw-mem v7.6.0** (`Error Pattern Card`) is a small Apache-2.0 community plugin that operationalizes the `E`-adjacent
+diagnosis. Its card format is a useful starting point: a `{trigger, symptom}` signature, a
+`skill-defect | state-defect | invocation-timing | transition-judgment` root-cause enum described in its source as
+mapping onto "the layer the fix must touch", a minimum resolution length, near-duplicate trigger detection at 0.8
+overlap that only suggests an edit, and per-card `hitCount` / `avoidedCount` / `lastHitAt`. Two components are adopted;
+the deactivation rule and the mutable card id are not. Its published benchmark numbers are not treated as a baseline: its
+README claims 100% on LoCoMo, ConvoMem, and LongMemEval simultaneously and a "subagent memory merge" that does not exist
+in its source. Only the constants verifiable in its code are cited.
+
+**PowerContext prior art.** [RFC 0028](0028_context_pack.md) permits aggregate selection counts as telemetry but forbids
+per-entry logging; [RFC 0072](0072_scoped_statistics_and_usage.md) already persists recall measurements
+(`preparations`, `baseline_tokens`, `recalled_tokens`, `token_reduction`) and per-kind memory counts, which is the
+natural home for a recurrence block. [RFC 0081](0081_end_to_end_evaluation_architecture.md) defines the evaluation
+architecture this metric should feed.
+
+# Unresolved questions
+
+1. **Placement.** Extend `ExperienceContent` (recommended here), add a family, or reserve a Memory kind. This is the one
+   question that must be settled before implementation; everything else in the RFC is placement-independent.
+2. **Where does `repair_surface` live** — in the artifact, or as a Review annotation that leaves the artifact content
+   untouched? In the artifact it is durable and queryable; in Review it keeps the content immutable and the judgment
+   auditable.
+3. **Thresholds.** The recurrence streak that triggers Review, `MAX_FAILURE_CUE_LENGTH`, and the 0.8 near-duplicate
+   overlap are proposed values, not measured ones. The streak threshold in particular interacts with how often
+   consolidation runs per scope.
+4. **Should a `recall_policy` recurrence feed a retrieval-evaluation loop** rather than a statistics view, and does that
+   make `repair_surface` the routing key between two downstream loops?
+5. **Ledger home.** A new append-only persistence record, or an extension of the statistics layer? RFC 0072's repository
+   is already writable and scope-scoped, which argues for extension; per-artifact granularity argues for its own record.
+6. **Naming.** RFC 0001 and RFC 0002 reserve `Trigger` as a product-level concept and leave its public contract
+   undefined. This RFC deliberately avoids that word (`recall_cue`, `FailureSignature`); confirm the choice before the
+   public schema is generated.
+7. **Does `avoided` belong in #1422** as a generic per-artifact outcome signal rather than a feature-specific counter?
+
+# Future possibilities
+
+- **Cross-scope failure patterns.** A signature that recurs in many scopes is a candidate for promotion from personal to
+  team assets, which is the flow RFC 0001 already describes.
+- **Signature-driven retrieval.** Today `SearchMemoryRequest` filters by tag only, with no family or kind filter. A
+  `recall_policy` diagnosis would be more actionable if recall could be evaluated against a signature directly.
+- **Feeding Skill validation.** A record whose surface is `acceptance_check` is a natural source for the `validation`
+  items a `SkillContent` already carries.
+- **Handoff integration.** The most relevant signatures could be carried into `HandoffContent.state` or `omissions` so a
+  successor agent inherits the failure to avoid, not only the work to continue.
+- **Verified retirement.** Once this ledger exists, a future RFC can define retirement semantics on top of measured
+  yield instead of guessing, which is the order RFC 0051 implies.
