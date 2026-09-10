@@ -33,10 +33,12 @@ Experience 回答的是"在什么情境下、什么动作产生了什么结果�
 
 ## 当前无法计数复发
 
-`LLMExperienceCandidatePipeline.incubate` 把 `task-outcome` Source 归整为 Experience 候选，并以
-`(proposal.model_dump_json(), tuple(source_refs))` 去重 —— 内容精确相等加 Source 身份
-（`src/powercontext/builtin/artifacts/experience/incubation.py`）。因此，跨两个会话用不同措辞描述的同一个失败，会是
-两条互不相关的 Experience。由此产生两个后果：
+`LLMExperienceCandidatePipeline.incubate` 把 `task-outcome` Source 归整为 Experience 候选，并按内容精确相等加 Source
+身份去重 —— `key = (candidate.proposal.model_dump_json(), tuple((source.source_type, source.source_id) for source in
+selected))`，见 `src/powercontext/builtin/artifacts/experience/incubation.py`。这个 `seen` 集合只活在单次 `incubate()`
+调用内部，而该调用受 `EXPERIENCE_INCUBATION_WINDOW_LIMIT = 32` 约束。它既不与更早窗口产出的候选比较，也不与已发布的
+revision 比较。因此同一个失败在两个窗口被观测到就是两条 Experience —— 而用不同措辞描述的失败即便在同一个窗口内也是两条
+Experience。由此产生两个后果：
 
 - **一条 lesson 无法被证明是错的。** `ReviewService` 在发布*之前*校验证据、内容与 revision 一致性，但没有任何东西在发布
   *之后*观察这条记录到底起没起作用。

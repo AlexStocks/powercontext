@@ -39,9 +39,13 @@ ever came back quiet. Four statements summarize the design:
 ## Recurrence is currently uncountable
 
 `LLMExperienceCandidatePipeline.incubate` consolidates `task-outcome` Sources into Experience candidates and deduplicates
-them by `(proposal.model_dump_json(), tuple(source_refs))` — exact content equality plus source identity
-(`src/powercontext/builtin/artifacts/experience/incubation.py`). A semantically identical failure described in different
-words across two sessions is therefore two unrelated Experiences. Two consequences follow:
+them by exact content equality plus source identity — `key = (candidate.proposal.model_dump_json(),
+tuple((source.source_type, source.source_id) for source in selected))` in
+`src/powercontext/builtin/artifacts/experience/incubation.py`. That `seen` set lives inside a single `incubate()` call,
+and the call is bounded by `EXPERIENCE_INCUBATION_WINDOW_LIMIT = 32`. There is no comparison against candidates produced
+in an earlier window, and none against already published revisions, so the same failure observed in two windows is two
+Experiences — and a failure described in different words is two Experiences even inside one window. Two consequences
+follow:
 
 - **A lesson cannot be proven wrong.** `ReviewService` validates evidence, content, and revision consistency *before*
   publication. Nothing observes *after* publication whether the recorded knowledge did anything.
