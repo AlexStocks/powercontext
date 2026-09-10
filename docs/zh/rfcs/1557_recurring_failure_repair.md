@@ -1,6 +1,7 @@
 - Proposal Name: `recurring_failure_repair`
 - Start Date: 2026-09-10
 - Status: Proposed
+- RFC PR: [oceanbase/powercontext#1557](https://github.com/oceanbase/powercontext/pull/1557)
 - Tracking Issue: [oceanbase/powercontext#1554](https://github.com/oceanbase/powercontext/issues/1554)
 - Related RFCs: [产品定义](0001_product_definition_and_vision.md)、[记忆层设计](0014_memory_layer_design.md)、
   [Context Pack](0028_context_pack.md)、[Handoff 制品](0048_handoff_artifact.md)、
