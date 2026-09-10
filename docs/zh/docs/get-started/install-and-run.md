@@ -19,11 +19,14 @@ Windows 的 CLI、Server 和个人服务支持为试验性；各 Agent Host 仍�
 
 ## 选择版本
 
-发布版与集成使用相同 tag。例如安装 `0.2.0`：
+发布版与集成使用相同 tag。测试 `1.0.0rc1` 候选版：
 
 ```bash
-uv tool install "powercontext[cli,server]==0.2.0"
+uv tool install "powercontext[cli,server]==1.0.0rc1"
+powercontext setup codex --ref powercontext-v1.0.0rc1
 ```
+
+RC1 是预发布版本，需要显式指定版本号。使用稳定版时，将版本和 tag 分别替换为 `0.2.0` 和 `powercontext-v0.2.0`。
 
 后续示例使用 `master`，包含尚未发布的能力。核对[能力矩阵](../integrations/capabilities.md)，
 不要将 `master_only` 或 `experimental` 能力当作发布版承诺。

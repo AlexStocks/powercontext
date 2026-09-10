@@ -1018,7 +1018,7 @@ def _print_next_steps(path: Path) -> None:
             installed = version("powercontext")
             setup = (
                 f"powercontext setup dsh --source oceanbase/powercontext --ref powercontext-v{installed}"
-                if re.fullmatch(r"\d+\.\d+\.\d+", installed)
+                if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:(?:a|b|rc)[0-9]+)?", installed)
                 else "powercontext setup dsh --source /path/to/matching-powercontext-checkout"
             )
         typer.echo(f"\n{name}:\n  {setup}")

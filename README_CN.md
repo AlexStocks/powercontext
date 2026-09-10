@@ -24,10 +24,10 @@ PowerContext 让上下文跟随工作，跨越不同的对话。你回来时，�
 
 ## 与你使用的 Agent 一起工作
 
-安装最新发布的 [PowerContext](https://pypi.org/project/powercontext/)：
+安装 [PowerContext](https://pypi.org/project/powercontext/) 1.0.0 RC1，参与预发布测试：
 
 ```bash
-uv tool install "powercontext[cli,server]==0.2.0"
+uv tool install "powercontext[cli,server]==1.0.0rc1"
 ```
 
 在单独的终端中启动本地 Server：
@@ -41,7 +41,7 @@ Server 默认将上下文保存到本地 SQLite 数据库。
 然后从同一个发布版本配置 Agent 集成。例如：
 
 ```bash
-powercontext setup codex --ref powercontext-v0.2.0
+powercontext setup codex --ref powercontext-v1.0.0rc1
 ```
 
 PowerContext 工具与 Agent 集成应始终使用同一个 Git ref。`master` 安装、其他 Agent 和个人服务配置见

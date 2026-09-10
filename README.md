@@ -24,10 +24,10 @@ You decide what will matter later and what needs to move with the task. PowerCon
 
 ## Works with your agents
 
-Install the latest released [PowerContext](https://pypi.org/project/powercontext/):
+Install [PowerContext](https://pypi.org/project/powercontext/) 1.0.0 RC1 for pre-release testing:
 
 ```bash
-uv tool install "powercontext[cli,server]==0.2.0"
+uv tool install "powercontext[cli,server]==1.0.0rc1"
 ```
 
 Start a local Server in its own terminal:
@@ -41,7 +41,7 @@ The Server stores context in a local SQLite database by default.
 Then set up an agent integration from the matching release. For example:
 
 ```bash
-powercontext setup codex --ref powercontext-v0.2.0
+powercontext setup codex --ref powercontext-v1.0.0rc1
 ```
 
 Keep the PowerContext tool and agent integration on the same Git ref. For `master` installation, other agents,

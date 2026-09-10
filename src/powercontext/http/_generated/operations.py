@@ -171,7 +171,7 @@ from powercontext.http._generated.models import (
 OPENAPI_VERSION = "3.0.3"
 API_TITLE = "PowerContext API"
 API_DESCRIPTION = "Remote PowerContext transport. Runtime behavior is reported by /v1/capabilities."
-API_VERSION = "0.2.0"
+API_VERSION = "1.0.0rc1"
 
 RequestT = TypeVar("RequestT")
 ResponseT = TypeVar("ResponseT")

@@ -21,11 +21,14 @@ Embedded seekDB is unavailable on Windows.
 
 ## Choose a version
 
-Keep a released package and integration on the same tag. For example, install `0.2.0`:
+Keep a released package and integration on the same tag. To test the `1.0.0rc1` release candidate:
 
 ```bash
-uv tool install "powercontext[cli,server]==0.2.0"
+uv tool install "powercontext[cli,server]==1.0.0rc1"
+powercontext setup codex --ref powercontext-v1.0.0rc1
 ```
+
+RC1 is a pre-release. Select it explicitly by version; use `0.2.0` and `powercontext-v0.2.0` for the stable release.
 
 The following examples use `master`, including unreleased capabilities. Check the
 [capability matrix](../integrations/capabilities.md); `master_only` and `experimental` capabilities

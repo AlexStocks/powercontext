@@ -24,10 +24,10 @@ PowerContext は、会話をまたいでもコンテキストを作業ととも�
 
 ## 利用中の Agent と接続する
 
-最新リリースの [PowerContext](https://pypi.org/project/powercontext/) をインストールします：
+プレリリースの検証用に [PowerContext](https://pypi.org/project/powercontext/) 1.0.0 RC1 をインストールします：
 
 ```bash
-uv tool install "powercontext[cli,server]==0.2.0"
+uv tool install "powercontext[cli,server]==1.0.0rc1"
 ```
 
 別のターミナルでローカル Server を起動します：
@@ -41,7 +41,7 @@ Server はデフォルトで、コンテキストをローカルの SQLite デ�
 次に同じリリースから Agent との連携を設定します。例：
 
 ```bash
-powercontext setup codex --ref powercontext-v0.2.0
+powercontext setup codex --ref powercontext-v1.0.0rc1
 ```
 
 PowerContext ツールと Agent 連携には、常に同じ Git ref を使用してください。`master` のインストール、他の Agent、
