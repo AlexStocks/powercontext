@@ -35,7 +35,7 @@ Without an override, the default is:
 - macOS: `~/Library/Application Support/powercontext`;
 - Windows: `%LOCALAPPDATA%\\powercontext`.
 
-The default SQLite database is `powercontext.db` in this directory. The four built-in background processors persist
+The default SQLite database is `powercontext.db` in this directory. Built-in background processors persist
 intents and scheduling checkpoints in the same database. Existing installations require [offline migration](artifact-processing-migration.md).
 
 ## Server
@@ -88,6 +88,12 @@ Server settings use the `POWERCONTEXT_SERVER_` prefix.
 | `POWERCONTEXT_SERVER_RUNTIME_ARTIFACT_PROCESSING_FAMILIES` | inferred from models | JSON Family list; API-only instances can declare capabilities without model credentials |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_MAX_WORKERS` | `1` | Independent Memory Worker quota |
 | `POWERCONTEXT_SERVER_RUNTIME_EXPERIENCE_MAX_WORKERS` | `1` | Independent Experience Worker quota |
+| `POWERCONTEXT_SERVER_RUNTIME_SKILL_MAX_WORKERS` | `1` | Skill Worker quota for Dream derivation |
+| `POWERCONTEXT_SERVER_RUNTIME_SKILL_WORKER_TIMEOUT_SECONDS` | `600` | Total Skill Scope invocation timeout |
+| `POWERCONTEXT_SERVER_RUNTIME_DREAM_ENABLED` | `true` | Accept explicit Dream requests for declared Experience/Skill Families; no automatic artifact selection |
+| `POWERCONTEXT_SERVER_RUNTIME_DREAM_MAX_PENDING_PER_SCOPE` | `32` | Combined queued and running DreamRun limit per Scope |
+| `POWERCONTEXT_SERVER_RUNTIME_DREAM_BUDGET` | `{}` | JSON budget; may tighten evidence limits, at most 2 model calls and 120 seconds from first execution |
+| `POWERCONTEXT_SERVER_RUNTIME_GENERATION_CONCURRENCY` | `4` | Foreground Runtime generation concurrency; background Workers use per-Family quotas |
 | `POWERCONTEXT_SERVER_RUNTIME_PROFILE_MAX_WORKERS` | `4` | Independent Profile Worker quota; alias `PROFILE_MAX_CONCURRENCY` |
 | `POWERCONTEXT_SERVER_RUNTIME_MEMORY_WORKER_TIMEOUT_SECONDS` | `600` | Total Memory Scope timeout |
 | `POWERCONTEXT_SERVER_RUNTIME_EXPERIENCE_WORKER_TIMEOUT_SECONDS` | `600` | Total Experience Scope timeout |
@@ -161,7 +167,7 @@ built-in static token always represents one service Principal, so it cannot dist
 compatibility token materializes explicit Server and per-scope roles for that Principal. Inject the deployment
 Authentication Provider and corresponding AccessControlService when different users or groups need different access.
 
-Background Memory, Topic Memory, Experience, and Profile processing use the service Principal selected by
+Source-driven background Memory, Topic Memory, Experience, and Profile processing use the service Principal selected by
 `ACCESS_BACKGROUND_PRINCIPAL_ID`, falling back to the fixed static Principal. That Principal must have
 `scope.contribute` for each processed scope and write permission on existing Artifacts it changes. New entries,
 Artifacts, and Candidates retain its ownership or owner attestation in the same transaction as processing completion.
@@ -169,6 +175,13 @@ An enforced deployment with background capabilities fails startup if its identit
 be reconstructed in a child process, even when automatic schedules are disabled: accepted work still needs recovery.
 The built-in provider supports this reconstruction. Injected providers and model objects remain usable by synchronous
 SDK/Server operations with background capabilities disabled (`ARTIFACT_PROCESSING_FAMILIES=[]`).
+
+Dream reconstructs the original requester's current permissions inside Experience/Skill Workers, and Candidate ownership
+remains with that requester. Background service Principal permissions do not replace that identity. An OceanBase split
+deployment can declare `ARTIFACT_PROCESSING_FAMILIES=["experience","skill"]` on a model-free API process and declare the same
+capabilities with model configuration on the background process; automatic schedules may reference only declared Families.
+SQLite uses `all`. Dream pins its model identity on first execution, and disabling automatic schedules does not prevent
+accepted explicit Dream requests from completing.
 
 SDK workers without a Server identity do not require Server authorization dependencies. Built-in background workers
 use the built-in Source definitions. A custom Source registry requires custom processing bindings for every enabled

@@ -391,7 +391,7 @@ def _capabilities(state: Wizard) -> None:
     changes[f"{RUNTIME}MEMORY_RERANK_ENABLED"] = str("rerank" in state.features).lower()
     if not state.original:
         changes[f"{RUNTIME}ARTIFACT_PROCESSING_FAMILIES"] = json.dumps(
-            sorted(state.features & {"memory", "topic-memory", "experience", "profile"})
+            sorted(state.features & {"memory", "topic-memory", "experience", "profile", "skill"})
         )
     elif state.values.get(f"{RUNTIME}ARTIFACT_PROCESSING_FAMILIES"):
         declared = json.loads(state.values[f"{RUNTIME}ARTIFACT_PROCESSING_FAMILIES"])
@@ -399,7 +399,7 @@ def _capabilities(state: Wizard) -> None:
             message = "ARTIFACT_PROCESSING_FAMILIES must be a list of names / 必须使用名称列表"
             raise WizardInputError(message)
         changes[f"{RUNTIME}ARTIFACT_PROCESSING_FAMILIES"] = json.dumps(
-            sorted(set(declared) | (state.features & {"memory", "topic-memory", "experience", "profile"}))
+            sorted(set(declared) | (state.features & {"memory", "topic-memory", "experience", "profile", "skill"}))
         )
     state.patch(changes)
     if state.original:

@@ -31,9 +31,16 @@ from powercontext.builtin.persistence.seekdb import SeekDBConfig, SeekDBProfile
 from powercontext.builtin.persistence.seekdb import profile as seekdb_profile_module
 
 
-class _Begin(AbstractAsyncContextManager[object]):
-    async def __aenter__(self) -> object:
-        return object()
+class _TrackedConnection:
+    dialect = seekdb_profile_module.AsyncSeekDBDialect()
+
+    async def exec_driver_sql(self, _statement: str) -> None:
+        return None
+
+
+class _Begin(AbstractAsyncContextManager[_TrackedConnection]):
+    async def __aenter__(self) -> _TrackedConnection:
+        return _TrackedConnection()
 
     async def __aexit__(
         self,

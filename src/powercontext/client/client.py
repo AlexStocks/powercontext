@@ -61,6 +61,7 @@ from powercontext.http import (
     ContinueHandoffRequest,
     CreateAccessBindingRequest,
     CreateArtifactRequest,
+    CreateDreamRunRequest,
     CreateRemoteSkillTargetRequest,
     CreateScopeRequest,
     CreateSourceRequest,
@@ -68,6 +69,8 @@ from powercontext.http import (
     CreateSubjectSourceResponse,
     CreateWorkContractRequest,
     DownloadRemoteSkillPackageRequest,
+    DreamRun,
+    DreamRunPage,
     EnrollRemoteSkillTargetRequest,
     ErrorResponse,
     ExperienceArtifact,
@@ -107,6 +110,7 @@ from powercontext.http import (
     ListArtifactCandidatesRequest,
     ListArtifactRevisionsRequest,
     ListArtifactsRequest,
+    ListDreamRunsRequest,
     ListExternalSkillsRequest,
     ListExternalSkillsResponse,
     ListManagedSkillsRequest,
@@ -206,6 +210,7 @@ from powercontext.http._generated.operations import (
     CONTINUE_HANDOFF,
     CREATE_ACCESS_BINDING,
     CREATE_ARTIFACT,
+    CREATE_DREAM_RUN,
     CREATE_REMOTE_SKILL_TARGET,
     CREATE_SCOPE,
     CREATE_SOURCE,
@@ -229,6 +234,7 @@ from powercontext.http._generated.operations import (
     GET_CAPABILITIES,
     GET_CONNECTOR_CHECKPOINT,
     GET_DEFAULT_SCOPE,
+    GET_DREAM_RUN,
     GET_EXPERIENCE,
     GET_HANDOFF_REPORT,
     GET_LIVENESS,
@@ -252,6 +258,7 @@ from powercontext.http._generated.operations import (
     LIST_ARTIFACT_CANDIDATES,
     LIST_ARTIFACT_REVISIONS,
     LIST_ARTIFACTS,
+    LIST_DREAM_RUNS,
     LIST_EXTERNAL_SKILLS,
     LIST_MANAGED_SKILLS,
     LIST_MEMORY_CHANGES,
@@ -575,6 +582,25 @@ class PowerContextClient:
         """List data-minimized authorization and relationship audit events."""
 
         return await self._request(LIST_ACCESS_AUDIT, request)
+
+    async def create_dream_run(self, scope_id: str, request: CreateDreamRunRequest) -> DreamRun:
+        """Accept a Dream or replay its original queued/terminal result."""
+
+        return await self._request(CREATE_DREAM_RUN, request, path_parameters={"scope_id": scope_id})
+
+    async def get_dream_run(self, scope_id: str, run_id: str) -> DreamRun:
+        """Read one durable Dream without triggering generation."""
+
+        return await self._request(GET_DREAM_RUN, path_parameters={"scope_id": scope_id, "run_id": run_id})
+
+    async def list_dream_runs(self, scope_id: str, request: ListDreamRunsRequest | None = None) -> DreamRunPage:
+        """List a bounded page of Dream history in reverse acceptance order."""
+
+        return await self._request(
+            LIST_DREAM_RUNS,
+            ListDreamRunsRequest() if request is None else request,
+            path_parameters={"scope_id": scope_id},
+        )
 
     async def create_source(self, scope_id: str, request: CreateSourceRequest) -> SourceRecord:
         """Create one durable Source without invoking generation."""
@@ -1160,7 +1186,8 @@ class PowerContextClient:
             span.finish("failure", error=error)
             raise
         declared_not_modified = response.status_code == 304 and 304 in operation.responses
-        succeeded = response.status_code == operation.success_status or declared_not_modified
+        declared_success = 200 <= response.status_code < 300 and response.status_code in operation.responses
+        succeeded = declared_success or declared_not_modified
         span.finish("success" if succeeded else "failure", status_code=response.status_code)
 
         request_id = response.headers.get(REQUEST_ID_HEADER)
@@ -1201,7 +1228,9 @@ def _prepare_request(
         if operation.request_type is None:
             message = f"{operation.operation_id} does not accept a request"
             raise TypeError(message)
-        payload = TypeAdapter(operation.request_type).dump_python(request, mode="json", by_alias=True)
+        payload = TypeAdapter(operation.request_type).dump_python(
+            request, mode="json", by_alias=True, exclude_unset=operation is not PREPARE_CONTEXT
+        )
         if not isinstance(payload, dict):
             message = "Request must serialize to an object."
             raise TypeError(message)

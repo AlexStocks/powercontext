@@ -422,6 +422,7 @@ def test_full_memory_configuration_shares_provider_and_adds_profile_recall(tmp_p
     assert values["POWERCONTEXT_SERVER_RUNTIME_MEMORY_SCHEDULE_SECONDS"] == "60"
     assert values["POWERCONTEXT_SERVER_RUNTIME_TOPIC_MEMORY_SCHEDULE_SECONDS"] == "300"
     assert values["POWERCONTEXT_SERVER_RUNTIME_EXPERIENCE_SCHEDULE_SECONDS"] == "900"
+    assert "skill" in json.loads(values["POWERCONTEXT_SERVER_RUNTIME_ARTIFACT_PROCESSING_FAMILIES"])
     assert "example-test-key" not in result.output
     assert "Memory, Topic Memory, Profile, Experience, Skill" in result.output
     assert "Generation and Embedding" in result.output
