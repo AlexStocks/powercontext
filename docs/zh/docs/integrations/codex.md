@@ -10,10 +10,14 @@ description: 安装 PowerContext Codex 插件并控制其本地行为。
 
 ## 安装或刷新插件
 
-执行：
+先按[快速开始](../get-started/quickstart.md)安装此分支、生成配置并启动 Server。
+在运行 Codex 的机器上加载客户端配置后安装匹配插件：
 
 ```bash
-powercontext setup codex --source oceanbase/powercontext --ref master
+set -a
+. ./.env
+set +a
+powercontext setup codex
 powercontext doctor codex
 ```
 
@@ -119,8 +123,8 @@ Server 不可用时，Hook 的恢复和采集会正常降级，不会阻塞 Code
 
 ## 使用生成的环境文件
 
-如果已按[启用提取与向量搜索](../get-started/configure-models.md)生成 `.env`，使用 Config Generator 输出的插件安装命令，
-再在启动 Codex 的终端中加载该文件：
+如果已通过向导生成配置，在启动 Codex 的终端中加载 `.env`。
+它提供 URL、Authorization 和选定的 Scope，不需要把 Server `.env` 中的模型 API key 传给 Agent：
 
 ```bash
 set -a
@@ -129,8 +133,39 @@ set +a
 codex
 ```
 
-普通会话无需设置 `POWERCONTEXT_CODEX_SCOPE_ID`；只有需要显式选择已存在的 Scope 时才设置。
+首次规划新 Scope 时，先执行 `.env.next-steps.md` 的创建请求，把响应的真实 `scope_id` 写入客户端文件的
+`POWERCONTEXT_CODEX_SCOPE_ID`，再重新加载文件并开启新会话。规划标题不是 ID。未显式绑定时可能共用 Server 默认 Scope，
+切换项目目录本身不会隔离数据。
 发送普通 prompt 后，插件从绑定的 Scope 召回上下文，并将 prompt 采集为 Source。Server 的 Scheduler 按配置间隔处理新 Sources。
+
+## 核对 Hook 和 MCP 连接
+
+Hook 的 Server 地址从已安装插件 `.mcp.json` 派生，MCP 也读取同一文件。
+本机默认是 `http://127.0.0.1:8000`；自定义端口、SSH 转发或 HTTPS 时，修改该文件使两条路径使用同一地址。
+该配置优先于 `POWERCONTEXT_CODEX_SERVER_URL`，不能只靠导出此环境变量改变连接地址。
+`setup codex` 不会自动修改 MCP URL，按 `.env.next-steps.md` 给出的配置调整，并保持以下认证形式：
+
+```json
+{
+  "mcpServers": {
+    "powercontext": {
+      "type": "http",
+      "url": "http://127.0.0.1:8000/mcp",
+      "required": false,
+      "env_http_headers": {
+        "Authorization": "POWERCONTEXT_CODEX_AUTHORIZATION"
+      }
+    }
+  }
+}
+```
+
+把 URL 换成本次实际 MCP 地址，保留文件中的其他服务器。Token 从进程环境读取，不要写死在 JSON 中。
+Scope 由 Hook 绑定，并注入 MCP 数据操作；不要把规划标题或目录名当成 Scope ID。
+
+桌面 App 可能不继承终端环境；在终端加载文件并不等于已配置正在运行的桌面 App。
+重启实际使用的宿主后，分别确认 Hook 采集成功与 MCP 可用。MCP 显示 connected 也不等于 Source 已采集。
+最后完成[Source、主题演进与新会话召回验收](../get-started/quickstart.md#4-用普通对话验收-topic-memory)。
 
 ## 环境变量
 

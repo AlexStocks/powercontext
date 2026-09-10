@@ -13,7 +13,7 @@ description: 安装 PowerContext 原生 Pi package，并控制召回、采集和
 先安装 Pi，再从与 PowerContext CLI 相同的 ref 安装 package：
 
 ```bash
-powercontext setup pi --source oceanbase/powercontext --ref master
+powercontext setup pi
 ```
 
 也可以使用本地 checkout：

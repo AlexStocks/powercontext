@@ -29,7 +29,7 @@ powercontext server run
 In another terminal, install or refresh both plugins from the matching revision:
 
 ```bash
-powercontext setup hermes --source oceanbase/powercontext --ref master
+powercontext setup hermes
 powercontext doctor hermes
 ```
 

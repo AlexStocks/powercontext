@@ -377,7 +377,7 @@ class BuiltinConfig(BaseModel):
     def validate_artifact_processing_role(self) -> BuiltinConfig:
         if not isinstance(self.database, OceanBaseConfig) and self.runtime.artifact_processing_role != "all":
             raise ValueError(  # noqa: TRY003
-                "runtime.artifact_processing_role must be 'all' for SQLite and embedded seekDB"
+                "runtime.artifact_processing_role must be 'all' for SQLite and embedded seekdb"
             )
         return self
 

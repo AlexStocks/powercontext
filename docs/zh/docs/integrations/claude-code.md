@@ -22,10 +22,13 @@ Python package 和插件应使用同一个 PowerContext 仓库 ref。Hook 会校
 
 ## 安装或更新插件
 
-执行：
+先按[快速开始](../get-started/quickstart.md)生成配置并启动 Server。在运行 Claude Code 的机器加载客户端文件：
 
 ```bash
-powercontext setup claude-code --source oceanbase/powercontext --ref master
+set -a
+. ./.env
+set +a
+powercontext setup claude-code --server-url "$POWERCONTEXT_CLAUDE_SERVER_URL"
 ```
 
 修改 Claude Code 设置前，setup 会报告设置项、插件缓存、持久化数据位置、所需权限和准确的回滚命令。
@@ -42,14 +45,26 @@ Marketplace registry、按版本保存的插件缓存和插件数据目录由 Cl
 powercontext setup claude-code --source ./powercontext
 ```
 
-安装完成后启动 Server，再开启新的 Claude Code 会话：
+安装完成并确认 Server 正在运行后，检查安装并开启新的 Claude Code 会话：
 
 ```bash
-powercontext server run
+powercontext doctor claude-code
 claude
 ```
 
 使用 `/hooks` 确认 `UserPromptSubmit` Hook，使用 `/mcp` 确认 `powercontext` Server。
+两者分别负责采集/召回和显式工具调用，必须都连接成功。`doctor claude-code` 主要检查安装状态，
+完整记忆还需完成[Source 与主题验收](../get-started/quickstart.md#4-用普通对话验收-topic-memory)。
+
+为新 Scope 执行 `.env.next-steps.md` 中的创建请求，把返回的真实 `scope_id` 写入
+`.env` 的 `POWERCONTEXT_CLAUDE_SCOPE_ID`，然后重新加载并开启新会话。
+`claude-code-xxxxxxxx` 是标题，不是 ID；不同 Agent 不会仅因名称或目录不同就自动隔离。
+客户端加载 `.env` 即可；该文件包含完整安装配置，只应复制到可信机器。
+
+MCP endpoint 来自 setup 保存的 `server_url`，Hook 可被 `POWERCONTEXT_CLAUDE_SERVER_URL` 覆盖。
+修改环境地址后也要用同源 setup 的 `--server-url` 更新持久配置，保证两条路径一致。
+认证使用客户端文件的 `POWERCONTEXT_CLAUDE_AUTHORIZATION`，Hook 与 MCP headersHelper 都需要它。
+桌面或其他启动方式可能不继承终端环境，改文件后要重启实际使用的 Claude 进程。
 
 再次执行 setup 会更新插件配置并验证已安装版本，不会删除已有的 PowerContext Server 数据。
 

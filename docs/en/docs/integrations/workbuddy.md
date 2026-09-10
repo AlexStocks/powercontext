@@ -28,7 +28,7 @@ The CLI installs the hooks, MCP server, and Skill from a local checkout or a
 GitHub source in one step:
 
 ```bash
-powercontext setup workbuddy --source oceanbase/powercontext --ref master
+powercontext setup workbuddy
 ```
 
 For a local checkout, point `--source` at the repository root or the plugin

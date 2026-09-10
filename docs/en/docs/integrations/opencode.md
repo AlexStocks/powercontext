@@ -14,7 +14,7 @@ OpenCode 1.18.21 or newer in the 1.x line is required. Install the plugin from t
 Server and CLI:
 
 ```bash
-powercontext setup opencode --source oceanbase/powercontext --ref master
+powercontext setup opencode
 ```
 
 The setup command registers the native plugin globally and installs its owned `project-context` Skill under the

@@ -35,7 +35,7 @@ when that CLI is missing.
 Confirm that Git can read the repository:
 
 ```bash
-git ls-remote https://github.com/oceanbase/powercontext.git HEAD
+git ls-remote https://github.com/oceanbase/powercontext.git refs/heads/master
 ```
 
 If this fails, configure the credential helper or SSH key used by Git, then rerun `uv tool install`. `uv` uses Git's
@@ -76,7 +76,7 @@ powercontext doctor pi
 Reinstall it from the same ref as the tool:
 
 ```bash
-powercontext setup codex --source oceanbase/powercontext --ref <ref>
+powercontext setup codex
 codex plugin list --json
 ```
 
@@ -86,7 +86,7 @@ For Claude Code, run:
 
 ```bash
 powercontext doctor claude-code
-powercontext setup claude-code --source oceanbase/powercontext --ref <ref>
+powercontext setup claude-code
 claude plugin list --json
 ```
 
@@ -101,7 +101,7 @@ For DeepSeek Harness, run:
 
 ```bash
 powercontext doctor dsh
-powercontext setup dsh --source oceanbase/powercontext --ref <ref>
+powercontext setup dsh
 dsh --profile web --dump-config
 ```
 
@@ -112,7 +112,7 @@ For Pi, run:
 
 ```bash
 powercontext doctor pi
-powercontext setup pi --source oceanbase/powercontext --ref <ref>
+powercontext setup pi
 pi list
 ```
 

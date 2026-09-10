@@ -26,7 +26,7 @@ WorkBuddy 不在 `setup select` 或 `doctor integrations` 的宿主目录中，�
 CLI 可以从本地 checkout 或 GitHub 源一键安装 hooks、MCP Server 和 Skill：
 
 ```bash
-powercontext setup workbuddy --source oceanbase/powercontext --ref master
+powercontext setup workbuddy
 ```
 
 对于本地 checkout，把 `--source` 指向仓库根目录或插件目录：

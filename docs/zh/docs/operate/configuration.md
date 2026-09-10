@@ -63,8 +63,8 @@ Server 配置使用 `POWERCONTEXT_SERVER_` 前缀。
 | `POWERCONTEXT_SERVER_TRACING_ENABLED` | `false` | 启用 span recording 和 OTLP export |
 | `POWERCONTEXT_SERVER_CURSOR_SIGNING_SECRET` | 本地持久化密钥 | 用于签名 REST 分页 cursor 的共享密钥，至少 32 字节 |
 | `POWERCONTEXT_SERVER_DATABASE_KIND` | `sqlite` | 存储后端：`sqlite`、`seekdb` 或 `oceanbase` |
-| `POWERCONTEXT_SERVER_DATABASE_URL` | 用户数据目录下的 SQLite 文件 | SQLite 或 OceanBase 的 SQLAlchemy 异步 URL；seekDB 不设置 |
-| `POWERCONTEXT_SERVER_DATABASE_PATH` | 用户数据目录下的 `seekdb` 目录 | 嵌入式 seekDB 路径；仅在 `DATABASE_KIND=seekdb` 时使用 |
+| `POWERCONTEXT_SERVER_DATABASE_URL` | 用户数据目录下的 SQLite 文件 | SQLite 或 OceanBase 的 SQLAlchemy 异步 URL；seekdb 不设置 |
+| `POWERCONTEXT_SERVER_DATABASE_PATH` | 用户数据目录下的 `seekdb` 目录 | 嵌入式 seekdb 路径；仅在 `DATABASE_KIND=seekdb` 时使用 |
 | `POWERCONTEXT_SERVER_RUNTIME_SCOPE_CACHE_SIZE` | `128` | Runtime 保留的非活动 scope composition 数量；进行中的 scope 不会被驱逐 |
 | `POWERCONTEXT_SERVER_RUNTIME_SOURCE_WINDOW_LIMIT` | `100` | 单次 activation 最多处理的 Source 数量 |
 | `POWERCONTEXT_SERVER_RUNTIME_CONTEXT_ASSEMBLY_MAX_ENTRIES` | `8` | 显式 `assembly.sections[].limit` 之和的上限；正整数，各类别单独上限仍适用 |
@@ -171,7 +171,7 @@ Supervisor 实例重建而重置。
 导出和安装不再引入单独的 Access action：接收者先获得逻辑 Skill identity 上的 `artifact.read`，再自行决定是否以及如何
 安装一个精确 Revision。
 
-内置 Access schema 使用配置好的 SQLite、seekDB 或 OceanBase，但由 Server 独立持有，不进入 Runtime 领域。自定义部署
+内置 Access schema 使用配置好的 SQLite、seekdb 或 OceanBase，但由 Server 独立持有，不进入 Runtime 领域。自定义部署
 可以向 `create_server_app` 注入 `AccessControlService`。内置的可写外部 adapter `CasbinAuthorizationProvider` 使用
 embedded Casbin 判定固定 action vocabulary，并把 canonical Binding Store 作为持久化 adapter，因此在不维护第二份影子
 策略的前提下支持 point/batch check、safe resource filter、create/revoke、过期和 CAS。组装时将它同时作为 decision
@@ -226,11 +226,11 @@ Handoff Report API route 独立默认启用。Selection、检查和导出步骤�
 
 默认 `all` 角色会启动 Artifact Processing Supervisor。OceanBase 部署可以拆分 `api` 和 `background`；
 `powercontext server run --role background` 不启动 HTTP、MCP 或 Dashboard listener，多个后台候选者通过数据库 Lease
-自动选出一个 active Leader。SQLite 与嵌入式 seekDB 只支持单进程 `all`。未设置正数间隔时，Topic Memory 自动波次
+自动选出一个 active Leader。SQLite 与嵌入式 seekdb 只支持单进程 `all`。未设置正数间隔时，Topic Memory 自动波次
 保持关闭；显式 flush 工作的恢复不依赖该间隔。Topic Worker 要求使用文件 SQLite；内存 SQLite 配合 generation
 model 的配置会在声明处理能力之前被拒绝。请通过 `POWERCONTEXT_SERVER_DATABASE_URL` 指定持久数据库路径，例如
 `sqlite+aiosqlite:////srv/powercontext/runtime.db`。Memory、Topic Memory、Experience、Profile 均使用统一 Supervisor，OceanBase 拆分角色也可启用其周期。
-SQLite 和 embedded seekDB 仍要求单宿主 `all`。两模式均保留逐 Family 独立额度和总超时，不借用其他 Family 空闲额度。
+SQLite 和 embedded seekdb 仍要求单宿主 `all`。两模式均保留逐 Family 独立额度和总超时，不借用其他 Family 空闲额度。
 关闭自动准入仍恢复已接受请求。API 与后台须保持 mode、注册 Family 和可触发能力一致；模型仅在执行端必需。
 切换模式须[协调停机迁移](artifact-processing-migration.md)，不能混用模式启动。
 显式同时配置的新旧别名值不同时拒绝启动，同值接受。

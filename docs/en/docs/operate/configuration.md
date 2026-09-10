@@ -67,8 +67,8 @@ Server settings use the `POWERCONTEXT_SERVER_` prefix.
 | `POWERCONTEXT_SERVER_TRACING_ENABLED` | `false` | Enable span recording and OTLP export |
 | `POWERCONTEXT_SERVER_CURSOR_SIGNING_SECRET` | local persisted key | Shared secret of at least 32 bytes for signing REST pagination cursors |
 | `POWERCONTEXT_SERVER_DATABASE_KIND` | `sqlite` | Storage backend: `sqlite`, `seekdb`, or `oceanbase` |
-| `POWERCONTEXT_SERVER_DATABASE_URL` | user data SQLite file | SQLAlchemy async URL for SQLite or OceanBase; do not set for seekDB |
-| `POWERCONTEXT_SERVER_DATABASE_PATH` | user data `seekdb` directory | Embedded seekDB path; used only when `DATABASE_KIND=seekdb` |
+| `POWERCONTEXT_SERVER_DATABASE_URL` | user data SQLite file | SQLAlchemy async URL for SQLite or OceanBase; do not set for seekdb |
+| `POWERCONTEXT_SERVER_DATABASE_PATH` | user data `seekdb` directory | Embedded seekdb path; used only when `DATABASE_KIND=seekdb` |
 | `POWERCONTEXT_SERVER_RUNTIME_SCOPE_CACHE_SIZE` | `128` | Inactive scope compositions retained by the Runtime; in-flight scopes are never evicted |
 | `POWERCONTEXT_SERVER_RUNTIME_SOURCE_WINDOW_LIMIT` | `100` | Maximum Sources processed in one activation |
 | `POWERCONTEXT_SERVER_RUNTIME_CONTEXT_ASSEMBLY_MAX_ENTRIES` | `8` | Maximum sum of explicit `assembly.sections[].limit`; positive integer. Per-family limits still apply. |
@@ -186,7 +186,7 @@ Provider batch/list/relationship capabilities and Artifact Family profiles. Mana
 not introduce separate Access actions: the recipient first needs `artifact.read` on the logical Skill identity, then
 chooses whether and how to install an exact Revision.
 
-The built-in Access schema uses the configured SQLite, seekDB, or OceanBase backend, but remains Server-owned rather
+The built-in Access schema uses the configured SQLite, seekdb, or OceanBase backend, but remains Server-owned rather
 than becoming a Runtime domain. A custom deployment can inject an `AccessControlService` into `create_server_app`.
 `CasbinAuthorizationProvider` is the included writable external adapter: it evaluates the fixed action vocabulary in
 embedded Casbin while using the canonical Binding Store as its persistent adapter, so it supports point/batch checks,
@@ -247,13 +247,13 @@ Handoff Report API routes are independently enabled by default. See
 
 The Artifact Processing Supervisor is enabled by the default `all` role. OceanBase deployments may run `api` and
 `background` separately; `powercontext server run --role background` starts no HTTP, MCP, or Dashboard listener, and
-multiple background candidates use the database Lease to elect one active Leader. SQLite and embedded seekDB support
+multiple background candidates use the database Lease to elect one active Leader. SQLite and embedded seekdb support
 only the single-process `all` role. Automatic Topic Memory waves remain disabled until a positive interval is set;
 explicit flush work remains recoverable regardless of that interval. Topic workers need file-backed SQLite: configuring
 a generation model with an in-memory SQLite database is rejected before processing is advertised. Use a persistent
 `POWERCONTEXT_SERVER_DATABASE_URL`, such as `sqlite+aiosqlite:////srv/powercontext/runtime.db`.
 Memory, Topic Memory, Experience, and Profile all use the Supervisor. OceanBase permits their schedules in split roles.
-SQLite and embedded seekDB retain one `all` host. Every Family has its own quota and timeout in both modes; spare quota
+SQLite and embedded seekdb retain one `all` host. Every Family has its own quota and timeout in both modes; spare quota
 is not shared. Disabling automatic admission preserves already accepted requests. The API and background instances must
 agree on mode, registered Families and trigger capabilities. Model resources are only required by workers. Changing modes
 requires [coordinated offline migration](artifact-processing-migration.md); mixed modes cannot start.

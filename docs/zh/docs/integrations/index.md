@@ -33,7 +33,7 @@ description: 选择插件、MCP、Skills、Agent Host 或 Python 框架接入。
 需要交互选择多个宿主时，可运行：
 
 ```bash
-powercontext setup select --source oceanbase/powercontext --ref master
+powercontext setup select
 ```
 
 使用与 Server 相同的 ref。该选择器仅列出 CLI 目录中的宿主，完整支持情况见各 Agent 文档。

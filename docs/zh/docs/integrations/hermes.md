@@ -28,7 +28,7 @@ powercontext server run
 在另一个终端从同一 revision 安装或刷新两个插件：
 
 ```bash
-powercontext setup hermes --source oceanbase/powercontext --ref master
+powercontext setup hermes
 powercontext doctor hermes
 ```
 

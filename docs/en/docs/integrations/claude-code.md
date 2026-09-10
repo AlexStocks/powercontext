@@ -23,10 +23,14 @@ Context contract, so mixing an older Server with a newer plugin can disable reca
 
 ## Install or update the plugin
 
-Run:
+First generate configuration and start the Server through [Quick Start](../get-started/quickstart.md).
+On the Claude Code machine, load the client file:
 
 ```bash
-powercontext setup claude-code --source oceanbase/powercontext --ref master
+set -a
+. ./.env
+set +a
+powercontext setup claude-code --server-url "$POWERCONTEXT_CLAUDE_SERVER_URL"
 ```
 
 Before changing Claude Code settings, setup reports the settings entry, plugin cache, persistent data location,
@@ -45,14 +49,26 @@ For a local checkout, pass its directory:
 powercontext setup claude-code --source ./powercontext
 ```
 
-Start the Server and open a new Claude Code session after installation:
+After installation, confirm the Server is running, check the plugin, and open a new Claude Code session:
 
 ```bash
-powercontext server run
+powercontext doctor claude-code
 claude
 ```
 
 Use `/hooks` to confirm the `UserPromptSubmit` Hook and `/mcp` to confirm the `powercontext` Server.
+These are separate capture/recall and explicit-tool connections; both must work. `doctor claude-code` primarily checks
+installation state. Complete the [Source and Topic check](../get-started/quickstart.md#4-verify-topic-memory-with-ordinary-conversation) to verify memory behavior.
+
+For a new Scope, run the creation request in `.env.next-steps.md`, write the returned real `scope_id` to
+`POWERCONTEXT_CLAUDE_SCOPE_ID` in `.env`, reload it, and start a new session. The planned
+`claude-code-xxxxxxxx` title is not an ID. Agent names and working directories do not automatically isolate data.
+Load `.env` on the client. It contains the complete installation configuration, so copy it only to trusted machines.
+
+MCP uses setup's persisted `server_url`, while `POWERCONTEXT_CLAUDE_SERVER_URL` can override the Hook.
+After changing that environment URL, also update the persisted connection with matching-source setup and `--server-url`.
+Both the Hook and MCP headersHelper need `POWERCONTEXT_CLAUDE_AUTHORIZATION` from the client environment.
+Desktop or other launch methods may not inherit terminal variables; restart the Claude process you actually use after changes.
 
 Running setup again updates the plugin configuration and verifies the installed version. It does not remove existing
 PowerContext Server data.

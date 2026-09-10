@@ -36,7 +36,7 @@ Each integration connects to a separately running Server. Follow its guide in th
 To select multiple hosts interactively, run:
 
 ```bash
-powercontext setup select --source oceanbase/powercontext --ref master
+powercontext setup select
 ```
 
 Use the same ref as the Server. The selector lists hosts in the CLI catalog; consult each Agent guide for its supported installation path.

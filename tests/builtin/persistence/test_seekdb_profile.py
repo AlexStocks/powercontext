@@ -87,7 +87,7 @@ class _TerminatingConnection:
 def test_config_requires_an_explicit_non_empty_path() -> None:
     with pytest.raises(ValidationError, match="path"):
         SeekDBConfig.model_validate({})
-    with pytest.raises(ValidationError, match="seekDB path must not be empty"):
+    with pytest.raises(ValidationError, match="seekdb path must not be empty"):
         SeekDBConfig.model_validate({"path": ""})
 
 

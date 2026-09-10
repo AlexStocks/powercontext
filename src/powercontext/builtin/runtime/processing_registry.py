@@ -24,6 +24,17 @@ from powercontext.builtin.artifacts.topic_memory import TOPIC_MEMORY_SOURCE_WIND
 from powercontext.builtin.runtime.config import BuiltinConfig
 from powercontext.builtin.triggers import SOURCE_WINDOW_TRIGGER_NAME
 
+# Provisional per-Family recommendations for operator-facing setup tools. Runtime
+# defaults remain disabled; Artifact owners can revise these independently after
+# production workload review without changing the Supervisor contract.
+RECOMMENDED_PROCESSING_SCHEDULE_SECONDS = {
+    "memory": 60,
+    "topic-memory": 300,
+    "experience": 900,
+}
+RECOMMENDED_PROFILE_CRON = "0 2 * * *"
+RECOMMENDED_PROFILE_TIMEZONE = "Asia/Shanghai"
+
 
 def processing_capabilities(config: BuiltinConfig) -> tuple[str, ...]:
     """Use explicit cross-role declarations or infer executable built-ins."""

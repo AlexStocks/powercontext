@@ -10,10 +10,14 @@ description: Install the PowerContext Codex plugin and control its local behavio
 
 ## Install or refresh the plugin
 
-Run:
+First follow [Quick Start](../get-started/quickstart.md) to install this branch, generate configuration, and start the Server.
+On the Codex machine, load the client settings and install the matching plugin:
 
 ```bash
-powercontext setup codex --source oceanbase/powercontext --ref master
+set -a
+. ./.env
+set +a
+powercontext setup codex
 powercontext doctor codex
 ```
 
@@ -129,8 +133,8 @@ authorization value.
 
 ## Use a generated environment file
 
-If you generated `.env` with [Enable extraction and vector search](../get-started/configure-models.md), install the plugin
-using the command printed by Config Generator, then load the file in the terminal that starts Codex:
+After generating configuration with the wizard, load `.env` in the terminal that starts Codex.
+It supplies the URL, Authorization, and selected Scope without exposing the Server's model API keys:
 
 ```bash
 set -a
@@ -139,9 +143,42 @@ set +a
 codex
 ```
 
-Leave `POWERCONTEXT_CODEX_SCOPE_ID` unset for normal sessions; set it only to select a known existing Scope explicitly.
+For a planned new Scope, run the creation request in `.env.next-steps.md`, put the returned real `scope_id` in
+`POWERCONTEXT_CODEX_SCOPE_ID` in the client file, reload it, and open a new session. The planned title is not an ID.
+Without an explicit binding, Agents may share the Server default; changing project directories does not create isolation.
 After an ordinary prompt, the plugin recalls from the bound Scope and captures the prompt as Source evidence.
 The Server Scheduler processes new Sources at the configured interval.
+
+## Check both Hook and MCP connections
+
+The Hook derives its Server URL from the installed plugin's `.mcp.json`, which MCP also reads.
+Both default to `http://127.0.0.1:8000`. For a custom port, SSH forwarding, or HTTPS, update that shared file.
+It takes precedence over `POWERCONTEXT_CODEX_SERVER_URL`; exporting that variable alone does not change the endpoint.
+`setup codex` does not update the MCP URL automatically. Follow the generated `.env.next-steps.md` configuration
+and retain this authentication form:
+
+```json
+{
+  "mcpServers": {
+    "powercontext": {
+      "type": "http",
+      "url": "http://127.0.0.1:8000/mcp",
+      "required": false,
+      "env_http_headers": {
+        "Authorization": "POWERCONTEXT_CODEX_AUTHORIZATION"
+      }
+    }
+  }
+}
+```
+
+Replace the URL with your actual MCP endpoint and preserve other servers in the file. Read the token from the process
+environment rather than hard-coding it in JSON. The Hook binds the Scope and injects it into MCP data operations;
+a planned title or directory name is not a Scope ID.
+
+Desktop apps may not inherit terminal environment variables; loading the file does not configure an already running
+desktop app. Restart the host you actually use, then check Hook capture and MCP separately. An MCP connected status
+does not prove Source capture. Complete the [Source, topic evolution, and cross-session recall check](../get-started/quickstart.md#4-verify-topic-memory-with-ordinary-conversation).
 
 ## Environment variables
 

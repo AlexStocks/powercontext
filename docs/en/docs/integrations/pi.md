@@ -13,7 +13,7 @@ description: Install the native PowerContext package for Pi and control recall, 
 Install Pi, then install the package from the same PowerContext ref as the CLI:
 
 ```bash
-powercontext setup pi --source oceanbase/powercontext --ref master
+powercontext setup pi
 ```
 
 A local checkout works as well:

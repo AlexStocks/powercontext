@@ -14,7 +14,7 @@ Install the CLI and plugin from the same `master` revision:
 
 ```bash
 uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@master"
-powercontext setup openclaw --source oceanbase/powercontext --ref master
+powercontext setup openclaw
 ```
 
 Without `--server-url`, setup configures the plugin for the Server default at `http://127.0.0.1:8000`.

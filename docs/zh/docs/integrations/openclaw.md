@@ -14,7 +14,7 @@ description: 为 OpenClaw 安装 PowerContext memory 插件，并控制召回、
 
 ```bash
 uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@master"
-powercontext setup openclaw --source oceanbase/powercontext --ref master
+powercontext setup openclaw
 ```
 
 未指定 `--server-url` 时，setup 会把插件 endpoint 配置为 Server 默认地址 `http://127.0.0.1:8000`。

@@ -13,15 +13,14 @@ description: 安装 PowerContext DeepSeek Harness 插件并控制其本地行为
 先安装 DeepSeek Harness，并确保 Web profile 可用。真实宿主验收固定使用 DSH 0.1.2-rc.1。
 选择以下一种 PowerContext 安装方式，让 Server 和插件保持匹配。
 
-正式版 PowerContext 0.2.0：
+使用本站对应的配置向导版本：
 
 ```bash
-uv tool install --force "powercontext[cli,server]==0.2.0"
-powercontext setup dsh --source oceanbase/powercontext --ref powercontext-v0.2.0
+uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@master"
+powercontext setup dsh
 ```
 
-0.2.0 已包含直接操作的 Scope 错误边界。下文的分层 Doctor 和自动 snapshot 展示需要当前开发版 checkout，
-不能将这些行为视为 0.2.0 已发布的能力。
+按照本站流程验收时，Server 和插件都使用这个源码分支。
 
 开发版从同一个 checkout 安装两个组件，并记录 commit：
 

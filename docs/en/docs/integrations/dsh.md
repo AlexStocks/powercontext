@@ -13,15 +13,14 @@ description: Install the PowerContext DeepSeek Harness plugin and control its lo
 Install DeepSeek Harness and make sure its Web profile is available. The real-host acceptance suite pins DSH
 0.1.2-rc.1. Choose one PowerContext installation path and keep the Server and plugin together.
 
-For released PowerContext 0.2.0:
+For this guided-setup build:
 
 ```bash
-uv tool install --force "powercontext[cli,server]==0.2.0"
-powercontext setup dsh --source oceanbase/powercontext --ref powercontext-v0.2.0
+uv tool install --force "powercontext[cli,server] @ git+https://github.com/oceanbase/powercontext.git@master"
+powercontext setup dsh
 ```
 
-Release 0.2.0 includes the direct-operation Scope error boundary. The layered Doctor and automatic snapshot
-presentation described below require the current development checkout; do not expect them in that release.
+Keep the Server package and the plugin on this same source branch when following this website's walkthrough.
 
 For development, install both components from one checkout and record its commit:
 
