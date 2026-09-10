@@ -319,8 +319,8 @@ component 为 `powercontext.claude_code.recall`：
 
 ## Claude Code MCP 认证失败
 
-Hook 与 MCP `headersHelper` 都从启动 Claude Code 的进程环境读取
-`POWERCONTEXT_CLAUDE_AUTHORIZATION`。停止当前进程，导出完整 header，再重新启动：
+Hook 从启动 Claude Code 的进程环境读取 `POWERCONTEXT_CLAUDE_AUTHORIZATION`，MCP 配置则把同一个值展开到
+`Authorization` header。停止当前进程，导出完整 header，再重新启动：
 
 ```bash
 export POWERCONTEXT_CLAUDE_AUTHORIZATION="Bearer $POWERCONTEXT_LOCAL_TOKEN"

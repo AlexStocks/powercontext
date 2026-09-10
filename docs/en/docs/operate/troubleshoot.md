@@ -338,8 +338,9 @@ of recall; a capture failure cannot suppress valid context, and a recall failure
 
 ## Claude Code MCP authentication fails
 
-The Hook and MCP `headersHelper` read `POWERCONTEXT_CLAUDE_AUTHORIZATION` from the environment that starts Claude
-Code. Stop the current process, export the complete header, and start it again:
+The Hook reads `POWERCONTEXT_CLAUDE_AUTHORIZATION` from the environment that starts Claude Code, and the MCP
+configuration expands the same value into its `Authorization` header. Stop the current process, export the complete
+header, and start it again:
 
 ```bash
 export POWERCONTEXT_CLAUDE_AUTHORIZATION="Bearer $POWERCONTEXT_LOCAL_TOKEN"
