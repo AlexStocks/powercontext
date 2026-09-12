@@ -120,7 +120,7 @@ the generated sources, so the checked-in code drifts from the contract.
    may not have been recorded.
 
 Every step uses a mechanism that already exists: Experience revisions, recall of an artifact into `prepare_context`,
-Handoff citations, Task Outcome and `TaskCheck` Sources, and the Review Inbox. The new parts are the match key on the
+Handoff citations, Task Outcome Sources with embedded `TaskCheck` results, and the Review Inbox. The new parts are the match key on the
 record, the `repair_surface` enum, the `verification` binding, and the ledger.
 
 ## Three new concepts
@@ -147,17 +147,17 @@ inferred and then treated as fact.
 **Outcome ledger.** Three evidence events per published Experience revision, derived from evidence rather than from
 instrumenting the read path:
 
-- `selected` — the revision was cited by a Handoff that a later Task Outcome worked under;
+- `selected` — the revision was cited by a Handoff whose exact Receipt is referenced by a later Task Outcome;
 - `recurred` — a later Task Outcome reported a failure matching this signature;
 - `avoided` — a later Task Outcome showed the risky situation recurring *and* the check bound to the record passing.
 
 `avoided` is evidence-gated, and it requires all four of the following. Selection into prepared context is not use, and
 a Task Outcome that merely fails to mention the failure is not avoidance:
 
-1. the revision was cited by a Handoff that a later Task Outcome worked under, and the linkage is present in the recorded
-   provenance;
-2. the check bound to the record **ran** under that Task Outcome, and its result is cited. A check that did not run
-   leaves the verdict `unknown`: nothing then establishes that the risky situation came up at all;
+1. the revision was cited by a Handoff, and the Task Outcome's `handoff_receipt_ref` resolves to a Handoff Receipt for
+   that exact Handoff;
+2. a precise item reference in that Task Outcome proves that the trigger condition occurred, and another precise item
+   reference identifies the bound check that **ran**. A check that did not run leaves the verdict `unknown`;
 3. that check **passed**;
 4. no `recurred` event was recorded for this signature under the same Task Outcome.
 
@@ -171,7 +171,7 @@ linked observations, as the gap between a revision's `selected` events and its l
 unlinked prepares are outside the denominator and must not be interpreted as non-selection.
 
 `avoided` remains a proxy, and the RFC does not claim otherwise. A passing check shows the bound outcome was right; it does
-not show that the record caused it. The condition and exact check citation limit unrelated tasks from being counted, but
+not show that the record caused it. The condition and exact check item references limit unrelated tasks from being counted, but
 they still cannot establish causation.
 
 ## How a contributor should think about it
@@ -208,12 +208,14 @@ them the two cases cover every event the ledger can hold.
 The following source graph is the smallest implementation and test fixture that makes the accounting boundary explicit:
 
 1. Experience revision `E7` has a failure signature and a verification binding.
-2. Handoff `H12` cites `E7`; a Task Outcome cites `H12`. That complete chain writes one `selected` observation for `E7`.
-3. When the bound TaskCheck is cited and passes, the same linked observation writes `avoided`.
-4. When the bound TaskCheck is cited and fails with the matching signature, the same linked observation writes
+2. Handoff `H12` cites `E7`. Handoff Receipt Source `R12` has `selected_revision = H12`, and Task Outcome Source `O12`
+   has `handoff_receipt_ref = R12`. That complete chain writes one `selected` observation for `E7`.
+3. `O12.observations[0]` is the condition evidence and `O12.checks[0]` is the bound TaskCheck. When both item references
+   resolve and that check passes, the same linked observation writes `avoided`.
+4. When the bound TaskCheck ran and failed with the matching signature, the same linked observation writes
    `recurred` instead.
 5. When the chain is present but the bound TaskCheck did not run, no verdict event is written and the linked selection is
-   counted as `unknown`.
+   counted as `unknown`; no `avoided` event can be written without both the condition and check item references.
 6. When a prepare has no Handoff/Task Outcome chain, no `selected` observation is written and it stays outside the
    `unknown` denominator. A Handoff citation with no joinable Task Outcome is reported only as missing provenance
    coverage; a prepare with no Handoff emits no telemetry. Neither case can be read as a failed recall or a
@@ -278,9 +280,9 @@ A failure record is admitted only when all of the following hold. Rules 1 and 2 
 unverifiable record is dropped rather than stored.
 
 1. **A cited failing observation.** The candidate must cite at least one Source whose content records a failure —
-   a Task Outcome with status `failed` or `blocked`, or a `TaskCheck` with status `failed`, `timed_out`, or
-   `unavailable`. The existing Review invariant (at least one exact citation) is necessary but not sufficient, because
-   the citation must specifically evidence the failure.
+   a Task Outcome with status `failed` or `blocked`, or an embedded `TaskCheck` with status `failed`, `timed_out`, or
+   `unavailable` in a cited Task Outcome. The existing Review invariant (at least one exact citation) is necessary but
+   not sufficient, because the cited content must specifically evidence the failure.
 2. **A single, self-contained cue.** The cue must name a recognisable situation, not a restatement of the outcome field.
 3. **A `repair_surface`.** The record must state which layer a fix must touch.
 4. **A check that can be run later.** The record must carry a `verification` whose `condition` names the situation in
@@ -291,9 +293,10 @@ unverifiable record is dropped rather than stored.
    not rejected automatically.
 6. **Provenance.** Reuse the existing Review evidence model unchanged; do not add a second evidence mechanism.
 
-Every rejection and every near-duplicate warning is persisted as an immutable Source in the existing Source/Observation
-model ([RFC 1400](1400_source_definition_and_observation_model.md)), so a refusal is auditable without inventing a log
-file.
+Review rejection remains auditable through the persisted Candidate status `rejected` and its `decision_reason`. A
+near-duplicate is a candidate-generation or Review UI suggestion, not a recurrence-ledger event. Version 1 creates no
+new immutable Source kind for either case; doing so would require a separately specified write point, access model, and
+compatibility surface.
 
 ## Matching policy
 
@@ -328,9 +331,10 @@ Instrumenting selection on the read path would violate all three.
 Selection is instead reconstructed from provenance that already exists:
 
 ```
-TaskOutcome.handoff_receipt_ref  ->  Handoff Revision
-                                 ->  HandoffArtifactCitation[]  ->  Experience revisions in context
-                                 ->  HandoffMemoryCitation[]
+TaskOutcome.handoff_receipt_ref  ->  HandoffReceipt Source
+                                 ->  HandoffReceipt.selected_revision  ->  Handoff Revision
+                                                                     ->  HandoffArtifactCitation[]  ->  Experience revisions in context
+                                                                     ->  HandoffMemoryCitation[]
 ```
 
 `HandoffResolution` already carries `selection`, `selected_revision`, `current_revision`, and `evidence_checks`, and
@@ -347,11 +351,20 @@ class RecurrenceObservation(_ArtifactValue):
     artifact_ref: ArtifactRef                      # the exact Experience revision
     signature_key: str                             # the normalized cue that matched
     event: Literal["selected", "recurred", "avoided"]
-    match_basis: Literal["exact", "human_confirmed"]
+    match_basis: Literal["exact"]
     task_outcome_ref: SourceRef                     # required for every event; joins selected to its Handoff
-    check_ref: SourceRef | None = None             # required for avoided: the TaskCheck that ran and passed
+    handoff_receipt_ref: SourceRef | None = None   # required for selected/avoided; resolves the exact Handoff
     handoff_ref: ArtifactRef | None = None         # how selection was derived
+    condition_ref: TaskOutcomeItemRef | None = None  # required for avoided: observation proving the risky condition
+    check_ref: TaskOutcomeItemRef | None = None      # required for avoided: check that ran and passed
     observed_at: datetime
+
+
+class TaskOutcomeItemRef(_ArtifactValue):
+    task_outcome_ref: SourceRef
+    item_kind: Literal["observation", "check"]
+    item_index: int
+    item_digest: str  # digest of the item's canonical serialized content
 ```
 
 Events are append-only. `observation_id` is unique and is derived from the exact event evidence, including the event type,
@@ -360,8 +373,12 @@ window is therefore idempotent while distinct observations for one revision rema
 signature_key)` is an aggregation index, not a uniqueness constraint. Nothing is updated in place, so the history of a
 record's yield is inspectable even after it is revised.
 
-`avoided` is the only event that requires `check_ref`; `selected` carries `handoff_ref` and the Task Outcome that used
-that Handoff, and `recurred` carries its failing observation through `task_outcome_ref`. An observation with no resolved verdict writes no row at all. A
+`TaskOutcomeItemRef` is a ledger-local locator, not an invented `TaskCheck` Source identity: it must resolve against the
+immutable Task Outcome content at `item_index`, and `item_digest` must match that exact item's canonical serialized
+content. `avoided` requires
+both `condition_ref` and `check_ref`, in addition to the receipt/Handoff provenance; `selected` carries `handoff_ref` and
+the Task Outcome that used that Handoff, and `recurred` carries its failing observation through `task_outcome_ref`. An
+observation with no resolved verdict writes no row at all. A
 revision's `unknown` count is therefore derived only over linked observations: its `selected` events with a recorded Task
 Outcome, minus those that acquired a `recurred` or `avoided` verdict under the same Task Outcome. A missing Handoff or
 Outcome is reported as missing provenance, not as a zero-use or recall-policy result.
@@ -401,7 +418,8 @@ by the existing statistics operation. No new MCP tool is introduced.
 | Surface | Impact |
 | --- | --- |
 | `openapi/powercontext.yaml` | `ExperienceProposal` gains one optional object; requires `make api-generate` then `make contract-test` |
-| Persistence | No Artifact schema version; the ledger is a new append-only record in the persistence layer |
+| Persistence | No Artifact schema version; the ledger is a new append-only record with immutable `TaskOutcomeItemRef` locators in the persistence layer |
+| Task Outcome / Handoff | Existing public contracts stay unchanged: the ledger replays immutable Source content by receipt, index, and digest. If implementation instead introduces stable per-item IDs, that is an OpenAPI/model/generated-contract change and must be specified separately |
 | Review | Unchanged contract. #1508-style consolidation continues to work; the recurrence candidate uses the existing `propose_experience` shape |
 | Retrieval (`prepare`) | Read-only and unchanged. The cue is indexed because it becomes part of the content projection |
 | Tags, authorization profiles, artifact resource discovery | Untouched, because no Artifact family is added |
