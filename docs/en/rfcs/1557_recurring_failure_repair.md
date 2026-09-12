@@ -34,7 +34,8 @@ summarize the design:
    already recorded stays intact.
 4. **The ledger is derived from evidence already on the write path, never from `prepare_context`.** Selection is
    reconstructed from Handoff citations; recurrence is decided while consolidating Task Outcome Sources. The read path
-   stays read-only.
+   stays read-only. A `selected` event therefore covers only observations with a complete Handoff/Task Outcome link;
+   missing linkage is an evidence gap, not proof that recall did not happen.
 
 # Motivation
 
@@ -87,6 +88,10 @@ as prose. It is also not the Dream workflows from [#1510](https://github.com/oce
 decide *which artifact to propose* and assume the input concept already exists. This RFC supplies the negative-knowledge
 type those two mechanisms can consolidate and route.
 
+It also deliberately does **not** record `candidate_not_selected`. `prepare` remains entirely read-only, so a candidate
+omitted because of a byte budget or ordering is not a negative outcome, and a later incomplete provenance chain is an
+evidence gap. In particular, missing `selected` evidence must not be used to infer that `recall_policy` failed.
+
 # Guide-level explanation
 
 ## The flow this RFC is written around
@@ -98,8 +103,9 @@ the generated sources, so the checked-in code drifts from the contract.
    this RFC, the second is recognized as a **recurrence** of the first: the signature matches, the ledger records
    `recurred`, and because a record already exists, no third lesson is written.
 2. A later task touches the same file. The record is recalled into `prepare_context` and the agent is told to
-   regenerate. That is the `selected` event, reconstructed from the Handoff citation rather than instrumented on the
-   read path (see *Ledger write path* below).
+   regenerate. If the resulting Handoff and Task Outcome preserve the required citations, that linked observation yields
+   a `selected` event. It is reconstructed from the Handoff citation rather than instrumented on the read path (see
+   *Ledger write path* below); a prepare with no later linkage remains unobserved.
 3. The task reports a Task Outcome, and whether that outcome counts for anything is decided by evidence rather than by
    the agent saying so. The record's `verification` names the check "the generated sources are in sync with the
    contract":
@@ -109,8 +115,9 @@ the generated sources, so the checked-in code drifts from the contract.
    - the check **did not run** → `unknown`, and no event is written. A task that succeeded without ever exercising the
      check is not evidence that the record helped.
 4. If the signature accumulates recurrences without ever reaching `avoided`, the revision is surfaced for review. When
-   its `repair_surface` is `recall_policy`, the review question is not "sharpen the lesson" but "why did recall never
-   fire it" — a diagnosis that cannot be written today at all.
+   its `repair_surface` is `recall_policy`, the review question can include "why did recall fail in the observed linked
+   cases". Missing `selected` evidence alone cannot establish that recall never fired, because an Handoff or Task Outcome
+   may not have been recorded.
 
 Every step uses a mechanism that already exists: Experience revisions, recall of an artifact into `prepare_context`,
 Handoff citations, Task Outcome and `TaskCheck` Sources, and the Review Inbox. The new parts are the match key on the
@@ -147,7 +154,8 @@ instrumenting the read path:
 `avoided` is evidence-gated, and it requires all four of the following. Selection into prepared context is not use, and
 a Task Outcome that merely fails to mention the failure is not avoidance:
 
-1. the revision was cited by a Handoff that a later Task Outcome worked under;
+1. the revision was cited by a Handoff that a later Task Outcome worked under, and the linkage is present in the recorded
+   provenance;
 2. the check bound to the record **ran** under that Task Outcome, and its result is cited. A check that did not run
    leaves the verdict `unknown`: nothing then establishes that the risky situation came up at all;
 3. that check **passed**;
@@ -158,12 +166,13 @@ where the bound check produced no result, the verdict stays **`unknown`** and no
 is never scored as success, and an evidential gap must not be silently converted into a positive counter.
 
 `unknown` is a *derived verdict, not a ledger event*. Writing a row for every unobserved case would fill an append-only
-ledger with information-free rows and would require capture on paths that must stay write-free; it is instead computed
-as the gap between a revision's `selected` events and its events with a resolved verdict.
+ledger with information-free rows and would require capture on paths that must stay write-free. It is computed only for
+linked observations, as the gap between a revision's `selected` events and its linked events with a resolved verdict;
+unlinked prepares are outside the denominator and must not be interpreted as non-selection.
 
-`avoided` remains a proxy, and the RFC does not claim otherwise. A passing check shows the outcome was right; it does
-not show that the record caused it. This rule stops a record that is selected and never needed from being scored
-`avoided`, but a record whose check passes for unrelated reasons still will be.
+`avoided` remains a proxy, and the RFC does not claim otherwise. A passing check shows the bound outcome was right; it does
+not show that the record caused it. The condition and exact check citation limit unrelated tasks from being counted, but
+they still cannot establish causation.
 
 ## How a contributor should think about it
 
@@ -193,6 +202,25 @@ it in statistics, and propose no artifact change, because the bug is in retrieva
 
 This example exercises the `recurred` path. The OpenAPI flow above is what exercises `avoided` and `unknown`; between
 them the two cases cover every event the ledger can hold.
+
+## Minimum checkable evidence case
+
+The following source graph is the smallest implementation and test fixture that makes the accounting boundary explicit:
+
+1. Experience revision `E7` has a failure signature and a verification binding.
+2. Handoff `H12` cites `E7`; a Task Outcome cites `H12`. That complete chain writes one `selected` observation for `E7`.
+3. When the bound TaskCheck is cited and passes, the same linked observation writes `avoided`.
+4. When the bound TaskCheck is cited and fails with the matching signature, the same linked observation writes
+   `recurred` instead.
+5. When the chain is present but the bound TaskCheck did not run, no verdict event is written and the linked selection is
+   counted as `unknown`.
+6. When a prepare has no Handoff/Task Outcome chain, no `selected` observation is written and it stays outside the
+   `unknown` denominator. A Handoff citation with no joinable Task Outcome is reported only as missing provenance
+   coverage; a prepare with no Handoff emits no telemetry. Neither case can be read as a failed recall or a
+   `candidate_not_selected` result.
+
+Implementations must also demonstrate that replaying any one of these source windows produces no duplicate event, while
+two separate Handoff/Task Outcome chains for `E7` remain two observations.
 
 # Reference-level explanation
 
@@ -314,24 +342,29 @@ One ledger event per observation:
 
 ```python
 class RecurrenceObservation(_ArtifactValue):
+    observation_id: str                              # stable idempotency key for one source observation
     scope_id: str
     artifact_ref: ArtifactRef                      # the exact Experience revision
     signature_key: str                             # the normalized cue that matched
     event: Literal["selected", "recurred", "avoided"]
     match_basis: Literal["exact", "human_confirmed"]
-    task_outcome_ref: SourceRef                    # evidence for recurred/avoided
+    task_outcome_ref: SourceRef                     # required for every event; joins selected to its Handoff
     check_ref: SourceRef | None = None             # required for avoided: the TaskCheck that ran and passed
     handoff_ref: ArtifactRef | None = None         # how selection was derived
     observed_at: datetime
 ```
 
-Events are append-only and keyed by `(scope_id, artifact_ref, signature_key)`. Nothing is updated in place, so the
-history of a record's yield is inspectable even after it is revised.
+Events are append-only. `observation_id` is unique and is derived from the exact event evidence, including the event type,
+the referenced Task Outcome or Handoff, the artifact revision, and the normalized signature key. Replaying the same Source
+window is therefore idempotent while distinct observations for one revision remain appendable. `(scope_id, artifact_ref,
+signature_key)` is an aggregation index, not a uniqueness constraint. Nothing is updated in place, so the history of a
+record's yield is inspectable even after it is revised.
 
-`avoided` is the only event that requires `check_ref`; `selected` carries `handoff_ref`, and `recurred` carries its
-failing observation through `task_outcome_ref`. An observation with no resolved verdict writes no row at all. A
-revision's `unknown` count is therefore derived: its `selected` events under some Task Outcome, minus those that
-acquired a `recurred` or `avoided` under the same Task Outcome.
+`avoided` is the only event that requires `check_ref`; `selected` carries `handoff_ref` and the Task Outcome that used
+that Handoff, and `recurred` carries its failing observation through `task_outcome_ref`. An observation with no resolved verdict writes no row at all. A
+revision's `unknown` count is therefore derived only over linked observations: its `selected` events with a recorded Task
+Outcome, minus those that acquired a `recurred` or `avoided` verdict under the same Task Outcome. A missing Handoff or
+Outcome is reported as missing provenance, not as a zero-use or recall-policy result.
 
 ## Degradation and the Review interaction
 
@@ -357,11 +390,11 @@ A revision is marked **needing review** when it accumulates a recurrence streak 
 ## Read surface
 
 `ScopeStatistics` ([RFC 0072](0072_scoped_statistics_and_usage.md)) gains a `recurrence` block: per-scope counts of
-`selected` / `recurred` / `avoided` and of selections still `unknown`, plus the number of revisions needing review. The
-`unknown` count is reported alongside the verdicts rather than folded away, because a scope whose records are all
-`unknown` has no evidence loop at all — a different situation from one whose records are being exercised. Because the
-existing statistics layer has no per-artifact usage view, the RFC proposes one bounded read: the top-N revisions by
-recurrence streak in a scope, returned by the existing statistics operation. No new MCP tool is introduced.
+`selected` / `recurred` / `avoided` and of linked selections still `unknown`, plus the number of revisions needing review.
+The block also reports Handoff citations that cannot be joined to a Task Outcome; those citations are provenance-coverage
+gaps, not selected events. Missing linkage is an evidence-coverage signal, not a recall-policy diagnosis. Because the existing statistics layer has no
+per-artifact usage view, the RFC proposes one bounded read: the top-N revisions by recurrence streak in a scope, returned
+by the existing statistics operation. No new MCP tool is introduced.
 
 ## Compatibility and blast radius
 

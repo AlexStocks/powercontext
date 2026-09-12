@@ -29,7 +29,8 @@ Experience 回答的是"在什么情境下、什么动作产生了什么结果�
 3. **准入以证据为闸门，降级以 Review 为闸门。** 没有引用了失败观测的失败记录，也没有任何自动退休、衰减或重要度评分 ——
    [RFC 0051](0051_experience_skill_artifact_families.md) 已记录的边界保持不变。
 4. **账本从写入路径上已有的证据派生，绝不来自 `prepare_context`。** 选中由 Handoff 引用重建；复发在归整 Task Outcome
-   Source 时判定。读路径保持只读。
+   Source 时判定。读路径保持只读。`selected` 只覆盖具备完整 Handoff/Task Outcome 链路的观测；链路缺失是证据缺口，
+   不能证明召回没有发生。
 
 # Motivation
 
@@ -74,6 +75,9 @@ Experience，并在配对比较下为 Skill 修订设闸。 #1508 做的事是�
 所以"召回策略坏了"只能被写成散文。它也不等同于 [#1510](https://github.com/oceanbase/powercontext/pull/1510) 的 Dream
 工作流：Dream 决定*该提出哪个制品*，并假定输入概念已经存在。本 RFC 提供的正是这两个机制可以归整与路由的负面知识类型。
 
+它也刻意**不**记录 `candidate_not_selected`。`prepare` 必须保持完全只读，因此因字节预算或排序而未进入上下文的候选都不是
+负向结果，后续 provenance 链路不完整则是证据缺口。尤其不能从缺少 `selected` 证据推断 `recall_policy` 发生了故障。
+
 # Guide-level explanation
 
 ## 本 RFC 围绕的流程
@@ -83,8 +87,9 @@ Experience，并在配对比较下为 Skill 修订设闸。 #1508 做的事是�
 
 1. 前两次出现是普通的 Experience 提案，彼此毫无关联。有了本 RFC 的 `failure` 块，第二次会被识别为第一次的**复发**：
    signature 匹配，账本记一次 `recurred`，而因为记录已经存在，不会再写出第三条 lesson。
-2. 后来的一次任务又动了同一个文件。该记录被召回到 `prepare_context`，agent 被告知要重新生成。这就是 `selected` 事件 ——
-   它由 Handoff 引用重建，而不是在读路径上插桩采集（见下文《账本写入路径》）。
+2. 后来的一次任务又动了同一个文件。该记录被召回到 `prepare_context`，agent 被告知要重新生成。只有当后续 Handoff 和
+   Task Outcome 保留所需引用时，这次有链路的观测才产生 `selected` 事件 —— 它由 Handoff 引用重建，而不是在读路径上
+   插桩采集（见下文《账本写入路径》）。没有后续链路的 prepare 保持未观测状态。
 3. 该任务上报一个 Task Outcome。这次 outcome 算不算数，由证据决定，而不由 agent 自己说了算。该记录的 `verification`
    命名了 check「生成代码与契约保持同步」：
    - check **运行且通过** → `avoided`；
@@ -92,8 +97,8 @@ Experience，并在配对比较下为 Skill 修订设闸。 #1508 做的事是�
      而不是召回；
    - check **没有运行** → `unknown`，且不写事件。一次没有触发该 check 的成功任务，不能作为"这条记录帮上了忙"的证据。
 4. 若该 signature 不断累积复发却从未达到 `avoided`，该 revision 会被推到 Review。当其 `repair_surface` 为
-   `recall_policy` 时，Review 要问的不是"把 lesson 打磨得更好"，而是"召回为什么从来没触发它" —— 这是一个今天根本无法
-   写出的诊断。
+   `recall_policy` 时，Review 可以追问"在已有链路的观测里召回为何失败"。仅仅缺少 `selected` 证据不能证明召回从未
+   发生，因为 Handoff 或 Task Outcome 可能没有被记录。
 
 上述每一步都用的是已经存在的机制：Experience revision、制品被召回进 `prepare_context`、Handoff 引用、Task Outcome 与
 `TaskCheck` Source，以及 Review Inbox。新增的部分只有记录上的匹配键、`repair_surface` 枚举、`verification` 绑定和账本。
@@ -136,11 +141,11 @@ Task Outcome 也不等于"避免了"：
 **`unknown`** 且不写事件 —— 证据缺失绝不被记为成功，证据空洞也绝不被静默转成一个正计数。
 
 `unknown` 是*派生判定，不是账本事件*。为每个未被观测的情形写一行，会让只追加的账本塞满不携带信息的行，并要求在必须保持
-不写库的路径上做采集；它改为计算得出：某个 revision 的 `selected` 事件数，减去在同一 Task Outcome 下获得了 `recurred`
-或 `avoided` 的那些。
+不写库的路径上做采集；它只在有链路的观测范围内计算：某个 revision 的 `selected` 事件数，减去在同一 Task Outcome 下获得了
+`recurred` 或 `avoided` 的那些。没有链路的 prepare 不进入分母，也不能解释成未选中。
 
-`avoided` 依然是代理指标，本 RFC 不宣称相反。check 通过说明结果是对的，并不说明这条记录造成了它。这条规则阻止了
-"总被选中却从未被需要"的记录被记成 `avoided`，但一条 check 因无关原因通过的记录仍会被记为 `avoided`。
+`avoided` 依然是代理指标，本 RFC 不宣称相反。绑定的 check 通过说明结果是对的，并不说明这条记录造成了它。`condition` 和
+精确的 check 引用可以排除无关任务，但仍不能建立因果关系。
 
 ## 贡献者该如何理解它
 
@@ -166,6 +171,21 @@ agent 在沙箱里让 `pytest` 因为端口已被占用而失败。Outcome statu
 坏掉的是检索而不是文本。
 
 这个例子走的是 `recurred` 路径；上面的 OpenAPI 流程走的是 `avoided` 与 `unknown`。两者合起来覆盖了账本能持有的全部事件。
+
+## 可检查的最小证据案例
+
+下面的来源图是把记账边界落到实现和测试夹具所需的最小案例：
+
+1. Experience revision `E7` 带有 failure signature 和 verification 绑定。
+2. Handoff `H12` 引用 `E7`，一条 Task Outcome 再引用 `H12`。这条完整链路为 `E7` 写入一条 `selected` 观测。
+3. 绑定的 TaskCheck 被引用且通过时，同一条有链路的观测写入 `avoided`。
+4. 绑定的 TaskCheck 被引用、失败且 signature 匹配时，同一条有链路的观测改为写入 `recurred`。
+5. 链路存在但绑定的 TaskCheck 没有运行时，不写判定事件，这条有链路的选中计入 `unknown`。
+6. 一次 prepare 若没有 Handoff/Task Outcome 链路，不写 `selected` 观测，也不进入 `unknown` 分母。能看到 Handoff 引用却无法
+   关联 Task Outcome 时，只报告为 provenance 覆盖缺口；没有 Handoff 的 prepare 不产生遥测。两种情况都不能被解释成召回失败
+   或 `candidate_not_selected` 结果。
+
+实现还必须证明：重放其中任一 Source 窗口不会产生重复事件；而 `E7` 的两条不同 Handoff/Task Outcome 链路仍是两次独立观测。
 
 # Reference-level explanation
 
@@ -268,22 +288,26 @@ TaskOutcome.handoff_receipt_ref  ->  Handoff Revision
 
 ```python
 class RecurrenceObservation(_ArtifactValue):
+    observation_id: str                              # 单次来源观测的稳定幂等键
     scope_id: str
     artifact_ref: ArtifactRef                      # 精确的 Experience revision
     signature_key: str                             # 匹配成功的归一化 cue
     event: Literal["selected", "recurred", "avoided"]
     match_basis: Literal["exact", "human_confirmed"]
-    task_outcome_ref: SourceRef                    # recurred/avoided 的证据
+    task_outcome_ref: SourceRef                     # 每种事件都必填；把 selected 关联到它的 Handoff
     check_ref: SourceRef | None = None             # avoided 必填：运行且通过的 TaskCheck
     handoff_ref: ArtifactRef | None = None         # 选中是如何推导出来的
     observed_at: datetime
 ```
 
-事件只追加，键为 `(scope_id, artifact_ref, signature_key)`。任何内容都不原地更新，因此即使记录后来被修订，它的产出历史仍然可查。
+事件只追加。`observation_id` 对单次来源观测保持唯一，并由事件类型、引用的 Task Outcome 或 Handoff、精确的 artifact
+revision 和归一化 signature key 等证据派生。重放同一个 Source 窗口因此是幂等的，而同一 revision 的不同观测仍然可以追加。
+`(scope_id, artifact_ref, signature_key)` 只是聚合索引，不是唯一约束。任何内容都不原地更新，因此即使记录后来被修订，它的产出历史仍然可查。
 
-`avoided` 是唯一要求 `check_ref` 的事件；`selected` 携带 `handoff_ref`，`recurred` 通过 `task_outcome_ref` 携带它的失败
-观测。没有得出判定的观测根本不写行。因此某个 revision 的 `unknown` 计数是派生的：它在某个 Task Outcome 下的 `selected`
-事件，减去在同一 Task Outcome 下获得了 `recurred` 或 `avoided` 的那些。
+`avoided` 是唯一要求 `check_ref` 的事件；`selected` 携带 `handoff_ref` 以及使用该 Handoff 的 Task Outcome，`recurred` 通过
+`task_outcome_ref` 携带它的失败观测。没有得出判定的观测根本不写行。因此某个 revision 的 `unknown` 计数只在有链路的观测范围内派生：它带有已记录 Task
+Outcome 的 `selected` 事件，减去在同一 Task Outcome 下获得了 `recurred` 或 `avoided` 的那些。缺失 Handoff 或 Outcome 的
+观测要报告为 provenance 缺口，而不是零使用或 recall-policy 结果。
 
 ## 降级与 Review 的交互
 
@@ -305,7 +329,9 @@ class RecurrenceObservation(_ArtifactValue):
 ## 读取面
 
 `ScopeStatistics`（[RFC 0072](0072_scoped_statistics_and_usage.md)）增加一个 `recurrence` 块：按 scope 统计
-`selected` / `recurred` / `avoided` 数量、仍处于 `unknown` 的选中次数，以及处于 needing review 的 revision 数量。
+`selected` / `recurred` / `avoided` 数量、仍处于 `unknown` 的有链路选中次数，以及处于 needing review 的 revision 数量；
+同时统计无法关联到 Task Outcome 的 Handoff 引用；这些引用是 provenance 覆盖缺口，不是 `selected` 事件。缺失链路是证据覆盖率
+信号，不是 recall-policy 诊断。
 `unknown` 计数与各项判定并列上报而不是被折叠掉，因为一个记录全是 `unknown` 的 scope 根本没有证据环路 —— 这和一个记录
 正被反复检验的 scope 是两种不同处境。因为既有统计层没有按制品的用量视图，本 RFC 提议一个有界读取：由既有 statistics
 操作返回某 scope 内按复发连击排序的前 N 个 revision。不新增 MCP 工具。
