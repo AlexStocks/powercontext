@@ -329,6 +329,12 @@ Matching is the load-bearing mechanism, so it is specified conservatively.
 
 - **Normalization.** Unicode NFKC, case folding, whitespace collapsing, and stripping of leading and trailing
   punctuation produce the comparison key. Normalization is a comparison aid, not a stored identity.
+- **The exact matching input is the failure item itself.** For a `failure_ref` whose `item_kind` is `observation`,
+  use the resolved `WorkClaim.text`; for `item_kind = "check"`, use the resolved `TaskCheck.name`. A candidate is
+  eligible only when that normalized value equals the candidate revision's normalized `signature.recall_cue`.
+  `TaskCheck.details`, the optional `symptom`, and surrounding Task Outcome prose are not match inputs. The eligible
+  set is therefore computed deterministically before any generator call: zero candidates produces `unmatched`, one
+  produces `matched`, and more than one produces `ambiguous`.
 - **Freeze the candidate set before matching.** A complete Handoff/Task Outcome chain uses only the exact Experience
   revisions cited by that Handoff. Without that chain, the candidate set contains only the current head revision of each
   Experience Artifact in the scope, sorted by `ArtifactRef`; superseded revisions are excluded. The selected mode and
@@ -337,10 +343,11 @@ Matching is the load-bearing mechanism, so it is specified conservatively.
 - **Persist one replayable match decision.** Before any `recurred` event, consolidation writes one immutable
   `RecurrenceMatch` for the exact Task Outcome and `failure_ref`. It stores the outcome ref and journal position, the
   failure locator and digest, candidate-set mode and digest, every candidate ref, and either one exact target
-  `(artifact_ref, signature_key)` or the terminal result `unmatched` / `ambiguous`. The generator may propose a target
-  from that closed set, but record validation must reject a target absent from the frozen set or whose normalized key is
-  not the target revision's `recall_cue`. Reprocessing first resolves this record; it must not call the generator again
-  or make a new choice for the same `(task_outcome_ref, failure_ref)`.
+  `(artifact_ref, signature_key)` or the terminal result `unmatched` / `ambiguous`. The target is selected by the
+  deterministic eligibility rule above; a generator may provide explanatory text, but it must not choose or override
+  the result. Record validation must reject a target absent from the frozen set or whose normalized key is not the
+  target revision's `recall_cue`. Reprocessing first resolves this record; it must not call the generator again or make
+  a new choice for the same `(task_outcome_ref, failure_ref)`.
 - **Only a frozen exact target links; fuzzy similarity only suggests.** The target's normalized key is copied verbatim
   from its stored `recall_cue`; a token-bigram overlap at or above 0.8 produces a *suggestion* only, mirroring the
   reference implementation's threshold, and never writes a counter. Fuzzy matching must not silently increment a

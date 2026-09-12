@@ -279,15 +279,20 @@ Review 拒绝继续由已持久化的 Candidate `rejected` 状态及其 `decisio
 匹配是承重机制，因此规定得保守。
 
 - **归一化。** Unicode NFKC、大小写折叠、空白折叠、去掉首尾标点，得到比较键。归一化是比较的辅助手段，不是被存储的身份。
+- **精确匹配输入就是失败 item 本身。** 当 `failure_ref.item_kind` 为 `observation` 时，取解析出的
+  `WorkClaim.text`；当它为 `check` 时，取解析出的 `TaskCheck.name`。只有该值归一化后与候选 revision 的
+  `signature.recall_cue` 归一化值相等，候选才有资格参与匹配。`TaskCheck.details`、可选的 `symptom` 和
+  Task Outcome 周边叙述都不是匹配输入。因此候选资格集合必须在调用生成器之前确定性计算：零个候选为
+  `unmatched`，一个候选为 `matched`，多个候选为 `ambiguous`。
 - **在匹配前冻结候选集。** 完整 Handoff/Task Outcome 链路只使用该 Handoff 所引用的精确 Experience revision。没有该链路时，
   候选集只包含 scope 内每个 Experience Artifact 的当前 head revision，并按 `ArtifactRef` 排序；已被替代的 revision 不参与。
   所用模式和完整、有序的候选 ref 都会持久化，因此后来的 revision 不会重定向历史复发。一条复发连击始终属于精确 revision，
   绝不转移给替代 revision。
 - **持久化一条可重放的匹配决策。** 在任何 `recurred` 事件之前，归整必须为精确的 Task Outcome 与 `failure_ref` 写入一条不可变
   `RecurrenceMatch`。它保存 Outcome ref 和 journal position、失败 locator 和 digest、候选集模式与 digest、全部候选 ref，以及
-  一个精确 target `(artifact_ref, signature_key)` 或终态结果 `unmatched` / `ambiguous`。生成器可从这个封闭集合提出 target，
-  但记录校验必须拒绝不在冻结候选集内的 target，或其归一化 key 不等于 target revision 的 `recall_cue` 的 target。重放时先解析
-  该记录；同一 `(task_outcome_ref, failure_ref)` 不得再次调用生成器或重新选择。
+  一个精确 target `(artifact_ref, signature_key)` 或终态结果 `unmatched` / `ambiguous`。target 必须由上面的确定性候选
+  资格规则选出；生成器最多提供解释文本，不得选择或覆盖结果。记录校验必须拒绝不在冻结候选集内的 target，或其归一化 key
+  不等于 target revision 的 `recall_cue`。重放时先解析该记录；同一 `(task_outcome_ref, failure_ref)` 不得再次调用生成器或重新选择。
 - **只有冻结的精确 target 才建立关联；模糊相似度只做提示。** target 的归一化 key 从其已存储的 `recall_cue` 原样复制；token
   bigram 重叠度达到 0.8 时只产生*提示*，该阈值沿用参考实现，且绝不写计数器。模糊匹配绝不能静默增加复发计数，因为一次错误关联会
   静默污染这个特性存在的意义本身。
