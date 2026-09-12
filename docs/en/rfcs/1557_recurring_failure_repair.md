@@ -211,18 +211,18 @@ The following source graph is the smallest implementation and test fixture that 
 
 1. Experience revision `E7` has a failure signature and a verification binding.
 2. Handoff `H12` cites `E7`. Handoff Receipt Source `R12` has `status = "accepted"`, `selection = "exact"`,
-   `selected_revision = H12`, and `evidence_status = "available"`; Task Outcome Source `O12` has
-   `handoff_receipt_ref = R12`. That
-   complete chain writes one `selected` observation for `E7`.
-3. `O12.observations[0]` is a `basis="verified"` condition claim with exact evidence, and `O12.checks[0]` is the bound
-   `basis="verified"` TaskCheck with exact evidence and status `passed`. `condition_ref` and `check_ref` both carry
-   `task_outcome_ref = O12`; when their digests resolve, the linked observation writes `avoided`.
-4. When `O12.checks[1]` is a `basis="verified"` failed check with exact evidence, and the event's `failure_ref` resolves
-   to that item for the matching signature, the linked observation writes
-   `recurred` instead.
-5. When the chain is present but the bound TaskCheck did not run, or it is only `basis="declared"`, no verdict event is
-   written and the linked selection is counted as `unknown`; no `avoided` event can be written without both verified,
-   same-Outcome item references.
+   `selected_revision = H12`, and `evidence_status = "available"`. Each of the distinct Task Outcome Sources
+   `O12-pass`, `O12-recurred`, and `O12-unknown` has `handoff_receipt_ref = R12`; each complete chain writes one
+   `selected` observation for `E7`.
+3. `O12-pass.observations[0]` is a `basis="verified"` condition claim with exact evidence, and
+   `O12-pass.checks[0]` is the bound `basis="verified"` TaskCheck with exact evidence and status `passed`.
+   `condition_ref` and `check_ref` both carry `task_outcome_ref = O12-pass`; when their digests resolve, that linked
+   observation writes `avoided`.
+4. `O12-recurred.checks[0]` is a `basis="verified"` failed check with exact evidence. When that distinct outcome's
+   `failure_ref` resolves to the item for the matching signature, its linked observation writes `recurred`, not `avoided`.
+5. In `O12-unknown`, the bound TaskCheck did not run, or it is only `basis="declared"`; no verdict event is written and
+   the linked selection is counted as `unknown`. No `avoided` event can be written without both verified, same-Outcome
+   item references.
 6. When a prepare has no Handoff/Task Outcome chain, no `selected` observation is written and it stays outside the
    `unknown` denominator. A Handoff citation with no joinable Task Outcome is reported only as missing provenance
    coverage; a prepare with no Handoff emits no telemetry. Neither case can be read as a failed recall or a
@@ -377,19 +377,27 @@ class TaskOutcomeItemRef(_ArtifactValue):
     item_digest: str  # digest of the item's canonical serialized content
 ```
 
-Events are append-only. `observation_id` is unique and is derived from the exact event evidence, including the event type,
-the referenced Task Outcome or Handoff, the artifact revision, and the normalized signature key. Replaying the same Source
-window is therefore idempotent while distinct observations for one revision remain appendable. `(scope_id, artifact_ref,
-signature_key)` is an aggregation index, not a uniqueness constraint. Nothing is updated in place, so the history of a
-record's yield is inspectable even after it is revised.
+Record validation rejects any event that violates this matrix before it reaches persistence:
+
+| Event | Required evidence | Rejected combination |
+| --- | --- | --- |
+| `selected` | `task_outcome_ref`; an accepted/exact `handoff_receipt_ref`; and the matching `handoff_ref` that cites the revision | no receipt, a non-accepted/non-exact receipt, or a Handoff that does not cite the revision |
+| `avoided` | all `selected` evidence; a verified `condition_ref` to an observation; a verified passing `check_ref` to a check; both locators on `task_outcome_ref` | declared/unreferenced items, a wrong item kind or Outcome, a non-passing check, or any `recurred` event for this signature and Outcome |
+| `recurred` | `task_outcome_ref`; a matching `failure_ref` to the verified failed observation or check | no failed item, a wrong Outcome, a declared failed check, or a locator whose digest does not resolve |
+
+Events are append-only. `observation_id` is unique and is derived from the exact event evidence: the event type, referenced
+Task Outcome and Handoff/Receipt, artifact revision, normalized signature key, and every applicable item locator
+(`condition_ref`, `check_ref`, or `failure_ref`, including its digest). Replaying the same Source window is therefore
+idempotent while distinct observations for one revision remain appendable. `(scope_id, artifact_ref, signature_key)` is an
+aggregation index, not a uniqueness constraint. Nothing is updated in place, so the history of a record's yield is
+inspectable even after it is revised.
 
 `TaskOutcomeItemRef` is a ledger-local locator, not an invented `TaskCheck` Source identity: it must resolve against the
 immutable Task Outcome content at `item_index`, and `item_digest` must match that exact item's canonical serialized
-content. `avoided` requires `condition_ref.item_kind == "observation"` and `check_ref.item_kind == "check"`; both
-locators must point to the event's `task_outcome_ref`, and both embedded values must have `basis="verified"` with
-non-empty exact evidence. The check must have status `passed`. `recurred` requires `failure_ref` to point to the event's
-Task Outcome and to a matching failed observation or check; a failed check must likewise be verified and carry exact
-evidence. `selected` carries `handoff_ref` and the Task Outcome that used that Handoff. An
+content. The validation matrix above makes `condition_ref.item_kind == "observation"` and `check_ref.item_kind == "check"`
+enforceable, requires their exact Outcome and verified evidence, and requires a passing check. `recurred` retains the
+matching failed item through `failure_ref`; a failed check must likewise be verified and carry exact evidence. `selected`
+carries `handoff_ref` and the Task Outcome that used that Handoff. An
 observation with no resolved verdict writes no row at all. A
 revision's `unknown` count is therefore derived only over linked observations: its `selected` events with a recorded Task
 Outcome, minus those that acquired a `recurred` or `avoided` verdict under the same Task Outcome. A missing Handoff or

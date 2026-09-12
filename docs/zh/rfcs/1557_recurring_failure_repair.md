@@ -180,15 +180,16 @@ agent 在沙箱里让 `pytest` 因为端口已被占用而失败。Outcome statu
 
 1. Experience revision `E7` 带有 failure signature 和 verification 绑定。
 2. Handoff `H12` 引用 `E7`。Handoff Receipt Source `R12` 的 `status = "accepted"`、`selection = "exact"`、
-   `selected_revision = H12`、`evidence_status = "available"`；Task Outcome Source `O12` 的
-   `handoff_receipt_ref = R12`。这条完整链路
-   为 `E7` 写入一条 `selected` 观测。
-3. `O12.observations[0]` 是带精确 evidence 的 `basis="verified"` condition claim，`O12.checks[0]` 是带精确 evidence、
-   status 为 `passed` 的 `basis="verified"` 绑定 TaskCheck。`condition_ref` 与 `check_ref` 都携带
-   `task_outcome_ref = O12`；两者 digest 均可解析时，同一条有链路的观测写入 `avoided`。
-4. 当 `O12.checks[1]` 是带精确 evidence、`basis="verified"` 的失败 check，且账本事件的 `failure_ref` 为匹配的 signature
-   解析到该 item 时，同一条有链路的观测改为写入 `recurred`。
-5. 链路存在但绑定的 TaskCheck 没有运行，或它只是 `basis="declared"` 时，不写判定事件，这条有链路的选中计入 `unknown`；
+   `selected_revision = H12`、`evidence_status = "available"`。三个彼此不同的 Task Outcome Source
+   `O12-pass`、`O12-recurred` 和 `O12-unknown` 都有 `handoff_receipt_ref = R12`；每条完整链路都为 `E7` 写入一条
+   `selected` 观测。
+3. `O12-pass.observations[0]` 是带精确 evidence 的 `basis="verified"` condition claim，
+   `O12-pass.checks[0]` 是带精确 evidence、status 为 `passed` 的 `basis="verified"` 绑定 TaskCheck。
+   `condition_ref` 与 `check_ref` 都携带 `task_outcome_ref = O12-pass`；两者 digest 均可解析时，该有链路的观测写入
+   `avoided`。
+4. `O12-recurred.checks[0]` 是带精确 evidence、`basis="verified"` 的失败 check。当该不同 Outcome 的 `failure_ref` 为
+   匹配的 signature 解析到该 item 时，其有链路的观测写入 `recurred`，而不是 `avoided`。
+5. `O12-unknown` 中绑定的 TaskCheck 没有运行，或它只是 `basis="declared"`；不写判定事件，其有链路的选中计入 `unknown`。
    没有 verified 且同一 Outcome 的两个 item 引用时同样不能写入 `avoided`。
 6. 一次 prepare 若没有 Handoff/Task Outcome 链路，不写 `selected` 观测，也不进入 `unknown` 分母。能看到 Handoff 引用却无法
    关联 Task Outcome 时，只报告为 provenance 覆盖缺口；没有 Handoff 的 prepare 不产生遥测。两种情况都不能被解释成召回失败
@@ -321,16 +322,24 @@ class TaskOutcomeItemRef(_ArtifactValue):
     item_digest: str  # item 规范序列化内容的 digest
 ```
 
-事件只追加。`observation_id` 对单次来源观测保持唯一，并由事件类型、引用的 Task Outcome 或 Handoff、精确的 artifact
-revision 和归一化 signature key 等证据派生。重放同一个 Source 窗口因此是幂等的，而同一 revision 的不同观测仍然可以追加。
+任何违反下列矩阵的事件都必须在进入持久化前由记录校验拒绝：
+
+| 事件 | 必要证据 | 必须拒绝的组合 |
+| --- | --- | --- |
+| `selected` | `task_outcome_ref`；accepted/exact 的 `handoff_receipt_ref`；以及引用该 revision 的对应 `handoff_ref` | 没有 receipt、receipt 不是 accepted/exact，或 Handoff 未引用该 revision |
+| `avoided` | 所有 `selected` 证据；指向 observation 的 verified `condition_ref`；指向 check 的 verified 且 passed 的 `check_ref`；两个 locator 都在 `task_outcome_ref` 上 | declared/无引用 item、错误的 item kind 或 Outcome、非 passed check，或同一 signature 和 Outcome 已有 `recurred` 事件 |
+| `recurred` | `task_outcome_ref`；指向匹配的、verified 失败 observation 或 check 的 `failure_ref` | 没有失败 item、Outcome 错误、声明型失败 check，或 locator 的 digest 无法解析 |
+
+事件只追加。`observation_id` 对单次来源观测保持唯一，并由精确事件证据派生：事件类型、引用的 Task Outcome 与
+Handoff/Receipt、精确的 artifact revision、归一化 signature key，以及每个适用 item locator（`condition_ref`、`check_ref`
+或 `failure_ref`，包括其 digest）。重放同一个 Source 窗口因此是幂等的，而同一 revision 的不同观测仍然可以追加。
 `(scope_id, artifact_ref, signature_key)` 只是聚合索引，不是唯一约束。任何内容都不原地更新，因此即使记录后来被修订，它的产出历史仍然可查。
 
 `TaskOutcomeItemRef` 是账本内部 locator，不是虚构的 `TaskCheck` Source 身份：它必须在 `item_index` 处解析不可变的 Task
-Outcome 内容，且 `item_digest` 必须匹配该精确 item 的规范序列化内容。`avoided` 要求
-`condition_ref.item_kind == "observation"`、`check_ref.item_kind == "check"`；两个 locator 都必须指向事件的
-`task_outcome_ref`，且两个内嵌值都必须是带非空精确 evidence 的 `basis="verified"`。该 check 的 status 必须为 `passed`。
-`recurred` 要求 `failure_ref` 指向事件的 Task Outcome，以及与 signature 匹配的失败 observation 或 check；若为失败 check，
-它同样必须是 `basis="verified"` 并带精确 evidence。`selected` 携带 `handoff_ref` 以及使用该 Handoff 的 Task Outcome。没有得出
+Outcome 内容，且 `item_digest` 必须匹配该精确 item 的规范序列化内容。上方校验矩阵让
+`condition_ref.item_kind == "observation"`、`check_ref.item_kind == "check"` 成为可执行约束，并要求精确 Outcome、verified
+evidence 与 passed check。`recurred` 通过 `failure_ref` 保留匹配的失败 item；若为失败 check，它同样必须是
+`basis="verified"` 并带精确 evidence。`selected` 携带 `handoff_ref` 以及使用该 Handoff 的 Task Outcome。没有得出
 判定的观测根本不写行。因此某个 revision 的 `unknown` 计数只在有链路的观测范围内派生：它带有已记录 Task
 Outcome 的 `selected` 事件，减去在同一 Task Outcome 下获得了 `recurred` 或 `avoided` 的那些。缺失 Handoff 或 Outcome 的
 观测要报告为 provenance 缺口，而不是零使用或 recall-policy 结果。
