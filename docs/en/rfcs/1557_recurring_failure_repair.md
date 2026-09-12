@@ -222,8 +222,11 @@ The following source graph is the smallest implementation and test fixture that 
    `O12-pass.checks[0]` is the bound `basis="verified"` TaskCheck with exact evidence and status `passed`.
    `condition_ref` and `check_ref` both carry `task_outcome_ref = O12-pass`; when their digests resolve, that linked
    observation writes `avoided`.
-4. `O12-recurred.checks[0]` is a `basis="verified"` failed check with exact evidence. When that distinct outcome's
-   `failure_ref` resolves to the item for the matching signature, its linked observation writes `recurred`, not `avoided`.
+4. `O12-recurred.checks[0]` is a `basis="verified"` failed check with exact evidence. Its one immutable `RecurrenceMatch`
+   uses `candidate_set_mode = "handoff_citations"`, contains `E7` as the only candidate, and records the exact target
+   `(E7, normalized signature key)`. The match's `failure_ref` resolves to that check; its digest is the event's
+   `recurrence_match_digest`. That linked observation writes `recurred`, not `avoided`; a replay resolves this match and
+   cannot ask the generator to choose again.
 5. In `O12-unknown`, the bound TaskCheck did not run, or it is only `basis="declared"`; no verdict event is written and
    the linked selection is counted as `unknown`. No `avoided` event can be written without both verified, same-Outcome
    item references.
@@ -232,8 +235,12 @@ The following source graph is the smallest implementation and test fixture that 
    coverage; a prepare with no Handoff emits no telemetry. Neither case can be read as a failed recall or a
    `candidate_not_selected` result.
 
-Implementations must also demonstrate that replaying any one of these source windows produces no duplicate event, while
-two separate Handoff/Task Outcome chains for `E7` remain two observations.
+7. After a Review publishes `E7` revision 2 with the same cue, a new unlinked failure window snapshots only revision 2
+   under `candidate_set_mode = "scope_heads"`; the historical `E7` revision-1 match remains unchanged. A recurrence
+   streak does not cross that revision boundary.
+
+Implementations must also demonstrate that replaying any one of these source windows produces no duplicate match or event,
+while two separate Handoff/Task Outcome chains for `E7` remain two observations.
 
 # Reference-level explanation
 

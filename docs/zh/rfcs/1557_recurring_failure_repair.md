@@ -190,15 +190,20 @@ agent 在沙箱里让 `pytest` 因为端口已被占用而失败。Outcome statu
    `O12-pass.checks[0]` 是带精确 evidence、status 为 `passed` 的 `basis="verified"` 绑定 TaskCheck。
    `condition_ref` 与 `check_ref` 都携带 `task_outcome_ref = O12-pass`；两者 digest 均可解析时，该有链路的观测写入
    `avoided`。
-4. `O12-recurred.checks[0]` 是带精确 evidence、`basis="verified"` 的失败 check。当该不同 Outcome 的 `failure_ref` 为
-   匹配的 signature 解析到该 item 时，其有链路的观测写入 `recurred`，而不是 `avoided`。
+4. `O12-recurred.checks[0]` 是带精确 evidence、`basis="verified"` 的失败 check。其唯一、不可变的 `RecurrenceMatch`
+   使用 `candidate_set_mode = "handoff_citations"`，把 `E7` 作为唯一候选，并记录精确 target
+   `(E7, normalized signature key)`。该 match 的 `failure_ref` 解析到这个 check；其 digest 就是 event 的
+   `recurrence_match_digest`。这个有链路观测写入 `recurred`，而不是 `avoided`；重放时解析该 match，不得再次让生成器选择。
 5. `O12-unknown` 中绑定的 TaskCheck 没有运行，或它只是 `basis="declared"`；不写判定事件，其有链路的选中计入 `unknown`。
    没有 verified 且同一 Outcome 的两个 item 引用时同样不能写入 `avoided`。
 6. 一次 prepare 若没有 Handoff/Task Outcome 链路，不写 `selected` 观测，也不进入 `unknown` 分母。能看到 Handoff 引用却无法
    关联 Task Outcome 时，只报告为 provenance 覆盖缺口；没有 Handoff 的 prepare 不产生遥测。两种情况都不能被解释成召回失败
    或 `candidate_not_selected` 结果。
 
-实现还必须证明：重放其中任一 Source 窗口不会产生重复事件；而 `E7` 的两条不同 Handoff/Task Outcome 链路仍是两次独立观测。
+7. Review 发布了同一 cue 的 `E7` revision 2 后，一个新的无链路失败窗口在 `candidate_set_mode = "scope_heads"` 下只快照
+   revision 2；历史 `E7` revision-1 的 match 保持不变。一条 recurrence streak 不跨越这个 revision 边界。
+
+实现还必须证明：重放其中任一 Source 窗口不会产生重复 match 或 event；而 `E7` 的两条不同 Handoff/Task Outcome 链路仍是两次独立观测。
 
 # Reference-level explanation
 
