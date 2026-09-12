@@ -156,8 +156,10 @@ a Task Outcome that merely fails to mention the failure is not avoidance:
 
 1. the revision was cited by a Handoff, and the Task Outcome's `handoff_receipt_ref` resolves to a Handoff Receipt for
    that exact Handoff;
-2. a precise item reference in that Task Outcome proves that the trigger condition occurred, and another precise item
-   reference identifies the bound check that **ran**. A check that did not run leaves the verdict `unknown`;
+2. `condition_ref` resolves to an `observations[]` item in that same Task Outcome with `basis="verified"` and non-empty
+   exact evidence, proving that the trigger condition occurred; `check_ref` resolves to a `checks[]` item in that same
+   Task Outcome with `basis="verified"` and non-empty exact evidence, proving that the bound check **ran**. A declared
+   check, a missing item, or a check that did not run leaves the verdict `unknown`;
 3. that check **passed**;
 4. no `recurred` event was recorded for this signature under the same Task Outcome.
 
@@ -208,14 +210,19 @@ them the two cases cover every event the ledger can hold.
 The following source graph is the smallest implementation and test fixture that makes the accounting boundary explicit:
 
 1. Experience revision `E7` has a failure signature and a verification binding.
-2. Handoff `H12` cites `E7`. Handoff Receipt Source `R12` has `selected_revision = H12`, and Task Outcome Source `O12`
-   has `handoff_receipt_ref = R12`. That complete chain writes one `selected` observation for `E7`.
-3. `O12.observations[0]` is the condition evidence and `O12.checks[0]` is the bound TaskCheck. When both item references
-   resolve and that check passes, the same linked observation writes `avoided`.
-4. When the bound TaskCheck ran and failed with the matching signature, the same linked observation writes
+2. Handoff `H12` cites `E7`. Handoff Receipt Source `R12` has `status = "accepted"`, `selection = "exact"`,
+   `selected_revision = H12`, and `evidence_status = "available"`; Task Outcome Source `O12` has
+   `handoff_receipt_ref = R12`. That
+   complete chain writes one `selected` observation for `E7`.
+3. `O12.observations[0]` is a `basis="verified"` condition claim with exact evidence, and `O12.checks[0]` is the bound
+   `basis="verified"` TaskCheck with exact evidence and status `passed`. `condition_ref` and `check_ref` both carry
+   `task_outcome_ref = O12`; when their digests resolve, the linked observation writes `avoided`.
+4. When `O12.checks[1]` is a `basis="verified"` failed check with exact evidence, and the event's `failure_ref` resolves
+   to that item for the matching signature, the linked observation writes
    `recurred` instead.
-5. When the chain is present but the bound TaskCheck did not run, no verdict event is written and the linked selection is
-   counted as `unknown`; no `avoided` event can be written without both the condition and check item references.
+5. When the chain is present but the bound TaskCheck did not run, or it is only `basis="declared"`, no verdict event is
+   written and the linked selection is counted as `unknown`; no `avoided` event can be written without both verified,
+   same-Outcome item references.
 6. When a prepare has no Handoff/Task Outcome chain, no `selected` observation is written and it stays outside the
    `unknown` denominator. A Handoff citation with no joinable Task Outcome is reported only as missing provenance
    coverage; a prepare with no Handoff emits no telemetry. Neither case can be read as a failed recall or a
@@ -281,8 +288,10 @@ unverifiable record is dropped rather than stored.
 
 1. **A cited failing observation.** The candidate must cite at least one Source whose content records a failure —
    a Task Outcome with status `failed` or `blocked`, or an embedded `TaskCheck` with status `failed`, `timed_out`, or
-   `unavailable` in a cited Task Outcome. The existing Review invariant (at least one exact citation) is necessary but
-   not sufficient, because the cited content must specifically evidence the failure.
+   `unavailable` in a cited Task Outcome. A recurrence event must additionally retain a `failure_ref` to the exact
+   embedded observation or check that supports its signature; a check used this way must be `basis="verified"` with
+   non-empty exact evidence. The existing Review invariant (at least one exact citation) is necessary but not sufficient,
+   because the cited content must specifically evidence the failure.
 2. **A single, self-contained cue.** The cue must name a recognisable situation, not a restatement of the outcome field.
 3. **A `repair_surface`.** The record must state which layer a fix must touch.
 4. **A check that can be run later.** The record must carry a `verification` whose `condition` names the situation in
@@ -357,6 +366,7 @@ class RecurrenceObservation(_ArtifactValue):
     handoff_ref: ArtifactRef | None = None         # how selection was derived
     condition_ref: TaskOutcomeItemRef | None = None  # required for avoided: observation proving the risky condition
     check_ref: TaskOutcomeItemRef | None = None      # required for avoided: check that ran and passed
+    failure_ref: TaskOutcomeItemRef | None = None    # required for recurred: observation or check proving the failure
     observed_at: datetime
 
 
@@ -375,9 +385,11 @@ record's yield is inspectable even after it is revised.
 
 `TaskOutcomeItemRef` is a ledger-local locator, not an invented `TaskCheck` Source identity: it must resolve against the
 immutable Task Outcome content at `item_index`, and `item_digest` must match that exact item's canonical serialized
-content. `avoided` requires
-both `condition_ref` and `check_ref`, in addition to the receipt/Handoff provenance; `selected` carries `handoff_ref` and
-the Task Outcome that used that Handoff, and `recurred` carries its failing observation through `task_outcome_ref`. An
+content. `avoided` requires `condition_ref.item_kind == "observation"` and `check_ref.item_kind == "check"`; both
+locators must point to the event's `task_outcome_ref`, and both embedded values must have `basis="verified"` with
+non-empty exact evidence. The check must have status `passed`. `recurred` requires `failure_ref` to point to the event's
+Task Outcome and to a matching failed observation or check; a failed check must likewise be verified and carry exact
+evidence. `selected` carries `handoff_ref` and the Task Outcome that used that Handoff. An
 observation with no resolved verdict writes no row at all. A
 revision's `unknown` count is therefore derived only over linked observations: its `selected` events with a recorded Task
 Outcome, minus those that acquired a `recurred` or `avoided` verdict under the same Task Outcome. A missing Handoff or
@@ -419,7 +431,7 @@ by the existing statistics operation. No new MCP tool is introduced.
 | --- | --- |
 | `openapi/powercontext.yaml` | `ExperienceProposal` gains one optional object; requires `make api-generate` then `make contract-test` |
 | Persistence | No Artifact schema version; the ledger is a new append-only record with immutable `TaskOutcomeItemRef` locators in the persistence layer |
-| Task Outcome / Handoff | Existing public contracts stay unchanged: the ledger replays immutable Source content by receipt, index, and digest. If implementation instead introduces stable per-item IDs, that is an OpenAPI/model/generated-contract change and must be specified separately |
+| Task Outcome / Handoff | Existing public contracts stay unchanged: the ledger replays immutable Source content by accepted/exact receipt, index, digest, and existing verified evidence. If implementation instead introduces stable per-item IDs, that is an OpenAPI/model/generated-contract change and must be specified separately |
 | Review | Unchanged contract. #1508-style consolidation continues to work; the recurrence candidate uses the existing `propose_experience` shape |
 | Retrieval (`prepare`) | Read-only and unchanged. The cue is indexed because it becomes part of the content projection |
 | Tags, authorization profiles, artifact resource discovery | Untouched, because no Artifact family is added |

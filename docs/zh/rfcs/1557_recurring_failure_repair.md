@@ -132,8 +132,10 @@ Experience，并在配对比较下为 Skill 修订设闸。 #1508 做的事是�
 Task Outcome 也不等于"避免了"：
 
 1. 该 revision 被某个 Handoff 引用过，且 Task Outcome 的 `handoff_receipt_ref` 能解析为该精确 Handoff 的 Handoff Receipt；
-2. 该 Task Outcome 内的一条精确 item 引用证明触发条件已经出现，另一条精确 item 引用识别出**运行过**的绑定 check。未运行的
-   check 一律使判定停在 `unknown`；
+2. `condition_ref` 必须解析到同一 Task Outcome 的 `observations[]` item，且该 item 的 `basis="verified"` 并带非空精确
+   evidence，从而证明触发条件已经出现；`check_ref` 必须解析到同一 Task Outcome 的 `checks[]` item，且该 item 的
+   `basis="verified"` 并带非空精确 evidence，从而证明绑定 check **运行过**。声明型 check、缺失 item 或未运行的 check
+   一律使判定停在 `unknown`；
 3. 该 check **通过**；
 4. 同一次 Task Outcome 下没有为本 signature 记录 `recurred` 事件。
 
@@ -177,13 +179,17 @@ agent 在沙箱里让 `pytest` 因为端口已被占用而失败。Outcome statu
 下面的来源图是把记账边界落到实现和测试夹具所需的最小案例：
 
 1. Experience revision `E7` 带有 failure signature 和 verification 绑定。
-2. Handoff `H12` 引用 `E7`。Handoff Receipt Source `R12` 的 `selected_revision = H12`，Task Outcome Source `O12` 的
-   `handoff_receipt_ref = R12`。这条完整链路为 `E7` 写入一条 `selected` 观测。
-3. `O12.observations[0]` 是 condition evidence，`O12.checks[0]` 是绑定的 TaskCheck。两个 item 引用均可解析且该 check
-   通过时，同一条有链路的观测写入 `avoided`。
-4. 绑定的 TaskCheck 已运行、失败且 signature 匹配时，同一条有链路的观测改为写入 `recurred`。
-5. 链路存在但绑定的 TaskCheck 没有运行时，不写判定事件，这条有链路的选中计入 `unknown`；缺少 condition 或 check item
-   引用时同样不能写入 `avoided`。
+2. Handoff `H12` 引用 `E7`。Handoff Receipt Source `R12` 的 `status = "accepted"`、`selection = "exact"`、
+   `selected_revision = H12`、`evidence_status = "available"`；Task Outcome Source `O12` 的
+   `handoff_receipt_ref = R12`。这条完整链路
+   为 `E7` 写入一条 `selected` 观测。
+3. `O12.observations[0]` 是带精确 evidence 的 `basis="verified"` condition claim，`O12.checks[0]` 是带精确 evidence、
+   status 为 `passed` 的 `basis="verified"` 绑定 TaskCheck。`condition_ref` 与 `check_ref` 都携带
+   `task_outcome_ref = O12`；两者 digest 均可解析时，同一条有链路的观测写入 `avoided`。
+4. 当 `O12.checks[1]` 是带精确 evidence、`basis="verified"` 的失败 check，且账本事件的 `failure_ref` 为匹配的 signature
+   解析到该 item 时，同一条有链路的观测改为写入 `recurred`。
+5. 链路存在但绑定的 TaskCheck 没有运行，或它只是 `basis="declared"` 时，不写判定事件，这条有链路的选中计入 `unknown`；
+   没有 verified 且同一 Outcome 的两个 item 引用时同样不能写入 `avoided`。
 6. 一次 prepare 若没有 Handoff/Task Outcome 链路，不写 `selected` 观测，也不进入 `unknown` 分母。能看到 Handoff 引用却无法
    关联 Task Outcome 时，只报告为 provenance 覆盖缺口；没有 Handoff 的 prepare 不产生遥测。两种情况都不能被解释成召回失败
    或 `candidate_not_selected` 结果。
@@ -239,8 +245,9 @@ symptom 需要一个渲染形态；否则这条记录可能被选中却永远无
 只有当下列条件全部成立时，失败记录才被准入。规则 1 与 2 构成置信下限：无法核实的记录被丢弃而不是被存储。
 
 1. **必须引用一个失败观测。** 候选必须至少引用一个内容记录了失败的 Source —— status 为 `failed` 或 `blocked` 的 Task
-   Outcome，或该被引用 Task Outcome 内 status 为 `failed`、`timed_out`、`unavailable` 的 `TaskCheck`。既有的 Review 不变量
-   （至少一条精确引用）是必要条件但不充分，因为被引用内容必须专门为失败提供证据。
+   Outcome，或该被引用 Task Outcome 内 status 为 `failed`、`timed_out`、`unavailable` 的 `TaskCheck`。复发事件还必须保留
+   指向该 signature 所依赖的精确内嵌 observation 或 check 的 `failure_ref`；若使用 check，它必须是带非空精确 evidence 的
+   `basis="verified"`。既有的 Review 不变量（至少一条精确引用）是必要条件但不充分，因为被引用内容必须专门为失败提供证据。
 2. **单一、自足的 cue。** cue 必须命名一个可识别的情境，而不是对 outcome 字段的复述。
 3. **必须有 `repair_surface`。** 记录必须说明修复该触碰哪一层。
 4. **必须有一个将来能运行的 check。** 记录必须携带 `verification`，其 `condition` 命名该 check 在什么情境下才有意义，
@@ -303,6 +310,7 @@ class RecurrenceObservation(_ArtifactValue):
     handoff_ref: ArtifactRef | None = None         # 选中是如何推导出来的
     condition_ref: TaskOutcomeItemRef | None = None  # avoided 必填：证明风险条件出现的 observation
     check_ref: TaskOutcomeItemRef | None = None      # avoided 必填：运行且通过的 check
+    failure_ref: TaskOutcomeItemRef | None = None    # recurred 必填：证明失败的 observation 或 check
     observed_at: datetime
 
 
@@ -318,9 +326,12 @@ revision 和归一化 signature key 等证据派生。重放同一个 Source 窗
 `(scope_id, artifact_ref, signature_key)` 只是聚合索引，不是唯一约束。任何内容都不原地更新，因此即使记录后来被修订，它的产出历史仍然可查。
 
 `TaskOutcomeItemRef` 是账本内部 locator，不是虚构的 `TaskCheck` Source 身份：它必须在 `item_index` 处解析不可变的 Task
-Outcome 内容，且 `item_digest` 必须匹配该精确 item 的规范序列化内容。`avoided` 除 receipt/Handoff provenance 外还要求 `condition_ref` 与
-`check_ref`；`selected` 携带 `handoff_ref` 以及使用该 Handoff 的 Task Outcome，`recurred` 通过 `task_outcome_ref` 携带它的失败
-观测。没有得出判定的观测根本不写行。因此某个 revision 的 `unknown` 计数只在有链路的观测范围内派生：它带有已记录 Task
+Outcome 内容，且 `item_digest` 必须匹配该精确 item 的规范序列化内容。`avoided` 要求
+`condition_ref.item_kind == "observation"`、`check_ref.item_kind == "check"`；两个 locator 都必须指向事件的
+`task_outcome_ref`，且两个内嵌值都必须是带非空精确 evidence 的 `basis="verified"`。该 check 的 status 必须为 `passed`。
+`recurred` 要求 `failure_ref` 指向事件的 Task Outcome，以及与 signature 匹配的失败 observation 或 check；若为失败 check，
+它同样必须是 `basis="verified"` 并带精确 evidence。`selected` 携带 `handoff_ref` 以及使用该 Handoff 的 Task Outcome。没有得出
+判定的观测根本不写行。因此某个 revision 的 `unknown` 计数只在有链路的观测范围内派生：它带有已记录 Task
 Outcome 的 `selected` 事件，减去在同一 Task Outcome 下获得了 `recurred` 或 `avoided` 的那些。缺失 Handoff 或 Outcome 的
 观测要报告为 provenance 缺口，而不是零使用或 recall-policy 结果。
 
@@ -357,7 +368,7 @@ Outcome 的 `selected` 事件，减去在同一 Task Outcome 下获得了 `recur
 | --- | --- |
 | `openapi/powercontext.yaml` | `ExperienceProposal` 增加一个可选对象；需要 `make api-generate` 再 `make contract-test` |
 | 持久化 | 不引入 Artifact schema 版本；账本是持久化层新增的只追加记录，并持久化不可变的 `TaskOutcomeItemRef` locator |
-| Task Outcome / Handoff | 既有公开契约不变：账本按 receipt、index 与 digest 重放不可变 Source 内容。若实现改为引入每项稳定 ID，则属于 OpenAPI / model / generated contract 改动，必须另行规定 |
+| Task Outcome / Handoff | 既有公开契约不变：账本按 accepted/exact receipt、index、digest 与既有 verified evidence 重放不可变 Source 内容。若实现改为引入每项稳定 ID，则属于 OpenAPI / model / generated contract 改动，必须另行规定 |
 | Review | 契约不变。#1508 式归整继续可用；复发候选沿用既有 `propose_experience` 形态 |
 | 检索（`prepare`） | 保持只读、不变。cue 之所以能被索引，是因为它成为内容投影的一部分 |
 | 标签、授权 profile、artifact 资源发现 | 不受影响，因为没有新增 Artifact 家族 |
