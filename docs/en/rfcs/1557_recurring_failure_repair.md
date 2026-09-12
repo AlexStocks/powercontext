@@ -419,7 +419,7 @@ class RecurrenceObservation(_ArtifactValue):
 class TaskOutcomeItemRef(_ArtifactValue):
     task_outcome_ref: SourceRef
     item_kind: Literal["observation", "check"]
-    item_index: int
+    item_index: Annotated[int, Field(ge=0)]
     item_digest: str  # digest of the item's canonical serialized content
 ```
 
