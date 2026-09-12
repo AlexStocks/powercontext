@@ -252,8 +252,11 @@ symptom 需要一个渲染形态；否则这条记录可能被选中却永远无
 
 1. **必须引用一个失败观测。** 候选必须至少引用一个内容记录了失败的 Source —— status 为 `failed` 或 `blocked` 的 Task
    Outcome，或该被引用 Task Outcome 内 status 为 `failed`、`timed_out`、`unavailable` 的 `TaskCheck`。复发事件还必须保留
-   指向该 signature 所依赖的精确内嵌 observation 或 check 的 `failure_ref`；若使用 check，它必须是带非空精确 evidence 的
-   `basis="verified"`。既有的 Review 不变量（至少一条精确引用）是必要条件但不充分，因为被引用内容必须专门为失败提供证据。
+   指向该 signature 所依赖的精确内嵌 observation 或 check 的 `failure_ref`。observation 只有在其父 Task Outcome 为
+   `failed` 或 `blocked`、且该 `WorkClaim` 是带非空精确 evidence 的 `basis="verified"` 时才构成失败证据。check 只有在
+   `basis="verified"`、带非空精确 evidence，且 status 为 `failed`、`timed_out` 或 `unavailable` 时才构成失败证据；
+   `skipped`、`cancelled` 与 `unknown` 永不写入 `recurred`。既有的 Review 不变量（至少一条精确引用）是必要条件但不充分，
+   因为被引用内容必须专门为失败提供证据。
 2. **单一、自足的 cue。** cue 必须命名一个可识别的情境，而不是对 outcome 字段的复述。
 3. **必须有 `repair_surface`。** 记录必须说明修复该触碰哪一层。
 4. **必须有一个将来能运行的 check。** 记录必须携带 `verification`，其 `condition` 与 `check_subject` 分别是将来
@@ -271,12 +274,19 @@ Review 拒绝继续由已持久化的 Candidate `rejected` 状态及其 `decisio
 匹配是承重机制，因此规定得保守。
 
 - **归一化。** Unicode NFKC、大小写折叠、空白折叠、去掉首尾标点，得到比较键。归一化是比较的辅助手段，不是被存储的身份。
-- **从候选集里选，而不是自由生成。** 归整时把 scope 中已有的 signature 交给流水线，问它这次观测到的失败与哪一个（如果有）
-  匹配，并要求引用失败观测。流水线要么原样返回一个已有的归一化键，要么报告不匹配。这避免了改写漂移：模型是在封闭集合里做选择，
-  而不是发明一个将来要用字符串相等去比较的键。
-- **精确匹配才建立关联；模糊匹配只做提示。** 归一化精确匹配会写一条账本事件。token bigram 重叠度达到 0.8 时只产生*提示*，
-  该阈值沿用参考实现，且绝不写计数器。模糊匹配绝不能静默增加复发计数，因为一次错误关联会静默污染这个特性存在的意义本身。
-- **歧义一律不处理。** 若匹配到两条记录，则不写账本事件，并暴露该冲突。
+- **在匹配前冻结候选集。** 完整 Handoff/Task Outcome 链路只使用该 Handoff 所引用的精确 Experience revision。没有该链路时，
+  候选集只包含 scope 内每个 Experience Artifact 的当前 head revision，并按 `ArtifactRef` 排序；已被替代的 revision 不参与。
+  所用模式和完整、有序的候选 ref 都会持久化，因此后来的 revision 不会重定向历史复发。一条复发连击始终属于精确 revision，
+  绝不转移给替代 revision。
+- **持久化一条可重放的匹配决策。** 在任何 `recurred` 事件之前，归整必须为精确的 Task Outcome 与 `failure_ref` 写入一条不可变
+  `RecurrenceMatch`。它保存 Outcome ref 和 journal position、失败 locator 和 digest、候选集模式与 digest、全部候选 ref，以及
+  一个精确 target `(artifact_ref, signature_key)` 或终态结果 `unmatched` / `ambiguous`。生成器可从这个封闭集合提出 target，
+  但记录校验必须拒绝不在冻结候选集内的 target，或其归一化 key 不等于 target revision 的 `recall_cue` 的 target。重放时先解析
+  该记录；同一 `(task_outcome_ref, failure_ref)` 不得再次调用生成器或重新选择。
+- **只有冻结的精确 target 才建立关联；模糊相似度只做提示。** target 的归一化 key 从其已存储的 `recall_cue` 原样复制；token
+  bigram 重叠度达到 0.8 时只产生*提示*，该阈值沿用参考实现，且绝不写计数器。模糊匹配绝不能静默增加复发计数，因为一次错误关联会
+  静默污染这个特性存在的意义本身。
+- **歧义不产生 verdict。** 若冻结候选集有两个可能 target，持久化的决策为 `ambiguous`；不写账本事件，并暴露该冲突。
 - **signature 不是全局身份。** 记录的身份仍然是 `(artifact_id, revision)`。参考实现用内容派生的可变 id 作为卡片键，使得重新
   存储等于原地编辑；这与不可变 revision 不兼容，修改一条记录必须保持为显式修订。
 
@@ -302,9 +312,22 @@ TaskOutcome.handoff_receipt_ref  ->  HandoffReceipt Source
 证据也已经受 `MAX_HANDOFF_CITATIONS` 约束。因此该重建是对既有数据的读取，而不是新的采集路径。它的信任级别是
 `untrusted_history`，账本会记录这一点：一条引用只能证明 agent 的上下文里出现过这条记录，不能证明 agent 读过或遵守了它。
 
-每次观测写一条账本事件：
+匹配决策先于每次观测的一条账本事件：
 
 ```python
+class RecurrenceMatch(_ArtifactValue):
+    scope_id: str
+    task_outcome_ref: SourceRef
+    task_outcome_position: int
+    failure_ref: TaskOutcomeItemRef
+    candidate_set_mode: Literal["handoff_citations", "scope_heads"]
+    candidate_refs: tuple[ArtifactRef, ...]          # 已排序的精确快照
+    candidate_set_digest: str
+    result: Literal["matched", "unmatched", "ambiguous"]
+    artifact_ref: ArtifactRef | None = None           # 只在 matched 时必填
+    signature_key: str | None = None                  # 只在 matched 时必填
+
+
 class RecurrenceObservation(_ArtifactValue):
     observation_id: str                              # 单次来源观测的稳定幂等键
     scope_id: str
@@ -319,6 +342,7 @@ class RecurrenceObservation(_ArtifactValue):
     condition_ref: TaskOutcomeItemRef | None = None  # avoided 必填：证明风险条件出现的 observation
     check_ref: TaskOutcomeItemRef | None = None      # avoided 必填：运行且通过的 check
     failure_ref: TaskOutcomeItemRef | None = None    # recurred 必填：证明失败的 observation 或 check
+    recurrence_match_digest: str | None = None       # recurred 必填：精确、冻结的 RecurrenceMatch
 
 
 class TaskOutcomeItemRef(_ArtifactValue):
@@ -334,12 +358,14 @@ class TaskOutcomeItemRef(_ArtifactValue):
 | --- | --- | --- |
 | `selected` | `task_outcome_ref` 及其精确、正值的 `task_outcome_position`；accepted/exact 的 `handoff_receipt_ref`；以及引用该 revision 的对应 `handoff_ref` | 没有 receipt、receipt 不是 accepted/exact、journal position 错误、Handoff 未引用该 revision，或同一个 `(artifact_ref, signature_key, task_outcome_ref)` 出现第二条 `selected` 事件 |
 | `avoided` | 所有 `selected` 证据；指向 observation 的 verified `condition_ref`，其归一化 `text` 等于 `verification.condition`；指向 check 的 verified 且 passed 的 `check_ref`，其归一化 `name` 等于 `verification.check_subject`；两个 locator 都在 `task_outcome_ref` 上 | declared、无引用、不匹配或歧义 item；错误的 item kind 或 Outcome；非 passed check；或同一 signature 和 Outcome 已有任意 terminal verdict |
-| `recurred` | `task_outcome_ref` 及其精确、正值的 `task_outcome_position`；指向唯一匹配、verified 失败 observation 或 check 的 `failure_ref` | 没有失败 item、Outcome 或 journal position 错误、声明型失败 check、歧义匹配 item、locator 的 digest 无法解析，或同一 signature 和 Outcome 已有任意 terminal verdict |
+| `recurred` | `task_outcome_ref` 及其精确、正值的 `task_outcome_position`；一个结果为 `matched` 的 `RecurrenceMatch` 的 `recurrence_match_digest`；以及其唯一的 `failure_ref`。match 的 scope、Outcome、failure locator、target `artifact_ref` 和 `signature_key` 必须与 event 相等。observation ref 要求 verified claim、精确 evidence 和父 Outcome status 为 `failed` 或 `blocked`；check ref 要求 verified check、精确 evidence 和 status 为 `failed`、`timed_out` 或 `unavailable` | 没有匹配决策、决策的 scope、Outcome、failure locator、冻结集合或 target 错误、不满足这些状态规则的失败 item、journal position 错误、`ambiguous`/`unmatched` 决策、locator 的 digest 无法解析，或同一 signature 和 Outcome 已有任意 terminal verdict |
 
-事件只追加。`observation_id` 对单次来源观测保持唯一，并由精确事件证据派生：事件类型、引用的 Task Outcome 及其不可变
-journal position、Handoff/Receipt、精确的 artifact revision、归一化 signature key，以及每个适用 item locator
-（`condition_ref`、`check_ref` 或 `failure_ref`，包括其 digest）。重放同一个 Source 窗口因此是幂等的，而同一 revision
-的不同观测仍然可以追加。一个**有完整链路的** Source 窗口针对同一
+`RecurrenceMatch` 与事件只追加，并在一个事务内提交。匹配键对 `(scope_id, task_outcome_ref, failure_ref)` 保持唯一；其
+`failure_ref.task_outcome_ref` 必须等于 `task_outcome_ref`，候选快照在计算 digest 前规范化。`matched` 结果要求两个 target
+字段同时存在；`unmatched` 与 `ambiguous` 则要求二者都不存在。`observation_id` 对单次来源观测保持唯一，并由精确事件证据派生：事件类型、引用的 Task Outcome 及其不可变
+journal position、Handoff/Receipt、精确的 artifact revision、归一化 signature key、适用时的规范 match digest，以及每个适用 item
+locator（`condition_ref`、`check_ref` 或 `failure_ref`，包括其 digest）。重放同一个 Source 窗口因此会复用已记录的匹配决策，
+并保持幂等；同一 revision 的不同观测仍然可以追加。一个**有完整链路的** Source 窗口针对同一
 `(scope_id, artifact_ref, signature_key, task_outcome_ref)` 只写一条 `selected`，最多写一条 terminal verdict
 （`recurred` 或 `avoided`）。没有链路的 Source 窗口只有在唯一 `failure_ref` 支持匹配时才可写一条 `recurred` verdict，
 绝不能写 `avoided`。多个候选证据 item 会让 verdict 保持歧义和 `unknown`，而不是让一条 Task Outcome 膨胀
@@ -349,9 +375,10 @@ recurrence streak。`(scope_id, artifact_ref, signature_key)` 只是聚合索引
 `TaskOutcomeItemRef` 是账本内部 locator，不是虚构的 `TaskCheck` Source 身份：它必须在 `item_index` 处解析不可变的 Task
 Outcome 内容，且 `item_digest` 必须匹配该精确 item 的规范序列化内容。上方校验矩阵让
 `condition_ref.item_kind == "observation"`、`check_ref.item_kind == "check"` 成为可执行约束，并要求精确 Outcome、verified
-evidence、与 `FailureVerification` 绑定严格相等的归一化内容以及 passed check。`recurred` 通过 `failure_ref` 保留唯一匹配
-的失败 item；若为失败 check，它同样必须是 `basis="verified"` 并带精确 evidence。`selected` 携带 `handoff_ref` 以及
-使用该 Handoff 的 Task Outcome。`task_outcome_position` 必须等于 `task_outcome_ref` 解析出的 Source journal entry；它是
+evidence、与 `FailureVerification` 绑定严格相等的归一化内容以及 passed check。`recurred` 通过 `failure_ref` 与冻结的
+`RecurrenceMatch` 保留唯一失败 item；observation 要求父 Outcome 为 `failed`/`blocked`，check 必须 verified、带精确 evidence，
+且为 `failed`、`timed_out` 或 `unavailable`。`selected` 携带 `handoff_ref` 以及使用该 Handoff 的 Task Outcome。
+`task_outcome_position` 必须等于 `task_outcome_ref` 解析出的 Source journal entry；它是
 verdict 唯一的顺序键，单个 scope 中不存在并列。没有得出判定的观测根本不写行。因此某个 revision 的 `unknown` 计数只在有链路的观测范围内派生：它带有已记录 Task
 Outcome 的 `selected` 事件，减去在同一 Task Outcome 下获得了 `recurred` 或 `avoided` 的那些。缺失 Handoff 或 Outcome 的
 观测要报告为 provenance 缺口，而不是零使用或 recall-policy 结果。
@@ -384,12 +411,34 @@ verdict —— 该 revision 被标记为 **needing review**。verdict 严格按�
 正被反复检验的 scope 是两种不同处境。因为既有统计层没有按制品的用量视图，本 RFC 提议一个有界读取：由既有 statistics
 操作返回某 scope 内按复发连击排序的前 N 个 revision。不新增 MCP 工具。
 
+```python
+class RecurrenceStreak(BaseModel):
+    artifact_ref: ArtifactRef
+    signature_key: str
+    terminal_recurred_streak: int  # 非负；按 task_outcome_position 的顺序派生
+
+
+class RecurrenceStatistics(BaseModel):
+    selected: int
+    recurred: int
+    avoided: int
+    unknown: int                         # 没有 terminal verdict 的有链路选中
+    unlinked_handoff_citations: int      # 仅为 provenance 覆盖率
+    needing_review: int
+    top_revisions: tuple[RecurrenceStreak, ...]  # 部署配置决定上限 N
+```
+
+公开 statistics response 中的 `ScopeStats.recurrence` 必填。`top_revisions` 先按 `terminal_recurred_streak` 降序，
+再按 `(artifact_ref.family, artifact_ref.artifact_id, artifact_ref.revision, signature_key)` 排序；API 的部署配置上限 N 在
+排序后才应用。多 scope 的 `ScopedStats` response 通过每一条 `by_scope` entry 返回各自的 block，不把互相独立的 scope
+合并成一条 streak。
+
 ## 兼容性与影响面
 
 | 影响面 | 影响 |
 | --- | --- |
-| `openapi/powercontext.yaml` | `ExperienceProposal` 增加一个可选对象；需要 `make api-generate` 再 `make contract-test` |
-| 持久化 | 不引入 Artifact schema 版本；账本是持久化层新增的只追加记录，并持久化不可变的 `TaskOutcomeItemRef` locator |
+| `openapi/powercontext.yaml` | `ExperienceProposal` 增加一个可选对象。`ScopeStats` 增加必填的 `RecurrenceStatistics` block，其中包括有界的 `RecurrenceStreak` 行；既有 statistics operation 通过每条 `by_scope` entry 返回它。更新生成的 Python models 与全部生成 client，再运行 `make api-generate` 和 `make contract-test` |
+| 持久化 | 不引入 Artifact schema 版本；账本新增只追加的 `RecurrenceMatch` 与 `RecurrenceObservation` 记录，并持久化不可变的 `TaskOutcomeItemRef` locator。匹配/事件唯一约束及事务写入都是持久化迁移的一部分 |
 | Task Outcome / Handoff | 既有公开契约不变：账本按 accepted/exact receipt、index、digest 与既有 verified evidence 重放不可变 Source 内容。若实现改为引入每项稳定 ID，则属于 OpenAPI / model / generated contract 改动，必须另行规定 |
 | Review | 契约不变。#1508 式归整继续可用；复发候选沿用既有 `propose_experience` 形态 |
 | 检索（`prepare`） | 保持只读、不变。cue 之所以能被索引，是因为它成为内容投影的一部分 |

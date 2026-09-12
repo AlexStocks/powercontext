@@ -295,9 +295,12 @@ unverifiable record is dropped rather than stored.
 1. **A cited failing observation.** The candidate must cite at least one Source whose content records a failure —
    a Task Outcome with status `failed` or `blocked`, or an embedded `TaskCheck` with status `failed`, `timed_out`, or
    `unavailable` in a cited Task Outcome. A recurrence event must additionally retain a `failure_ref` to the exact
-   embedded observation or check that supports its signature; a check used this way must be `basis="verified"` with
-   non-empty exact evidence. The existing Review invariant (at least one exact citation) is necessary but not sufficient,
-   because the cited content must specifically evidence the failure.
+   embedded observation or check that supports its signature. An observation is failure evidence only when its parent
+   Task Outcome is `failed` or `blocked`, and the `WorkClaim` itself is `basis="verified"` with non-empty exact evidence.
+   A check is failure evidence only when it is `basis="verified"`, has non-empty exact evidence, and has status
+   `failed`, `timed_out`, or `unavailable`; `skipped`, `cancelled`, and `unknown` never write `recurred`. The existing
+   Review invariant (at least one exact citation) is necessary but not sufficient, because the cited content must
+   specifically evidence the failure.
 2. **A single, self-contained cue.** The cue must name a recognisable situation, not a restatement of the outcome field.
 3. **A `repair_surface`.** The record must state which layer a fix must touch.
 4. **A check that can be run later.** The record must carry a `verification` whose `condition` and `check_subject` are
@@ -319,15 +322,24 @@ Matching is the load-bearing mechanism, so it is specified conservatively.
 
 - **Normalization.** Unicode NFKC, case folding, whitespace collapsing, and stripping of leading and trailing
   punctuation produce the comparison key. Normalization is a comparison aid, not a stored identity.
-- **Candidate-set matching, not free generation.** During consolidation the pipeline is given the existing signatures in
-  the scope and asked which one — if any — the observed failure matches, citing the failing observation. The pipeline
-  returns an existing normalized key verbatim or reports no match. This avoids paraphrase drift: the model selects from
-  a closed set instead of inventing a key that will be compared by string equality later.
-- **Exact match links; fuzzy match only suggests.** A normalized exact match writes a ledger event. A token-bigram
-  overlap at or above 0.8 produces a *suggestion* only, mirroring the reference implementation's threshold, and never
-  writes a counter. Fuzzy matching must not silently increment a recurrence count, because a wrong link silently
-  corrupts the signal the feature exists to produce.
-- **Ambiguity resolves to nothing.** If two records match, no ledger event is written and the conflict is surfaced.
+- **Freeze the candidate set before matching.** A complete Handoff/Task Outcome chain uses only the exact Experience
+  revisions cited by that Handoff. Without that chain, the candidate set contains only the current head revision of each
+  Experience Artifact in the scope, sorted by `ArtifactRef`; superseded revisions are excluded. The selected mode and
+  complete ordered candidate refs are persisted, so a later revision cannot redirect a historical recurrence. A recurrence
+  streak is always per exact revision and never transfers to a replacement revision.
+- **Persist one replayable match decision.** Before any `recurred` event, consolidation writes one immutable
+  `RecurrenceMatch` for the exact Task Outcome and `failure_ref`. It stores the outcome ref and journal position, the
+  failure locator and digest, candidate-set mode and digest, every candidate ref, and either one exact target
+  `(artifact_ref, signature_key)` or the terminal result `unmatched` / `ambiguous`. The generator may propose a target
+  from that closed set, but record validation must reject a target absent from the frozen set or whose normalized key is
+  not the target revision's `recall_cue`. Reprocessing first resolves this record; it must not call the generator again
+  or make a new choice for the same `(task_outcome_ref, failure_ref)`.
+- **Only a frozen exact target links; fuzzy similarity only suggests.** The target's normalized key is copied verbatim
+  from its stored `recall_cue`; a token-bigram overlap at or above 0.8 produces a *suggestion* only, mirroring the
+  reference implementation's threshold, and never writes a counter. Fuzzy matching must not silently increment a
+  recurrence count, because a wrong link silently corrupts the signal the feature exists to produce.
+- **Ambiguity resolves to no verdict.** If the frozen candidate set has two possible targets, the persisted decision is
+  `ambiguous`; no ledger event is written and the conflict is surfaced.
 - **The signature is not a global identity.** The identity of a record remains `(artifact_id, revision)`. The reference
   implementation keys its cards by a mutable content-derived id so that re-storing edits in place; that is incompatible
   with immutable revisions, and changing a record must stay an explicit revision.
@@ -357,9 +369,22 @@ Handoff activation evidence is already bounded by `MAX_HANDOFF_CITATIONS`. The r
 existing data, not a new capture path. Its trust level is `untrusted_history`, and the ledger records that: a citation is
 evidence that the agent's context named the record, not proof that the agent read or obeyed it.
 
-One ledger event per observation:
+The match decision precedes one ledger event per observation:
 
 ```python
+class RecurrenceMatch(_ArtifactValue):
+    scope_id: str
+    task_outcome_ref: SourceRef
+    task_outcome_position: int
+    failure_ref: TaskOutcomeItemRef
+    candidate_set_mode: Literal["handoff_citations", "scope_heads"]
+    candidate_refs: tuple[ArtifactRef, ...]          # sorted, exact snapshot
+    candidate_set_digest: str
+    result: Literal["matched", "unmatched", "ambiguous"]
+    artifact_ref: ArtifactRef | None = None           # required only for matched
+    signature_key: str | None = None                  # required only for matched
+
+
 class RecurrenceObservation(_ArtifactValue):
     observation_id: str                              # stable idempotency key for one source observation
     scope_id: str
@@ -374,6 +399,7 @@ class RecurrenceObservation(_ArtifactValue):
     condition_ref: TaskOutcomeItemRef | None = None  # required for avoided: observation proving the risky condition
     check_ref: TaskOutcomeItemRef | None = None      # required for avoided: check that ran and passed
     failure_ref: TaskOutcomeItemRef | None = None    # required for recurred: observation or check proving the failure
+    recurrence_match_digest: str | None = None       # required for recurred: exact frozen RecurrenceMatch
 
 
 class TaskOutcomeItemRef(_ArtifactValue):
@@ -389,12 +415,17 @@ Record validation rejects any event that violates this matrix before it reaches 
 | --- | --- | --- |
 | `selected` | `task_outcome_ref` and its exact positive `task_outcome_position`; an accepted/exact `handoff_receipt_ref`; and the matching `handoff_ref` that cites the revision | no receipt, a non-accepted/non-exact receipt, wrong journal position, a Handoff that does not cite the revision, or a second `selected` event for the same `(artifact_ref, signature_key, task_outcome_ref)` |
 | `avoided` | all `selected` evidence; a verified `condition_ref` to an observation whose normalized `text` equals `verification.condition`; a verified passing `check_ref` to a check whose normalized `name` equals `verification.check_subject`; both locators on `task_outcome_ref` | declared, unreferenced, non-matching, or ambiguous items; a wrong item kind or Outcome; a non-passing check; or any terminal verdict already recorded for this signature and Outcome |
-| `recurred` | `task_outcome_ref` and its exact positive `task_outcome_position`; a unique matching `failure_ref` to the verified failed observation or check | no failed item, a wrong Outcome or journal position, a declared failed check, an ambiguous matching item, a locator whose digest does not resolve, or any terminal verdict already recorded for this signature and Outcome |
+| `recurred` | `task_outcome_ref` and its exact positive `task_outcome_position`; a `recurrence_match_digest` for a `matched` `RecurrenceMatch`; and its unique `failure_ref`. The match's scope, Outcome, failure locator, target `artifact_ref`, and `signature_key` must equal the event's. An observation ref requires a verified claim with exact evidence and a parent Outcome status of `failed` or `blocked`; a check ref requires a verified check with exact evidence and status `failed`, `timed_out`, or `unavailable` | no matching decision, a decision with a wrong scope, Outcome, failure locator, frozen set, or target, a failed item outside those status rules, a wrong journal position, an ambiguous/unmatched decision, a locator whose digest does not resolve, or any terminal verdict already recorded for this signature and Outcome |
 
-Events are append-only. `observation_id` is unique and is derived from the exact event evidence: the event type, referenced
-Task Outcome and its immutable journal position, Handoff/Receipt, artifact revision, normalized signature key, and every
-applicable item locator (`condition_ref`, `check_ref`, or `failure_ref`, including its digest). Replaying the same Source
-window is therefore idempotent while distinct observations for one revision remain appendable. A **linked** source window
+`RecurrenceMatch` and events are append-only and are committed in one transaction. The match key is unique for
+`(scope_id, task_outcome_ref, failure_ref)`; its `failure_ref.task_outcome_ref` must equal `task_outcome_ref`, and its
+candidate snapshot is canonicalized before its digest is calculated. A `matched` result requires both target fields;
+`unmatched` and `ambiguous` require them to be absent.
+`observation_id` is unique and is derived from the exact event evidence: the event type, referenced Task Outcome and its
+immutable journal position, Handoff/Receipt, artifact revision, normalized signature key, the canonical match digest when
+applicable, and every applicable item locator (`condition_ref`, `check_ref`, or `failure_ref`, including its digest).
+Replaying the same Source window therefore reuses its recorded match decision and is idempotent while distinct observations
+for one revision remain appendable. A **linked** source window
 writes one `selected` event and at most one terminal verdict (`recurred` or `avoided`) for each
 `(scope_id, artifact_ref, signature_key, task_outcome_ref)`. An unlinked Source window can write only one `recurred`
 verdict when its unique `failure_ref` supports the match; it cannot write `avoided`. Multiple candidate evidence items
@@ -406,8 +437,9 @@ place, so the history of a record's yield is inspectable even after it is revise
 immutable Task Outcome content at `item_index`, and `item_digest` must match that exact item's canonical serialized
 content. The validation matrix above makes `condition_ref.item_kind == "observation"` and `check_ref.item_kind == "check"`
 enforceable, requires their exact Outcome and verified evidence, requires their normalized content to equal the
-`FailureVerification` bindings, and requires a passing check. `recurred` retains the unique matching failed item through
-`failure_ref`; a failed check must likewise be verified and carry exact evidence. `selected` carries `handoff_ref` and the
+`FailureVerification` bindings, and requires a passing check. `recurred` retains the unique failure item and its frozen
+`RecurrenceMatch` through `failure_ref`; an observation requires a `failed`/`blocked` parent Outcome, while a check must
+be verified, carry exact evidence, and be `failed`, `timed_out`, or `unavailable`. `selected` carries `handoff_ref` and the
 Task Outcome that used that Handoff. `task_outcome_position` must equal the source journal entry resolved by
 `task_outcome_ref`; it is the sole ordering key for verdicts and ties cannot occur in one scope. An observation with no
 resolved verdict writes no row at all. A
@@ -448,12 +480,34 @@ gaps, not selected events. Missing linkage is an evidence-coverage signal, not a
 per-artifact usage view, the RFC proposes one bounded read: the top-N revisions by recurrence streak in a scope, returned
 by the existing statistics operation. No new MCP tool is introduced.
 
+```python
+class RecurrenceStreak(BaseModel):
+    artifact_ref: ArtifactRef
+    signature_key: str
+    terminal_recurred_streak: int  # non-negative; derived in task_outcome_position order
+
+
+class RecurrenceStatistics(BaseModel):
+    selected: int
+    recurred: int
+    avoided: int
+    unknown: int                         # linked selections without a terminal verdict
+    unlinked_handoff_citations: int      # provenance coverage only
+    needing_review: int
+    top_revisions: tuple[RecurrenceStreak, ...]  # deployment-bounded N
+```
+
+`ScopeStats.recurrence` is required in the public statistics response. `top_revisions` is sorted by descending
+`terminal_recurred_streak`, then `(artifact_ref.family, artifact_ref.artifact_id, artifact_ref.revision, signature_key)`;
+the API's deployment-bounded N is applied after that ordering. A multi-scope `ScopedStats` response exposes one such
+block through each `by_scope` entry rather than merging independent scopes into a single streak.
+
 ## Compatibility and blast radius
 
 | Surface | Impact |
 | --- | --- |
-| `openapi/powercontext.yaml` | `ExperienceProposal` gains one optional object; requires `make api-generate` then `make contract-test` |
-| Persistence | No Artifact schema version; the ledger is a new append-only record with immutable `TaskOutcomeItemRef` locators in the persistence layer |
+| `openapi/powercontext.yaml` | `ExperienceProposal` gains one optional object. `ScopeStats` gains the required `RecurrenceStatistics` block, including bounded `RecurrenceStreak` rows; the existing statistics operation returns it through each `by_scope` entry. Update generated Python models and all generated clients, then run `make api-generate` and `make contract-test` |
+| Persistence | No Artifact schema version; the ledger adds append-only `RecurrenceMatch` and `RecurrenceObservation` records with immutable `TaskOutcomeItemRef` locators. Their match/event uniqueness constraints and transactional write are part of the persistence migration |
 | Task Outcome / Handoff | Existing public contracts stay unchanged: the ledger replays immutable Source content by accepted/exact receipt, index, digest, and existing verified evidence. If implementation instead introduces stable per-item IDs, that is an OpenAPI/model/generated-contract change and must be specified separately |
 | Review | Unchanged contract. #1508-style consolidation continues to work; the recurrence candidate uses the existing `propose_experience` shape |
 | Retrieval (`prepare`) | Read-only and unchanged. The cue is indexed because it becomes part of the content projection |
