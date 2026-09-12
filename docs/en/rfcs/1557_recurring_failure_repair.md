@@ -222,8 +222,9 @@ The following source graph is the smallest implementation and test fixture that 
    `O12-pass.checks[0]` is the bound `basis="verified"` TaskCheck with exact evidence and status `passed`.
    `condition_ref` and `check_ref` both carry `task_outcome_ref = O12-pass`; when their digests resolve, that linked
    observation writes `avoided`.
-4. `O12-recurred.checks[0]` is a `basis="verified"` failed check with exact evidence. Its one immutable `RecurrenceMatch`
-   uses `candidate_set_mode = "handoff_citations"`, contains `E7` as the only candidate, and records the exact target
+4. `O12-recurred.checks[0]` is a `basis="verified"` failed check with exact evidence, and its normalized `name` equals
+   `E7.failure.signature.recall_cue`. Its one immutable `RecurrenceMatch` uses `candidate_set_mode = "handoff_citations"`,
+   contains `E7` as the only eligible candidate, and records the exact target
    `(E7, normalized signature key)`. The match's `failure_ref` resolves to that check; its digest is the event's
    `recurrence_match_digest`. That linked observation writes `recurred`, not `avoided`; a replay resolves this match and
    cannot ask the generator to choose again.

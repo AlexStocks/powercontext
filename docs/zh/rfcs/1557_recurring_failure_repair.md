@@ -190,8 +190,9 @@ agent 在沙箱里让 `pytest` 因为端口已被占用而失败。Outcome statu
    `O12-pass.checks[0]` 是带精确 evidence、status 为 `passed` 的 `basis="verified"` 绑定 TaskCheck。
    `condition_ref` 与 `check_ref` 都携带 `task_outcome_ref = O12-pass`；两者 digest 均可解析时，该有链路的观测写入
    `avoided`。
-4. `O12-recurred.checks[0]` 是带精确 evidence、`basis="verified"` 的失败 check。其唯一、不可变的 `RecurrenceMatch`
-   使用 `candidate_set_mode = "handoff_citations"`，把 `E7` 作为唯一候选，并记录精确 target
+4. `O12-recurred.checks[0]` 是带精确 evidence、`basis="verified"` 的失败 check，且其归一化后的 `name` 等于
+   `E7.failure.signature.recall_cue`。其唯一、不可变的 `RecurrenceMatch` 使用 `candidate_set_mode = "handoff_citations"`，
+   把 `E7` 作为唯一有资格的候选，并记录精确 target
    `(E7, normalized signature key)`。该 match 的 `failure_ref` 解析到这个 check；其 digest 就是 event 的
    `recurrence_match_digest`。这个有链路观测写入 `recurred`，而不是 `avoided`；重放时解析该 match，不得再次让生成器选择。
 5. `O12-unknown` 中绑定的 TaskCheck 没有运行，或它只是 `basis="declared"`；不写判定事件，其有链路的选中计入 `unknown`。
