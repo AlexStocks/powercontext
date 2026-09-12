@@ -110,8 +110,8 @@ the generated sources, so the checked-in code drifts from the contract.
    the agent saying so. The record's `verification` names the check "the generated sources are in sync with the
    contract":
    - the check **ran and passed** → `avoided`;
-   - the check **ran and failed** → `recurred`; and because the check names the contract rather than the agent's memory,
-     the diagnosis points at the record's construction rather than at recall;
+   - the check **ran and failed** → `recurred`; this is recurrence evidence, not a causal diagnosis. The Review route is
+     determined by the record's already Review-confirmed `repair_surface`, not inferred from this one result;
    - the check **did not run** → `unknown`, and no event is written. A task that succeeded without ever exercising the
      check is not evidence that the record helped.
 4. If the signature accumulates recurrences without ever reaching `avoided`, the revision is surfaced for review. When
@@ -135,7 +135,7 @@ judgment.
 
 | Value | The fix must change |
 | --- | --- |
-| `experience_content` | Memory entry text, `ExperienceContent`, or a managed Skill package |
+| `experience_content` | The current Experience revision's `situation` / `action` / `outcome` / `lesson` / `failure` content |
 | `working_state` | Handoff `objective` / `state[]` / `next_action`, or which Task Outcome fields are recorded |
 | `recall_policy` | Scope recall configuration, how the `prepare` query is constructed, or `assembly.sections` selection |
 | `acceptance_check` | Handoff `disposition` / acceptance criteria, or a verification instruction attached to an Experience or Handoff |
@@ -157,9 +157,11 @@ a Task Outcome that merely fails to mention the failure is not avoidance:
 1. the revision was cited by a Handoff, and the Task Outcome's `handoff_receipt_ref` resolves to a Handoff Receipt for
    that exact Handoff;
 2. `condition_ref` resolves to an `observations[]` item in that same Task Outcome with `basis="verified"` and non-empty
-   exact evidence, proving that the trigger condition occurred; `check_ref` resolves to a `checks[]` item in that same
-   Task Outcome with `basis="verified"` and non-empty exact evidence, proving that the bound check **ran**. A declared
-   check, a missing item, or a check that did not run leaves the verdict `unknown`;
+   exact evidence, proving that the trigger condition occurred **and whose normalized `WorkClaim.text` equals the
+   record's `verification.condition`**; `check_ref` resolves to a `checks[]` item in that same Task Outcome with
+   `basis="verified"`, non-empty exact evidence, **and normalized `TaskCheck.name` equal to
+   `verification.check_subject`**, proving that the bound check **ran**. A declared check, a missing or non-matching
+   item, or a check that did not run leaves the verdict `unknown`;
 3. that check **passed**;
 4. no `recurred` event was recorded for this signature under the same Task Outcome.
 
@@ -214,7 +216,9 @@ The following source graph is the smallest implementation and test fixture that 
    `selected_revision = H12`, and `evidence_status = "available"`. Each of the distinct Task Outcome Sources
    `O12-pass`, `O12-recurred`, and `O12-unknown` has `handoff_receipt_ref = R12`; each complete chain writes one
    `selected` observation for `E7`.
-3. `O12-pass.observations[0]` is a `basis="verified"` condition claim with exact evidence, and
+3. `E7.failure.verification.condition` normalizes exactly to `O12-pass.observations[0].text`, and
+   `E7.failure.verification.check_subject` normalizes exactly to `O12-pass.checks[0].name`.
+   `O12-pass.observations[0]` is a `basis="verified"` condition claim with exact evidence, and
    `O12-pass.checks[0]` is the bound `basis="verified"` TaskCheck with exact evidence and status `passed`.
    `condition_ref` and `check_ref` both carry `task_outcome_ref = O12-pass`; when their digests resolve, that linked
    observation writes `avoided`.
@@ -243,8 +247,9 @@ class FailureSignature(_ExperienceValue):
     symptom: ExperienceText | None = None
 
 class FailureVerification(_ExperienceValue):
-    condition: ExperienceText                                                 # when this check is meaningful
+    condition: ExperienceText  # normalized exact binding to the verified WorkClaim.text
     check_subject: Annotated[str, Field(min_length=1, max_length=MAX_FAILURE_CUE_LENGTH)]
+    # normalized exact binding to the verified TaskCheck.name
 
 class FailureRecord(_ExperienceValue):
     signature: FailureSignature
@@ -266,10 +271,11 @@ class ExperienceContent(_ExperienceValue):
 value is an implementation decision, not a design one.
 
 `verification` is required *inside* `FailureRecord`, and it is what makes the ledger able to say anything beyond "this
-failed again". `condition` states the situation in which the check is meaningful, so that a passing check on an
-unrelated task is not read as avoidance; `check_subject` names the `TaskCheck` that evidences it. A record without a
-check can only ever accumulate `recurred` events, so requiring the field is what keeps `avoided` from degrading into
-"nothing was reported".
+failed again". `condition` is an exact normalized binding to the `WorkClaim.text` that proves the risky situation
+occurred; `check_subject` is an exact normalized binding to the `TaskCheck.name` that evidences it. These are deliberately
+not semantic matches: semantic matching could be proposed by a generator, but its result would need a separately
+persisted and Reviewable assertion before it could write the ledger. A record without a check can only ever accumulate
+`recurred` events, so requiring the field is what keeps `avoided` from degrading into "nothing was reported".
 
 **Backwards compatibility.** Artifact content is persisted as JSON and re-validated through the registered content type
 on load, so an optional field is load-compatible with every existing revision. No `schema_version` is introduced: the
@@ -294,9 +300,9 @@ unverifiable record is dropped rather than stored.
    because the cited content must specifically evidence the failure.
 2. **A single, self-contained cue.** The cue must name a recognisable situation, not a restatement of the outcome field.
 3. **A `repair_surface`.** The record must state which layer a fix must touch.
-4. **A check that can be run later.** The record must carry a `verification` whose `condition` names the situation in
-   which the check is meaningful and whose `check_subject` names the check. A record with no check can only ever be
-   observed failing again, which is the state this RFC exists to get out of.
+4. **A check that can be run later.** The record must carry a `verification` whose `condition` and `check_subject` are
+   normalized exact bindings for the future `WorkClaim.text` and `TaskCheck.name`. A record with no check can only ever
+   be observed failing again, which is the state this RFC exists to get out of.
 5. **No silent near-twin.** If the normalized cue is a near-duplicate of an existing record's cue, the proposal is
    returned with a warning that names the existing record, so the author can revise that record instead. The proposal is
    not rejected automatically.
@@ -362,12 +368,12 @@ class RecurrenceObservation(_ArtifactValue):
     event: Literal["selected", "recurred", "avoided"]
     match_basis: Literal["exact"]
     task_outcome_ref: SourceRef                     # required for every event; joins selected to its Handoff
+    task_outcome_position: int                      # matching immutable Source journal position; canonical event order
     handoff_receipt_ref: SourceRef | None = None   # required for selected/avoided; resolves the exact Handoff
     handoff_ref: ArtifactRef | None = None         # how selection was derived
     condition_ref: TaskOutcomeItemRef | None = None  # required for avoided: observation proving the risky condition
     check_ref: TaskOutcomeItemRef | None = None      # required for avoided: check that ran and passed
     failure_ref: TaskOutcomeItemRef | None = None    # required for recurred: observation or check proving the failure
-    observed_at: datetime
 
 
 class TaskOutcomeItemRef(_ArtifactValue):
@@ -381,24 +387,30 @@ Record validation rejects any event that violates this matrix before it reaches 
 
 | Event | Required evidence | Rejected combination |
 | --- | --- | --- |
-| `selected` | `task_outcome_ref`; an accepted/exact `handoff_receipt_ref`; and the matching `handoff_ref` that cites the revision | no receipt, a non-accepted/non-exact receipt, or a Handoff that does not cite the revision |
-| `avoided` | all `selected` evidence; a verified `condition_ref` to an observation; a verified passing `check_ref` to a check; both locators on `task_outcome_ref` | declared/unreferenced items, a wrong item kind or Outcome, a non-passing check, or any `recurred` event for this signature and Outcome |
-| `recurred` | `task_outcome_ref`; a matching `failure_ref` to the verified failed observation or check | no failed item, a wrong Outcome, a declared failed check, or a locator whose digest does not resolve |
+| `selected` | `task_outcome_ref` and its exact positive `task_outcome_position`; an accepted/exact `handoff_receipt_ref`; and the matching `handoff_ref` that cites the revision | no receipt, a non-accepted/non-exact receipt, wrong journal position, a Handoff that does not cite the revision, or a second `selected` event for the same `(artifact_ref, signature_key, task_outcome_ref)` |
+| `avoided` | all `selected` evidence; a verified `condition_ref` to an observation whose normalized `text` equals `verification.condition`; a verified passing `check_ref` to a check whose normalized `name` equals `verification.check_subject`; both locators on `task_outcome_ref` | declared, unreferenced, non-matching, or ambiguous items; a wrong item kind or Outcome; a non-passing check; or any terminal verdict already recorded for this signature and Outcome |
+| `recurred` | `task_outcome_ref` and its exact positive `task_outcome_position`; a unique matching `failure_ref` to the verified failed observation or check | no failed item, a wrong Outcome or journal position, a declared failed check, an ambiguous matching item, a locator whose digest does not resolve, or any terminal verdict already recorded for this signature and Outcome |
 
 Events are append-only. `observation_id` is unique and is derived from the exact event evidence: the event type, referenced
-Task Outcome and Handoff/Receipt, artifact revision, normalized signature key, and every applicable item locator
-(`condition_ref`, `check_ref`, or `failure_ref`, including its digest). Replaying the same Source window is therefore
-idempotent while distinct observations for one revision remain appendable. `(scope_id, artifact_ref, signature_key)` is an
-aggregation index, not a uniqueness constraint. Nothing is updated in place, so the history of a record's yield is
-inspectable even after it is revised.
+Task Outcome and its immutable journal position, Handoff/Receipt, artifact revision, normalized signature key, and every
+applicable item locator (`condition_ref`, `check_ref`, or `failure_ref`, including its digest). Replaying the same Source
+window is therefore idempotent while distinct observations for one revision remain appendable. A **linked** source window
+writes one `selected` event and at most one terminal verdict (`recurred` or `avoided`) for each
+`(scope_id, artifact_ref, signature_key, task_outcome_ref)`. An unlinked Source window can write only one `recurred`
+verdict when its unique `failure_ref` supports the match; it cannot write `avoided`. Multiple candidate evidence items
+make a verdict ambiguous and leave it `unknown`, rather than allowing one Task Outcome to inflate a streak.
+`(scope_id, artifact_ref, signature_key)` is an aggregation index, not a uniqueness constraint. Nothing is updated in
+place, so the history of a record's yield is inspectable even after it is revised.
 
 `TaskOutcomeItemRef` is a ledger-local locator, not an invented `TaskCheck` Source identity: it must resolve against the
 immutable Task Outcome content at `item_index`, and `item_digest` must match that exact item's canonical serialized
 content. The validation matrix above makes `condition_ref.item_kind == "observation"` and `check_ref.item_kind == "check"`
-enforceable, requires their exact Outcome and verified evidence, and requires a passing check. `recurred` retains the
-matching failed item through `failure_ref`; a failed check must likewise be verified and carry exact evidence. `selected`
-carries `handoff_ref` and the Task Outcome that used that Handoff. An
-observation with no resolved verdict writes no row at all. A
+enforceable, requires their exact Outcome and verified evidence, requires their normalized content to equal the
+`FailureVerification` bindings, and requires a passing check. `recurred` retains the unique matching failed item through
+`failure_ref`; a failed check must likewise be verified and carry exact evidence. `selected` carries `handoff_ref` and the
+Task Outcome that used that Handoff. `task_outcome_position` must equal the source journal entry resolved by
+`task_outcome_ref`; it is the sole ordering key for verdicts and ties cannot occur in one scope. An observation with no
+resolved verdict writes no row at all. A
 revision's `unknown` count is therefore derived only over linked observations: its `selected` events with a recorded Task
 Outcome, minus those that acquired a `recurred` or `avoided` verdict under the same Task Outcome. A missing Handoff or
 Outcome is reported as missing provenance, not as a zero-use or recall-policy result.
@@ -406,9 +418,11 @@ Outcome is reported as missing provenance, not as a zero-use or recall-policy re
 ## Degradation and the Review interaction
 
 A revision is marked **needing review** when it accumulates a recurrence streak — proposed default 3 consecutive
-`recurred` events with no intervening `avoided` — on the same revision. The consequence depends on `repair_surface`:
+terminal `recurred` verdicts with no intervening terminal `avoided` verdict — on the same revision. Verdicts are sorted
+strictly by their immutable `task_outcome_position`; replay, delayed processing, and wall-clock time cannot alter the
+streak. The consequence depends on `repair_surface`:
 
-- `experience_content` — the pipeline proposes a revision candidate through the existing `CandidateRepository`,
+- `experience_content` — the pipeline proposes an Experience revision candidate through the existing `CandidateRepository`,
   with the recurrence count in `reason` and the failing observation as evidence. Approval produces a new immutable
   revision. This reuses the Dream pattern from #1510: candidates are generated automatically and human decisions are
   mandatory.
@@ -427,7 +441,8 @@ A revision is marked **needing review** when it accumulates a recurrence streak 
 ## Read surface
 
 `ScopeStatistics` ([RFC 0072](0072_scoped_statistics_and_usage.md)) gains a `recurrence` block: per-scope counts of
-`selected` / `recurred` / `avoided` and of linked selections still `unknown`, plus the number of revisions needing review.
+`selected` / `recurred` / `avoided` and of linked selections still `unknown`, plus the number of Experience revisions
+needing review.
 The block also reports Handoff citations that cannot be joined to a Task Outcome; those citations are provenance-coverage
 gaps, not selected events. Missing linkage is an evidence-coverage signal, not a recall-policy diagnosis. Because the existing statistics layer has no
 per-artifact usage view, the RFC proposes one bounded read: the top-N revisions by recurrence streak in a scope, returned

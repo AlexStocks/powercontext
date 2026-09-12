@@ -93,8 +93,8 @@ Experience，并在配对比较下为 Skill 修订设闸。 #1508 做的事是�
 3. 该任务上报一个 Task Outcome。这次 outcome 算不算数，由证据决定，而不由 agent 自己说了算。该记录的 `verification`
    命名了 check「生成代码与契约保持同步」：
    - check **运行且通过** → `avoided`；
-   - check **运行且失败** → `recurred`；而且因为这个 check 命名的是契约而不是 agent 的记忆，诊断指向的是记录的构造方式，
-     而不是召回；
+   - check **运行且失败** → `recurred`；这是复发证据，不是因果诊断。后续 Review 的路由由该记录已经经 Review 确认的
+     `repair_surface` 决定，而不是从这一次结果自动推断；
    - check **没有运行** → `unknown`，且不写事件。一次没有触发该 check 的成功任务，不能作为"这条记录帮上了忙"的证据。
 4. 若该 signature 不断累积复发却从未达到 `avoided`，该 revision 会被推到 Review。当其 `repair_surface` 为
    `recall_policy` 时，Review 可以追问"在已有链路的观测里召回为何失败"。仅仅缺少 `selected` 证据不能证明召回从未
@@ -114,7 +114,7 @@ Experience，并在配对比较下为 Skill 修订设闸。 #1508 做的事是�
 
 | 取值 | 修复必须改变 |
 | --- | --- |
-| `experience_content` | Memory 条目文本、`ExperienceContent` 或纳管的 Skill 包 |
+| `experience_content` | 当前 Experience revision 的 `situation` / `action` / `outcome` / `lesson` / `failure` 内容 |
 | `working_state` | Handoff 的 `objective` / `state[]` / `next_action`，或被记录的 Task Outcome 字段 |
 | `recall_policy` | Scope 召回配置、`prepare` 查询的构造方式，或 `assembly.sections` 的选择 |
 | `acceptance_check` | Handoff 的 `disposition` / 验收标准，或挂在 Experience 或 Handoff 上的校验指令 |
@@ -133,9 +133,10 @@ Task Outcome 也不等于"避免了"：
 
 1. 该 revision 被某个 Handoff 引用过，且 Task Outcome 的 `handoff_receipt_ref` 能解析为该精确 Handoff 的 Handoff Receipt；
 2. `condition_ref` 必须解析到同一 Task Outcome 的 `observations[]` item，且该 item 的 `basis="verified"` 并带非空精确
-   evidence，从而证明触发条件已经出现；`check_ref` 必须解析到同一 Task Outcome 的 `checks[]` item，且该 item 的
-   `basis="verified"` 并带非空精确 evidence，从而证明绑定 check **运行过**。声明型 check、缺失 item 或未运行的 check
-   一律使判定停在 `unknown`；
+   evidence，从而证明触发条件已经出现，且其归一化后的 `WorkClaim.text` 必须等于记录的 `verification.condition`；
+   `check_ref` 必须解析到同一 Task Outcome 的 `checks[]` item，且该 item 的 `basis="verified"` 并带非空精确 evidence，
+   归一化后的 `TaskCheck.name` 必须等于 `verification.check_subject`，从而证明绑定 check **运行过**。声明型、缺失、
+   不匹配的 item 或未运行的 check 一律使判定停在 `unknown`；
 3. 该 check **通过**；
 4. 同一次 Task Outcome 下没有为本 signature 记录 `recurred` 事件。
 
@@ -183,7 +184,9 @@ agent 在沙箱里让 `pytest` 因为端口已被占用而失败。Outcome statu
    `selected_revision = H12`、`evidence_status = "available"`。三个彼此不同的 Task Outcome Source
    `O12-pass`、`O12-recurred` 和 `O12-unknown` 都有 `handoff_receipt_ref = R12`；每条完整链路都为 `E7` 写入一条
    `selected` 观测。
-3. `O12-pass.observations[0]` 是带精确 evidence 的 `basis="verified"` condition claim，
+3. `E7.failure.verification.condition` 与 `O12-pass.observations[0].text` 归一化后严格相等，
+   `E7.failure.verification.check_subject` 与 `O12-pass.checks[0].name` 归一化后严格相等。
+   `O12-pass.observations[0]` 是带精确 evidence 的 `basis="verified"` condition claim，
    `O12-pass.checks[0]` 是带精确 evidence、status 为 `passed` 的 `basis="verified"` 绑定 TaskCheck。
    `condition_ref` 与 `check_ref` 都携带 `task_outcome_ref = O12-pass`；两者 digest 均可解析时，该有链路的观测写入
    `avoided`。
@@ -209,8 +212,9 @@ class FailureSignature(_ExperienceValue):
     symptom: ExperienceText | None = None
 
 class FailureVerification(_ExperienceValue):
-    condition: ExperienceText                                                 # 该 check 在什么情境下才有意义
+    condition: ExperienceText  # 与 verified WorkClaim.text 归一化后严格绑定
     check_subject: Annotated[str, Field(min_length=1, max_length=MAX_FAILURE_CUE_LENGTH)]
+    # 与 verified TaskCheck.name 归一化后严格绑定
 
 class FailureRecord(_ExperienceValue):
     signature: FailureSignature
@@ -230,9 +234,10 @@ class ExperienceContent(_ExperienceValue):
 `RepairSurface = Literal["experience_content", "working_state", "recall_policy", "acceptance_check"]`。
 `MAX_FAILURE_CUE_LENGTH` 是提议新增的常量（512），因为匹配键不该有 8000 字符；具体数值是实现决策，不是设计决策。
 
-`verification` 在 `FailureRecord` **内部**是必填的，正是它让账本能说出"又失败了"以外的话。`condition` 说明该 check 在
-什么情境下才有意义，从而避免把一次无关任务上的通过读成"避免了"；`check_subject` 命名用于提供证据的 `TaskCheck`。一条
-没有 check 的记录只可能不断累积 `recurred` 事件，因此把该字段设为必填，正是防止 `avoided` 退化成"什么都没被报告"的关键。
+`verification` 在 `FailureRecord` **内部**是必填的，正是它让账本能说出"又失败了"以外的话。`condition` 是与证明风险情境
+出现的 `WorkClaim.text` 的归一化严格绑定；`check_subject` 是与提供证据的 `TaskCheck.name` 的归一化严格绑定。这两者刻意
+不是语义匹配：生成器可以提出语义匹配，但其结果必须先作为可持久化、可 Review 的断言另行定义，才可以写入账本。一条没有
+check 的记录只可能不断累积 `recurred` 事件，因此把该字段设为必填，正是防止 `avoided` 退化成"什么都没被报告"的关键。
 
 **向后兼容。** Artifact 内容以 JSON 持久化，加载时经注册内容类型重新校验，因此可选字段对既有所有 revision 都是加载兼容的。
 不引入 `schema_version`：Artifact 家族今天都不带它，为单个可选字段引入会产生第二套版本机制。
@@ -251,8 +256,9 @@ symptom 需要一个渲染形态；否则这条记录可能被选中却永远无
    `basis="verified"`。既有的 Review 不变量（至少一条精确引用）是必要条件但不充分，因为被引用内容必须专门为失败提供证据。
 2. **单一、自足的 cue。** cue 必须命名一个可识别的情境，而不是对 outcome 字段的复述。
 3. **必须有 `repair_surface`。** 记录必须说明修复该触碰哪一层。
-4. **必须有一个将来能运行的 check。** 记录必须携带 `verification`，其 `condition` 命名该 check 在什么情境下才有意义，
-   `check_subject` 命名该 check。一条没有 check 的记录只能被观测到"又失败了"，而这正是本 RFC 要摆脱的状态。
+4. **必须有一个将来能运行的 check。** 记录必须携带 `verification`，其 `condition` 与 `check_subject` 分别是将来
+   `WorkClaim.text` 与 `TaskCheck.name` 的归一化严格绑定。一条没有 check 的记录只能被观测到"又失败了"，而这正是
+   本 RFC 要摆脱的状态。
 5. **不允许静默的近似孪生。** 若归一化后的 cue 与既有记录的 cue 近似重复，候选会带一条指明既有记录的警告返回，以便作者改为
    修订那条记录。候选不会被自动拒绝。
 6. **provenance。** 复用既有 Review 证据模型，不新增第二套证据机制。
@@ -307,12 +313,12 @@ class RecurrenceObservation(_ArtifactValue):
     event: Literal["selected", "recurred", "avoided"]
     match_basis: Literal["exact"]
     task_outcome_ref: SourceRef                     # 每种事件都必填；把 selected 关联到它的 Handoff
+    task_outcome_position: int                      # 对应不可变 Source journal position；事件的规范顺序
     handoff_receipt_ref: SourceRef | None = None   # selected/avoided 必填：解析出精确 Handoff 的 receipt
     handoff_ref: ArtifactRef | None = None         # 选中是如何推导出来的
     condition_ref: TaskOutcomeItemRef | None = None  # avoided 必填：证明风险条件出现的 observation
     check_ref: TaskOutcomeItemRef | None = None      # avoided 必填：运行且通过的 check
     failure_ref: TaskOutcomeItemRef | None = None    # recurred 必填：证明失败的 observation 或 check
-    observed_at: datetime
 
 
 class TaskOutcomeItemRef(_ArtifactValue):
@@ -326,30 +332,37 @@ class TaskOutcomeItemRef(_ArtifactValue):
 
 | 事件 | 必要证据 | 必须拒绝的组合 |
 | --- | --- | --- |
-| `selected` | `task_outcome_ref`；accepted/exact 的 `handoff_receipt_ref`；以及引用该 revision 的对应 `handoff_ref` | 没有 receipt、receipt 不是 accepted/exact，或 Handoff 未引用该 revision |
-| `avoided` | 所有 `selected` 证据；指向 observation 的 verified `condition_ref`；指向 check 的 verified 且 passed 的 `check_ref`；两个 locator 都在 `task_outcome_ref` 上 | declared/无引用 item、错误的 item kind 或 Outcome、非 passed check，或同一 signature 和 Outcome 已有 `recurred` 事件 |
-| `recurred` | `task_outcome_ref`；指向匹配的、verified 失败 observation 或 check 的 `failure_ref` | 没有失败 item、Outcome 错误、声明型失败 check，或 locator 的 digest 无法解析 |
+| `selected` | `task_outcome_ref` 及其精确、正值的 `task_outcome_position`；accepted/exact 的 `handoff_receipt_ref`；以及引用该 revision 的对应 `handoff_ref` | 没有 receipt、receipt 不是 accepted/exact、journal position 错误、Handoff 未引用该 revision，或同一个 `(artifact_ref, signature_key, task_outcome_ref)` 出现第二条 `selected` 事件 |
+| `avoided` | 所有 `selected` 证据；指向 observation 的 verified `condition_ref`，其归一化 `text` 等于 `verification.condition`；指向 check 的 verified 且 passed 的 `check_ref`，其归一化 `name` 等于 `verification.check_subject`；两个 locator 都在 `task_outcome_ref` 上 | declared、无引用、不匹配或歧义 item；错误的 item kind 或 Outcome；非 passed check；或同一 signature 和 Outcome 已有任意 terminal verdict |
+| `recurred` | `task_outcome_ref` 及其精确、正值的 `task_outcome_position`；指向唯一匹配、verified 失败 observation 或 check 的 `failure_ref` | 没有失败 item、Outcome 或 journal position 错误、声明型失败 check、歧义匹配 item、locator 的 digest 无法解析，或同一 signature 和 Outcome 已有任意 terminal verdict |
 
-事件只追加。`observation_id` 对单次来源观测保持唯一，并由精确事件证据派生：事件类型、引用的 Task Outcome 与
-Handoff/Receipt、精确的 artifact revision、归一化 signature key，以及每个适用 item locator（`condition_ref`、`check_ref`
-或 `failure_ref`，包括其 digest）。重放同一个 Source 窗口因此是幂等的，而同一 revision 的不同观测仍然可以追加。
-`(scope_id, artifact_ref, signature_key)` 只是聚合索引，不是唯一约束。任何内容都不原地更新，因此即使记录后来被修订，它的产出历史仍然可查。
+事件只追加。`observation_id` 对单次来源观测保持唯一，并由精确事件证据派生：事件类型、引用的 Task Outcome 及其不可变
+journal position、Handoff/Receipt、精确的 artifact revision、归一化 signature key，以及每个适用 item locator
+（`condition_ref`、`check_ref` 或 `failure_ref`，包括其 digest）。重放同一个 Source 窗口因此是幂等的，而同一 revision
+的不同观测仍然可以追加。一个**有完整链路的** Source 窗口针对同一
+`(scope_id, artifact_ref, signature_key, task_outcome_ref)` 只写一条 `selected`，最多写一条 terminal verdict
+（`recurred` 或 `avoided`）。没有链路的 Source 窗口只有在唯一 `failure_ref` 支持匹配时才可写一条 `recurred` verdict，
+绝不能写 `avoided`。多个候选证据 item 会让 verdict 保持歧义和 `unknown`，而不是让一条 Task Outcome 膨胀
+recurrence streak。`(scope_id, artifact_ref, signature_key)` 只是聚合索引，不是唯一约束。任何内容都不原地更新，因此即使
+记录后来被修订，它的产出历史仍然可查。
 
 `TaskOutcomeItemRef` 是账本内部 locator，不是虚构的 `TaskCheck` Source 身份：它必须在 `item_index` 处解析不可变的 Task
 Outcome 内容，且 `item_digest` 必须匹配该精确 item 的规范序列化内容。上方校验矩阵让
 `condition_ref.item_kind == "observation"`、`check_ref.item_kind == "check"` 成为可执行约束，并要求精确 Outcome、verified
-evidence 与 passed check。`recurred` 通过 `failure_ref` 保留匹配的失败 item；若为失败 check，它同样必须是
-`basis="verified"` 并带精确 evidence。`selected` 携带 `handoff_ref` 以及使用该 Handoff 的 Task Outcome。没有得出
-判定的观测根本不写行。因此某个 revision 的 `unknown` 计数只在有链路的观测范围内派生：它带有已记录 Task
+evidence、与 `FailureVerification` 绑定严格相等的归一化内容以及 passed check。`recurred` 通过 `failure_ref` 保留唯一匹配
+的失败 item；若为失败 check，它同样必须是 `basis="verified"` 并带精确 evidence。`selected` 携带 `handoff_ref` 以及
+使用该 Handoff 的 Task Outcome。`task_outcome_position` 必须等于 `task_outcome_ref` 解析出的 Source journal entry；它是
+verdict 唯一的顺序键，单个 scope 中不存在并列。没有得出判定的观测根本不写行。因此某个 revision 的 `unknown` 计数只在有链路的观测范围内派生：它带有已记录 Task
 Outcome 的 `selected` 事件，减去在同一 Task Outcome 下获得了 `recurred` 或 `avoided` 的那些。缺失 Handoff 或 Outcome 的
 观测要报告为 provenance 缺口，而不是零使用或 recall-policy 结果。
 
 ## 降级与 Review 的交互
 
-当同一个 revision 上累积出复发连击 —— 提议默认值为连续 3 次 `recurred` 且其间没有 `avoided` —— 该 revision 被标记为
-**needing review**。后果取决于 `repair_surface`：
+当同一个 revision 上累积出复发连击 —— 提议默认值为连续 3 次 terminal `recurred` verdict 且其间没有 terminal `avoided`
+verdict —— 该 revision 被标记为 **needing review**。verdict 严格按不可变的 `task_outcome_position` 排序；重放、延迟处理
+和墙上时钟都不会改变连击。后果取决于 `repair_surface`：
 
-- `experience_content` —— 流水线通过既有 `CandidateRepository` 提出一个 revision 候选，把复发次数写进 `reason`，把失败观测
+- `experience_content` —— 流水线通过既有 `CandidateRepository` 提出一个 Experience revision 候选，把复发次数写进 `reason`，把失败观测
   作为证据。批准会产出一个新的不可变 revision。这复用 #1510 的 Dream 模式：候选自动生成，人工决策强制。
 - `working_state`、`recall_policy`、`acceptance_check` —— 不提出任何制品候选。复发被记录并在统计中暴露，因为这次修复不是
   内容变更。
@@ -364,7 +377,7 @@ Outcome 的 `selected` 事件，减去在同一 Task Outcome 下获得了 `recur
 ## 读取面
 
 `ScopeStatistics`（[RFC 0072](0072_scoped_statistics_and_usage.md)）增加一个 `recurrence` 块：按 scope 统计
-`selected` / `recurred` / `avoided` 数量、仍处于 `unknown` 的有链路选中次数，以及处于 needing review 的 revision 数量；
+`selected` / `recurred` / `avoided` 数量、仍处于 `unknown` 的有链路选中次数，以及处于 needing review 的 Experience revision 数量；
 同时统计无法关联到 Task Outcome 的 Handoff 引用；这些引用是 provenance 覆盖缺口，不是 `selected` 事件。缺失链路是证据覆盖率
 信号，不是 recall-policy 诊断。
 `unknown` 计数与各项判定并列上报而不是被折叠掉，因为一个记录全是 `unknown` 的 scope 根本没有证据环路 —— 这和一个记录
