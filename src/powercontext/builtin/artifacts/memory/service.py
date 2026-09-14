@@ -79,7 +79,7 @@ from powercontext.builtin.artifacts.memory.protocols import (
 )
 from powercontext.builtin.artifacts.memory.reranking import MemoryReranker
 from powercontext.builtin.artifacts.prompt.service import ScopedPrompts, current_prompt, prompt_operation
-from powercontext.builtin.artifacts.search import analyze_text
+from powercontext.builtin.artifacts.search import AdmissionFloor, analyze_text
 from powercontext.builtin.inference import (
     EmbeddingModel,
     EmbeddingVector,
@@ -403,8 +403,12 @@ class MemoryService:
         limit: int = 10,
         mode: MemorySearchMode = "auto",
         tag_filter: TagFilter | None = None,
+        admission: AdmissionFloor | None = None,
     ) -> MemorySearchResult:
-        """Search explicit current Memory heads with capability-safe fallback."""
+        """Search explicit current Memory heads with capability-safe fallback.
+
+        ``admission=None`` applies the historical fusion-time thresholds bit for bit.
+        """
 
         if not memories:
             raise _InvalidMemoryOperationError("search-memories")
@@ -461,8 +465,8 @@ class MemoryService:
             tag_filter=tag_filter,
         )
         channels = await self._backend.search(request)
-        admitted_fts = admit_fts_candidates(normalized_query, channels.fts)
-        admitted_vector = admit_vector_candidates(channels.vector)
+        admitted_fts = admit_fts_candidates(normalized_query, channels.fts, admission=admission)
+        admitted_vector = admit_vector_candidates(channels.vector, admission=admission)
         hits = fuse_rankings(
             fts=admitted_fts if selected_mode in {"fts", "hybrid"} else (),
             vector=admitted_vector if selected_mode in {"vector", "hybrid"} else (),

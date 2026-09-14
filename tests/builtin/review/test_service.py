@@ -94,6 +94,8 @@ class _FailingExperienceIndex:
         _query: str,
         _limit: int,
         /,
+        *,
+        admission: object = None,
     ) -> tuple[ExperienceSearchHit, ...]:
         return ()
 

@@ -30,7 +30,7 @@ from powercontext.builtin.artifacts.experience import (
     experience_search_text,
     experience_searchable_text,
 )
-from powercontext.builtin.artifacts.search import admits_fts_text
+from powercontext.builtin.artifacts.search import AdmissionFloor, admits_fts_text
 from powercontext.builtin.artifacts.skill import (
     Skill,
     SkillContent,
@@ -92,6 +92,8 @@ class ExperienceIndex(Protocol):
         query: str,
         limit: int,
         /,
+        *,
+        admission: AdmissionFloor | None = None,
     ) -> tuple[ExperienceSearchHit, ...]: ...
 
     async def replace_skill(
@@ -135,6 +137,8 @@ class NoExperienceIndex:
         _query: str,
         _limit: int,
         /,
+        *,
+        admission: AdmissionFloor | None = None,
     ) -> tuple[ExperienceSearchHit, ...]:
         return ()
 
@@ -300,13 +304,19 @@ def experience_search_hits(
     query: str,
     limit: int,
     /,
+    *,
+    admission: AdmissionFloor | None = None,
 ) -> tuple[ExperienceSearchHit, ...]:
-    """Decode backend-ordered rows and apply the shared lexical admission rule."""
+    """Decode backend-ordered rows and apply the shared lexical admission rule.
+
+    ``admission=None`` applies the historical lexical floor bit for bit. ``skill_search_hits``
+    keeps its own default behaviour and is intentionally unaffected.
+    """
 
     hits: list[ExperienceSearchHit] = []
     for row in rows:
         content = _content(row["content"])
-        if not admits_fts_text(query, experience_search_text(content)):
+        if not admits_fts_text(query, experience_search_text(content), floor=admission):
             continue
         hits.append(
             ExperienceSearchHit(

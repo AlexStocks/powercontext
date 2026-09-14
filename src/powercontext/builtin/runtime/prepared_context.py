@@ -35,6 +35,7 @@ from powercontext.builtin.runtime.prepared_text import (
     fit_context_text_item,
     render_context_text,
 )
+from powercontext.builtin.runtime.recall_sufficiency import RecallEffort
 
 _MIN_TRUNCATED_CONTENT_BYTES = 64
 _ELLIPSIS = "…"
@@ -53,11 +54,29 @@ class _PreparedContextEntry:
 
 
 @dataclass(frozen=True)
+class PreparedContextOmissions:
+    """Aggregate counts of the items the byte budget omitted in one build.
+
+    Both counts are per-call aggregates, never per-entry attribution and never a verdict about
+    an entry: an entry losing to the budget is not a negative result about that entry.
+    """
+
+    truncated_items: int = 0
+    dropped_items: int = 0
+
+
+@dataclass(frozen=True)
 class PreparedContextBuild:
-    """Final public context and the exact origins selected to produce it."""
+    """Final public context and the exact origins selected to produce it.
+
+    ``omissions`` is always filled by the Builder; ``recall_effort`` is attached afterwards by
+    the Runtime via :func:`dataclasses.replace` and stays ``None`` when the gate is disabled.
+    """
 
     context: PreparedContext
     origins: tuple[PreparedContextOrigin, ...]
+    omissions: PreparedContextOmissions = PreparedContextOmissions()
+    recall_effort: RecallEffort | None = None
 
 
 @dataclass(frozen=True)
@@ -198,10 +217,10 @@ class PreparedContextBuilder:
                 for candidates in experience_candidates
             )
         )[: self.experience_entry_limit]
-        entries = self._fit_entries(request, memory_entries, topic_memory_entries, experience_entries)
+        entries, omissions = self._fit_entries(request, memory_entries, topic_memory_entries, experience_entries)
 
         if not entries:
-            return PreparedContextBuild(context=self.empty(), origins=())
+            return PreparedContextBuild(context=self.empty(), origins=(), omissions=omissions)
         content = _render(entries)
         content_bytes = len(content.encode("utf-8"))
         if content_bytes > request.max_bytes:
@@ -209,6 +228,7 @@ class PreparedContextBuilder:
         return PreparedContextBuild(
             context=PreparedContext(status="ready", content=content, content_bytes=content_bytes),
             origins=tuple(entry.origin for entry in entries),
+            omissions=omissions,
         )
 
     def _build_text(
@@ -226,6 +246,8 @@ class PreparedContextBuilder:
             raise PreparedContextInvariantError("text-assembly-missing")
         included: list[ContextTextItem] = []
         origins: list[PreparedContextOrigin] = []
+        truncated_items = 0
+        dropped_items = 0
         for section in assembly.sections:
             if section.family == "profile":
                 entries = self._profile_entries(profile_candidates)
@@ -266,18 +288,29 @@ class PreparedContextBuilder:
                 seen.add(identity)
                 rank += 1
                 fitted = fit_context_text_item(included, replace(item, recall_rank=rank), assembly, request.max_bytes)
-                if fitted is not None:
-                    included.append(fitted)
-                    origins.append(entry.origin)
-                    selected_count += 1
+                if fitted is None:
+                    dropped_items += 1
+                    continue
+                included.append(fitted)
+                origins.append(entry.origin)
+                selected_count += 1
+                truncated_items += int(fitted.truncated)
                 if selected_count >= section.limit:
                     break
         if not included:
-            return PreparedContextBuild(context=self.empty(), origins=())
+            return PreparedContextBuild(
+                context=self.empty(),
+                origins=(),
+                omissions=PreparedContextOmissions(
+                    truncated_items=truncated_items,
+                    dropped_items=dropped_items,
+                ),
+            )
         content = render_context_text(included, assembly)
         return PreparedContextBuild(
             context=PreparedContext(status="ready", content=content, content_bytes=len(content.encode("utf-8"))),
             origins=tuple(origins),
+            omissions=PreparedContextOmissions(truncated_items=truncated_items, dropped_items=dropped_items),
         )
 
     def _profile_entries(self, candidates: Sequence[PreparedProfileCandidate]) -> tuple[_PreparedContextEntry, ...]:
@@ -421,8 +454,10 @@ class PreparedContextBuilder:
         memory_entries: Sequence[_PreparedContextEntry],
         topic_memory_entries: Sequence[_PreparedContextEntry],
         experience_entries: Sequence[_PreparedContextEntry],
-    ) -> tuple[_PreparedContextEntry, ...]:
+    ) -> tuple[tuple[_PreparedContextEntry, ...], PreparedContextOmissions]:
         entries: list[_PreparedContextEntry] = []
+        truncated_items = 0
+        dropped_items = 0
         for candidate in _interleave(memory_entries, topic_memory_entries, experience_entries):
             if len(entries) >= self.entry_limit:
                 break
@@ -434,9 +469,16 @@ class PreparedContextBuilder:
                 text=candidate.content,
                 max_bytes=request.max_bytes,
             )
-            if fitted is not None:
-                entries.append(fitted)
-        return tuple(entries)
+            if fitted is None:
+                dropped_items += 1
+                continue
+            entries.append(fitted)
+            if fitted.truncated:
+                truncated_items += 1
+        return tuple(entries), PreparedContextOmissions(
+            truncated_items=truncated_items,
+            dropped_items=dropped_items,
+        )
 
     def _fit_entry(
         self,

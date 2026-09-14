@@ -20,7 +20,7 @@ import unicodedata
 from collections import Counter
 from collections.abc import Sequence
 
-from powercontext.builtin.artifacts.search import admits_fts_text, analyze_text, analyze_text_with_spans
+from powercontext.builtin.artifacts.search import AdmissionFloor, admits_fts_text, analyze_text, analyze_text_with_spans
 from powercontext.builtin.artifacts.topic_memory.models import (
     TopicMemoryChannelHit,
     TopicMemoryMatchedBy,
@@ -52,18 +52,22 @@ def fuse_topic_memory_rankings(
     /,
     *,
     mode: TopicMemoryUsedSearchMode = "hybrid",
+    admission: AdmissionFloor | None = None,
 ) -> tuple[TopicMemorySearchHit, ...]:
-    """Collapse each channel by Topic and fuse ranks without comparing raw scores."""
+    """Collapse each channel by Topic and fuse ranks without comparing raw scores.
+
+    ``admission=None`` applies the historical fusion-time thresholds bit for bit.
+    """
 
     candidates: dict[tuple[str, int], TopicMemoryChannelHit] = {}
     snippets: dict[tuple[str, int], str] = {}
     scores: dict[tuple[str, int], float] = {}
     matched: dict[tuple[str, int], set[TopicMemoryMatchedBy]] = {}
     rankings: tuple[tuple[TopicMemoryMatchedBy, tuple[TopicMemoryChannelHit, ...]], ...] = (
-        ("topic_fts", _admit_fts(query, channels.topic_fts)),
-        ("topic_vector", _admit_vector(channels.topic_vector)),
-        ("detail_fts", _admit_fts(query, channels.detail_fts)),
-        ("detail_vector", _admit_vector(channels.detail_vector)),
+        ("topic_fts", _admit_fts(query, channels.topic_fts, admission)),
+        ("topic_vector", _admit_vector(channels.topic_vector, admission)),
+        ("detail_fts", _admit_fts(query, channels.detail_fts, admission)),
+        ("detail_vector", _admit_vector(channels.detail_vector, admission)),
     )
     enabled_channels = _MODE_CHANNELS[mode]
     max_score = len(enabled_channels) / (_RRF_CONSTANT + 1)
@@ -99,22 +103,46 @@ def fuse_topic_memory_rankings(
     )
 
 
-def _admit_fts(query: str, hits: Sequence[TopicMemoryChannelHit]) -> tuple[TopicMemoryChannelHit, ...]:
+def _admit_fts(
+    query: str,
+    hits: Sequence[TopicMemoryChannelHit],
+    admission: AdmissionFloor | None,
+) -> tuple[TopicMemoryChannelHit, ...]:
     return tuple(
         hit
         for hit in hits
-        if admits_fts_text(query, hit.chunk_text if hit.chunk_text is not None else f"{hit.title}\n{hit.summary}")
+        if admits_fts_text(
+            query,
+            hit.chunk_text if hit.chunk_text is not None else f"{hit.title}\n{hit.summary}",
+            floor=admission,
+        )
     )
 
 
-def _admit_vector(hits: Sequence[TopicMemoryChannelHit]) -> tuple[TopicMemoryChannelHit, ...]:
-    return tuple(hit for hit in hits if hit.distance is not None and admits_topic_memory_vector_distance(hit.distance))
+def _admit_vector(
+    hits: Sequence[TopicMemoryChannelHit],
+    admission: AdmissionFloor | None,
+) -> tuple[TopicMemoryChannelHit, ...]:
+    return tuple(
+        hit
+        for hit in hits
+        if hit.distance is not None and admits_topic_memory_vector_distance(hit.distance, floor=admission)
+    )
 
 
-def admits_topic_memory_vector_distance(distance: float, /) -> bool:
-    """Apply the shared semantic admission rule to a unit-vector distance."""
+def admits_topic_memory_vector_distance(
+    distance: float,
+    /,
+    *,
+    floor: AdmissionFloor | None = None,
+) -> bool:
+    """Apply the shared semantic admission rule to a unit-vector distance.
 
-    return max(-1.0, min(1.0, 1.0 - distance**2 / 2.0)) >= _MIN_SEMANTIC_SIMILARITY
+    ``floor=None`` uses this module's historical cosine baseline bit for bit.
+    """
+
+    baseline = _MIN_SEMANTIC_SIMILARITY if floor is None else floor.min_semantic_similarity
+    return max(-1.0, min(1.0, 1.0 - distance**2 / 2.0)) >= baseline
 
 
 def _snippet(query: str, value: str, *, lexical: bool) -> str:

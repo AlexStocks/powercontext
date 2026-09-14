@@ -1,0 +1,373 @@
+# Copyright (c) 2026 OceanBase.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Runtime acceptance for the recall-sufficiency gate and its bounded expansion.
+
+These tests exercise the real SQLite FTS recall path through the in-process runtime seam
+(``ScopedContextApplication._prepare_build``) rather than the pure gate module: a three-term
+query lets the round-zero admission floor reject a candidate that the lower round-one floor
+re-admits, which is exactly the behaviour the gate exists to drive.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from powercontext.builtin.artifacts.memory import MemoryEntryInput
+from powercontext.builtin.persistence.sqlite import SQLiteConfig
+from powercontext.builtin.runtime import (
+    BuiltinConfig,
+    PrepareContextRequest,
+    RememberMemoryRequest,
+    RuntimeConfig,
+    open_builtin_runtime,
+)
+from powercontext.builtin.runtime.application import BuiltinRuntime, ScopedContextApplication
+from powercontext.builtin.runtime.prepared_context import PreparedContextBuild
+from powercontext.builtin.runtime.recall_sufficiency import (
+    REASON_AT_MAX_ROUNDS,
+    REASON_BUDGET_FLOOR,
+    REASON_EXPANSION_FAILED,
+    REASON_NO_CONTENT,
+    REASON_SUFFICIENT,
+    RecallSufficiencyGate,
+)
+from powercontext.builtin.scope import ScopeDraft
+
+# A three-term query is required: the round-zero floor only differs from the round-one floor
+# once the query has more than two Analyzer terms (``fts_query_requirements`` clamps a short
+# query to a single required match).
+_QUERY = "alpha beta gamma"
+_MEMORY_ONLY = {"sections": [{"family": "memory", "limit": 8}]}
+
+
+class _RecallRoundLog:
+    """Record every ``_recall_round`` invocation and optionally starve a later round."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.empty_from: int | None = None
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        original = ScopedContextApplication._recall_round
+        log = self
+
+        async def counted(
+            application: ScopedContextApplication,
+            request: PrepareContextRequest,
+            scope_ids: Any,
+            families: set[str],
+            builder: Any,
+            *,
+            admission: Any,
+        ) -> Any:
+            log.calls.append({"families": set(families), "admission": admission})
+            if log.empty_from is not None and len(log.calls) >= log.empty_from:
+                return [], [], ()
+            return await original(application, request, scope_ids, families, builder, admission=admission)
+
+        monkeypatch.setattr(ScopedContextApplication, "_recall_round", counted)
+
+
+@asynccontextmanager
+async def _runtime(database: Path, runtime: RuntimeConfig | None = None) -> AsyncIterator[BuiltinRuntime]:
+    config = BuiltinConfig(
+        database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"),
+        runtime=runtime if runtime is not None else RuntimeConfig(),
+    )
+    async with open_builtin_runtime(config, scheduler_path=database.with_suffix(".scheduler.db")) as opened:
+        yield opened
+
+
+def _entry(text: str) -> MemoryEntryInput:
+    return MemoryEntryInput(kind="fact", text=text)
+
+
+async def _seed(runtime: BuiltinRuntime, scope_id: str, texts: list[str]) -> None:
+    await runtime.memory.for_scope(scope_id).remember(
+        RememberMemoryRequest(entries=tuple(_entry(text) for text in texts))
+    )
+
+
+async def _create_scope(runtime: BuiltinRuntime, key: str) -> str:
+    assert runtime.scopes is not None
+    created = await runtime.scopes.create(
+        ScopeDraft(title="Gate", summary="Recall gate acceptance", idempotency_key=key)
+    )
+    return created.scope_id
+
+
+def _memory_request(*, max_bytes: int = 8000, assembly: dict[str, Any] | None = None) -> PrepareContextRequest:
+    payload: dict[str, Any] = {"query": _QUERY, "max_bytes": max_bytes}
+    payload["assembly"] = _MEMORY_ONLY if assembly is None else assembly
+    return PrepareContextRequest.model_validate(payload)
+
+
+async def _prepare_build(
+    runtime: BuiltinRuntime,
+    scope_id: str,
+    request: PrepareContextRequest,
+) -> PreparedContextBuild:
+    application = runtime.context.for_scope(scope_id)
+    async with runtime._scope_operation(scope_id) as scope:
+        return await application._prepare_build(request, scope)
+
+
+def test_default_off_matches_a_sufficient_round_zero_byte_for_byte(tmp_path, monkeypatch) -> None:
+    log = _RecallRoundLog()
+    log.install(monkeypatch)
+
+    async def scenario() -> None:
+        database = tmp_path / "e1.db"
+        request = _memory_request()
+
+        async with _runtime(database) as disabled:
+            scope_id = await _create_scope(disabled, "e1")
+            await _seed(disabled, scope_id, [f"alpha beta gamma memory {index}" for index in range(8)])
+            disabled_build = await _prepare_build(disabled, scope_id, request)
+        assert disabled_build.recall_effort is None
+        assert len(log.calls) == 1
+
+        log.calls.clear()
+        async with _runtime(
+            database,
+            RuntimeConfig(recall_gate_enabled=True, recall_gate_min_top_gap=0.0),
+        ) as enabled:
+            enabled_build = await _prepare_build(enabled, scope_id, request)
+
+        assert enabled_build.recall_effort is not None
+        assert len(log.calls) == 1
+        assert enabled_build.recall_effort.rounds == 0
+        assert enabled_build.recall_effort.gate_reason == REASON_SUFFICIENT
+        assert len(enabled_build.recall_effort.candidates_by_round) == 1
+        assert enabled_build.context.status == "ready"
+        assert enabled_build.context.content == disabled_build.context.content
+        assert enabled_build.context.content_bytes == disabled_build.context.content_bytes
+        assert enabled_build.origins == disabled_build.origins
+
+    asyncio.run(scenario())
+
+
+def test_one_expansion_round_re_admits_a_candidate_blocked_at_round_zero(tmp_path, monkeypatch) -> None:
+    log = _RecallRoundLog()
+    log.install(monkeypatch)
+
+    async def scenario() -> None:
+        database = tmp_path / "e2.db"
+        async with _runtime(
+            database,
+            RuntimeConfig(
+                recall_gate_enabled=True,
+                recall_gate_min_candidates=2,
+                recall_gate_min_top_score=0.0,
+                recall_gate_min_top_gap=0.0,
+                recall_gate_min_lexical_overlap=0.0,
+            ),
+        ) as runtime:
+            scope_id = await _create_scope(runtime, "e2")
+            await _seed(runtime, scope_id, ["alpha beta gamma evidence", "alpha solo marker"])
+            build = await _prepare_build(runtime, scope_id, _memory_request())
+
+        effort = build.recall_effort
+        assert effort is not None
+        assert effort.rounds == 1
+        assert effort.expansions == ("admission",)
+        assert len(effort.candidates_by_round) == 2
+        assert effort.candidates_by_round[1] > effort.candidates_by_round[0]
+        assert len(log.calls) == 2
+        assert build.context.content is not None
+        assert "alpha beta gamma evidence" in build.context.content
+        assert "alpha solo marker" in build.context.content
+
+    asyncio.run(scenario())
+
+
+def test_two_expansion_rounds_stop_at_max_rounds(tmp_path, monkeypatch) -> None:
+    log = _RecallRoundLog()
+    log.install(monkeypatch)
+
+    async def scenario() -> None:
+        database = tmp_path / "e3.db"
+        async with _runtime(
+            database,
+            RuntimeConfig(recall_gate_enabled=True, recall_gate_max_rounds=2, recall_gate_min_candidates=100),
+        ) as runtime:
+            scope_id = await _create_scope(runtime, "e3")
+            await _seed(runtime, scope_id, ["alpha beta gamma evidence", "alpha solo marker", "beta gamma marker"])
+            build = await _prepare_build(runtime, scope_id, _memory_request())
+
+        effort = build.recall_effort
+        assert effort is not None
+        assert effort.rounds == 2
+        assert effort.gate_reason == REASON_AT_MAX_ROUNDS
+        assert effort.expansions == ("admission", "best-available")
+        assert len(log.calls) == 3
+
+    asyncio.run(scenario())
+
+
+def test_empty_scope_is_no_content_and_does_not_expand(tmp_path, monkeypatch) -> None:
+    log = _RecallRoundLog()
+    log.install(monkeypatch)
+
+    async def scenario() -> None:
+        database = tmp_path / "e4.db"
+        async with _runtime(database, RuntimeConfig(recall_gate_enabled=True)) as runtime:
+            scope_id = await _create_scope(runtime, "e4")
+            monkeypatch.setattr(runtime, "_experience_recall", None)
+            monkeypatch.setattr(runtime, "_topic_memory_search", None)
+            build = await _prepare_build(runtime, scope_id, PrepareContextRequest(query=_QUERY))
+
+        effort = build.recall_effort
+        assert effort is not None
+        assert effort.gate_reason == REASON_NO_CONTENT
+        assert effort.rounds == 0
+        assert len(log.calls) == 1
+        assert build.context.status == "empty"
+
+    asyncio.run(scenario())
+
+
+def test_expansion_never_widens_the_selected_family_set(tmp_path, monkeypatch) -> None:
+    log = _RecallRoundLog()
+    log.install(monkeypatch)
+
+    async def unavailable(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("an unselected family must never be searched")  # noqa: TRY003
+
+    async def scenario() -> None:
+        database = tmp_path / "e5.db"
+        async with _runtime(
+            database,
+            RuntimeConfig(recall_gate_enabled=True, recall_gate_min_candidates=100),
+        ) as runtime:
+            scope_id = await _create_scope(runtime, "e5")
+            await _seed(runtime, scope_id, ["alpha beta gamma evidence", "alpha solo marker", "beta gamma marker"])
+            monkeypatch.setattr(runtime, "_experience_recall", unavailable)
+            monkeypatch.setattr(runtime, "_topic_memory_search", unavailable)
+            build = await _prepare_build(runtime, scope_id, _memory_request())
+
+        assert build.context.status == "ready"
+        assert len(log.calls) == 3
+        assert {frozenset(call["families"]) for call in log.calls} == {frozenset({"memory"})}
+
+    asyncio.run(scenario())
+
+
+def test_later_rounds_never_remove_an_accumulated_candidate(tmp_path, monkeypatch) -> None:
+    async def scenario() -> None:
+        database = tmp_path / "e6.db"
+        request = _memory_request()
+
+        async with _runtime(database) as disabled:
+            scope_id = await _create_scope(disabled, "e6")
+            await _seed(disabled, scope_id, ["alpha beta gamma evidence", "alpha solo marker", "beta gamma marker"])
+            baseline = await _prepare_build(disabled, scope_id, request)
+
+        log = _RecallRoundLog()
+        log.empty_from = 3  # the round-two lookup returns no new candidates at all
+        log.install(monkeypatch)
+        async with _runtime(
+            database,
+            RuntimeConfig(recall_gate_enabled=True, recall_gate_min_candidates=100),
+        ) as runtime:
+            build = await _prepare_build(runtime, scope_id, request)
+
+        effort = build.recall_effort
+        assert effort is not None
+        assert effort.rounds == 2
+        assert len(log.calls) == 3
+        # Round zero admits the two entries covering >= 2 query terms; round one lowers the floor
+        # and re-admits the one-term entry (3 total); the starved round two adds nothing, so the
+        # accumulated pool never shrinks after the round it was seeded at.
+        assert effort.candidates_by_round == (2, 3, 3)
+        assert all(origin in build.origins for origin in baseline.origins)
+
+    asyncio.run(scenario())
+
+
+def test_gate_failure_fails_open_to_the_round_zero_result(tmp_path, monkeypatch) -> None:
+    async def scenario() -> None:
+        database = tmp_path / "e7.db"
+        request = _memory_request()
+
+        async with _runtime(database) as disabled:
+            scope_id = await _create_scope(disabled, "e7")
+            await _seed(disabled, scope_id, ["alpha beta gamma evidence", "alpha solo marker"])
+            baseline = await _prepare_build(disabled, scope_id, request)
+
+        def exploded(*_args: Any, **_kwargs: Any) -> Any:
+            raise RuntimeError("gate exploded")  # noqa: TRY003
+
+        monkeypatch.setattr(RecallSufficiencyGate, "assess", exploded)
+        async with _runtime(database, RuntimeConfig(recall_gate_enabled=True)) as runtime:
+            build = await _prepare_build(runtime, scope_id, request)
+
+        effort = build.recall_effort
+        assert effort is not None
+        assert effort.gate_reason == REASON_EXPANSION_FAILED
+        assert effort.rounds == 0
+        assert effort.expansions == ()
+        assert len(effort.candidates_by_round) == 1
+        assert build.context.content == baseline.context.content
+        assert build.origins == baseline.origins
+
+    asyncio.run(scenario())
+
+
+def test_empty_assembly_returns_before_any_recall(tmp_path, monkeypatch) -> None:
+    async def scenario() -> None:
+        database = tmp_path / "e8.db"
+        async with _runtime(database, RuntimeConfig(recall_gate_enabled=True)) as runtime:
+            scope_id = await _create_scope(runtime, "e8")
+            await _seed(runtime, scope_id, ["alpha beta gamma evidence"])
+
+            def forbidden(*_args: Any, **_kwargs: Any) -> Any:
+                raise AssertionError("empty assembly must not reach the recall seam")  # noqa: TRY003
+
+            monkeypatch.setattr(ScopedContextApplication, "_prepare_build", forbidden)
+            result = await runtime.context.for_scope(scope_id).prepare(
+                PrepareContextRequest.model_validate({"query": _QUERY, "assembly": {"sections": []}})
+            )
+
+        assert result.status == "empty"
+        assert result.content is None
+
+    asyncio.run(scenario())
+
+
+def test_budget_floor_short_circuits_the_gate(tmp_path, monkeypatch) -> None:
+    log = _RecallRoundLog()
+    log.install(monkeypatch)
+
+    async def scenario() -> None:
+        database = tmp_path / "e9.db"
+        async with _runtime(database, RuntimeConfig(recall_gate_enabled=True)) as runtime:
+            scope_id = await _create_scope(runtime, "e9")
+            await _seed(runtime, scope_id, ["alpha beta gamma evidence", "alpha solo marker"])
+            build = await _prepare_build(runtime, scope_id, _memory_request(max_bytes=512))
+
+        effort = build.recall_effort
+        assert effort is not None
+        assert effort.gate_reason == REASON_BUDGET_FLOOR
+        assert effort.rounds == 0
+        assert len(log.calls) == 1
+
+    asyncio.run(scenario())

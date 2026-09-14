@@ -23,13 +23,16 @@ from pydantic import ValidationError
 
 from powercontext.artifacts import ArtifactAddress, ArtifactRef
 from powercontext.builtin.artifacts.experience import ExperienceContent, ExperienceSearchHit
-from powercontext.builtin.artifacts.memory import MemoryHit
+from powercontext.builtin.artifacts.memory import MemoryCitation, MemoryHit
 from powercontext.builtin.artifacts.profile.models import Profile, ProfileContent, ProfileGeneration
 from powercontext.builtin.artifacts.topic_memory import TopicMemorySearchHit
 from powercontext.builtin.runtime import ContextAssembly, PrepareContextRequest
 from powercontext.builtin.runtime.errors import PreparedContextInvariantError
 from powercontext.builtin.runtime.prepared_context import (
+    _MIN_TRUNCATED_CONTENT_BYTES,
+    PreparedContextBuild,
     PreparedContextBuilder,
+    PreparedContextOmissions,
     PreparedExperienceCandidates,
     PreparedMemoryCandidates,
     PreparedProfileCandidate,
@@ -581,3 +584,131 @@ def test_empty_context_has_no_source_specific_status_or_content() -> None:
     assert prepared.status == "empty"
     assert prepared.content is None
     assert prepared.content_bytes == 0
+
+
+def test_prepared_context_build_defaults_omit_nothing_and_carry_no_effort() -> None:
+    build = PreparedContextBuild(context=PreparedContextBuilder().empty(), origins=())
+
+    assert build.omissions == PreparedContextOmissions(truncated_items=0, dropped_items=0)
+    assert build.recall_effort is None
+
+
+def test_non_assembly_counts_a_whole_drop_below_the_minimum_truncation() -> None:
+    short_source = "hi"
+    assert len(short_source.encode("utf-8")) < _MIN_TRUNCATED_CONTENT_BYTES
+    build = PreparedContextBuilder().build_scopes_result(
+        current_scope_id="current",
+        request=PrepareContextRequest(query="entry", max_bytes=512),
+        memory_candidates=(
+            PreparedMemoryCandidates(
+                scope_id="current",
+                memory_ref=MEMORY_REF,
+                hits=(_hit("a" * 400, short_source),),
+            ),
+        ),
+    )
+
+    assert build.context.status == "empty"
+    assert build.origins == ()
+    assert build.omissions.dropped_items == 1
+    assert build.omissions.truncated_items == 0
+
+
+def test_non_assembly_counts_a_whole_drop_when_no_truncation_fits() -> None:
+    build = PreparedContextBuilder().build_scopes_result(
+        current_scope_id="current",
+        request=PrepareContextRequest(query="entry", max_bytes=620),
+        memory_candidates=(
+            PreparedMemoryCandidates(
+                scope_id="current",
+                memory_ref=MEMORY_REF,
+                hits=(_hit("a" * 128, "long content " * 200), _hit("short", "small")),
+            ),
+        ),
+    )
+
+    assert build.context.status == "ready"
+    assert len(build.origins) == 1
+    assert build.omissions.dropped_items == 1
+    assert build.omissions.truncated_items == 0
+
+
+def test_non_assembly_counts_a_truncated_entry() -> None:
+    build = PreparedContextBuilder().build_scopes_result(
+        current_scope_id="current",
+        request=PrepareContextRequest(query="记忆", max_bytes=800),
+        memory_candidates=(
+            PreparedMemoryCandidates(
+                scope_id="current",
+                memory_ref=MEMORY_REF,
+                hits=(_hit("unicode", "记忆🙂" * 400),),
+            ),
+        ),
+    )
+
+    assert build.context.status == "ready"
+    assert build.omissions.truncated_items == 1
+    assert build.omissions.dropped_items == 0
+
+
+def test_entry_limit_truncation_is_not_counted_as_an_omission() -> None:
+    hits = tuple(_hit(f"entry-{index}", f"content {index}") for index in range(10))
+    build = PreparedContextBuilder().build_scopes_result(
+        current_scope_id="current",
+        request=PrepareContextRequest(query="content", max_bytes=32768),
+        memory_candidates=(PreparedMemoryCandidates(scope_id="current", memory_ref=MEMORY_REF, hits=hits),),
+    )
+
+    assert len(build.origins) == 8
+    assert build.omissions == PreparedContextOmissions(truncated_items=0, dropped_items=0)
+
+
+def test_assembly_counts_a_dropped_item_and_a_truncated_item() -> None:
+    assembly = ContextAssembly.model_validate({"sections": [{"family": "memory", "limit": 8}]})
+    dropped = PreparedContextBuilder().build_scopes_result(
+        current_scope_id="current",
+        request=PrepareContextRequest(query="budget", max_bytes=620, assembly=assembly),
+        memory_candidates=(
+            PreparedMemoryCandidates(
+                scope_id="current",
+                memory_ref=MEMORY_REF,
+                hits=(_hit("x" * 128, "Long historical content " * 200), _hit("short", "small")),
+            ),
+        ),
+    )
+    truncated = PreparedContextBuilder().build_scopes_result(
+        current_scope_id="current",
+        request=PrepareContextRequest(query="budget", max_bytes=760, assembly=ContextAssembly()),
+        memory_candidates=(
+            PreparedMemoryCandidates(
+                scope_id="current",
+                memory_ref=MEMORY_REF,
+                hits=(_hit("unicode", "记忆🙂\u202e" * 500),),
+            ),
+        ),
+    )
+
+    assert dropped.context.status == "ready"
+    assert dropped.omissions.dropped_items == 1
+    assert dropped.omissions.truncated_items == 0
+    assert truncated.context.status == "ready"
+    assert truncated.omissions.truncated_items == 1
+    assert truncated.omissions.dropped_items == 0
+
+
+def test_omission_counting_leaves_rendered_content_and_origins_unchanged() -> None:
+    request = PrepareContextRequest(query="entry")
+    hits = (_hit("first", "First constraint"), _hit("second", "Second constraint"))
+    build = PreparedContextBuilder().build_scopes_result(
+        current_scope_id="current",
+        request=request,
+        memory_candidates=(PreparedMemoryCandidates(scope_id="current", memory_ref=MEMORY_REF, hits=hits),),
+    )
+    plain = PreparedContextBuilder().build(scope_id="current", memory_ref=MEMORY_REF, hits=hits, request=request)
+
+    assert build.context.content == plain.content
+    assert build.omissions == PreparedContextOmissions(truncated_items=0, dropped_items=0)
+    assert build.origins == (
+        MemoryCitation(memory_ref=MEMORY_REF, entry_id="first", entry_version_id="first-v1"),
+        MemoryCitation(memory_ref=MEMORY_REF, entry_id="second", entry_version_id="second-v1"),
+    )
