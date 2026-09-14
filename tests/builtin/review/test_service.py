@@ -21,7 +21,11 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.artifacts import ArtifactRef
-from powercontext.builtin.artifacts.experience import Experience, ExperienceContent, ExperienceSearchHit
+from powercontext.builtin.artifacts.experience import (
+    Experience,
+    ExperienceContent,
+    ExperienceSearchOutcome,
+)
 from powercontext.builtin.artifacts.memory import MemoryEntryInput
 from powercontext.builtin.artifacts.skill import Skill, SkillContent, SkillPackageSnapshot, SkillSearchHit
 from powercontext.builtin.persistence.errors import RepositoryNotFoundError
@@ -96,8 +100,8 @@ class _FailingExperienceIndex:
         /,
         *,
         admission: object = None,
-    ) -> tuple[ExperienceSearchHit, ...]:
-        return ()
+    ) -> ExperienceSearchOutcome:
+        return ExperienceSearchOutcome()
 
     async def replace_skill(
         self,

@@ -27,13 +27,19 @@ from powercontext.builtin.artifacts.search import (
     _FTS_MIN_MATCHED_TERMS,
     _FTS_MIN_QUERY_COVERAGE,
     DEFAULT_ADMISSION_FLOOR,
+    AdmissionCounts,
     AdmissionFloor,
     admits_fts_text,
     fts_query_requirements,
 )
 from powercontext.builtin.artifacts.topic_memory import TopicMemorySearchHit
 from powercontext.builtin.runtime.config import RuntimeConfig
+from powercontext.builtin.runtime.prepared_context import PreparedContextOmissions
 from powercontext.builtin.runtime.recall_sufficiency import (
+    BUDGET_FLOOR_BYTES,
+    EXPERIENCE_FAMILY,
+    MEMORY_FAMILY,
+    POLICY_ID,
     REASON_AT_MAX_ROUNDS,
     REASON_BUDGET_FLOOR,
     REASON_EXPANSION_FAILED,
@@ -44,16 +50,31 @@ from powercontext.builtin.runtime.recall_sufficiency import (
     REASON_THIN_FAMILIES,
     REASON_WEAK_LEXICAL,
     REASON_WEAK_TOP_ONE,
+    RecallBudgetView,
     RecallCandidate,
+    RecallEffort,
     RecallExpander,
     RecallSufficiencyGate,
     RecallSufficiencyPolicy,
     SearchPlan,
     build_recall_candidates,
     candidate_identity,
+    recall_effort,
 )
 
 MEMORY_REF = ArtifactRef(family="memory", artifact_id="memory", revision=3)
+
+
+def _budget_bound_view() -> RecallBudgetView:
+    """A probe view at the declared byte floor, where the budget is the constraint."""
+
+    return RecallBudgetView(max_bytes=512)
+
+
+def _budget_open_view() -> RecallBudgetView:
+    """A probe view with unused headroom and no drops, so recall is the only candidate cause."""
+
+    return RecallBudgetView(max_bytes=8000, delivered_items=2, unused_bytes=6000)
 
 
 def _memory_candidate(text: str, *, artifact_id: str = "memory", revision: int = 1) -> RecallCandidate:
@@ -197,7 +218,7 @@ def test_gate_reports_no_content_before_every_other_signal() -> None:
         "alpha beta",
         policy,
         scope_has_content=False,
-        budget_bounded=True,
+        budget=_budget_bound_view(),
         families_expected=3,
     )
     assert assessment.sufficient is True
@@ -211,7 +232,7 @@ def test_gate_reports_budget_floor_before_candidate_signals() -> None:
         "alpha beta",
         policy,
         scope_has_content=True,
-        budget_bounded=True,
+        budget=_budget_bound_view(),
     )
     assert assessment.sufficient is True
     assert assessment.reason == REASON_BUDGET_FLOOR
@@ -224,7 +245,7 @@ def test_gate_reports_rerank_enabled_when_expansion_is_not_allowed() -> None:
         "alpha beta",
         policy,
         scope_has_content=True,
-        budget_bounded=False,
+        budget=_budget_open_view(),
     )
     assert assessment.sufficient is True
     assert assessment.reason == REASON_RERANK_ENABLED
@@ -314,7 +335,7 @@ def test_expander_plan_maps_each_round_to_its_admission_floor() -> None:
     round_two = expander.plan(2, policy)
     assert round_one.action == "admission"
     assert round_one.admission == policy.round1_admission
-    assert round_two.action == "best-available"
+    assert round_two.action == "policy-floor"
     assert round_two.admission == policy.round2_admission
 
 
@@ -326,7 +347,7 @@ def test_expander_rejects_rounds_outside_one_and_two(round_number: int) -> None:
 
 def test_search_plan_structurally_carries_no_limit_mode_or_family() -> None:
     names = {field.name for field in fields(SearchPlan)}
-    assert names == {"action", "admission", "rerank_candidate_limit"}
+    assert names == {"action", "admission"}
     assert "limit" not in names
     assert "mode" not in names
     assert not any(name.endswith("family") for name in names)
@@ -351,7 +372,6 @@ def test_policy_maps_every_threshold_when_enabled() -> None:
         recall_gate_round2_min_semantic_similarity=0.08,
         memory_rerank_enabled=True,
         recall_gate_allow_with_rerank=True,
-        memory_rerank_candidate_limit=42,
     )
     policy = RecallSufficiencyPolicy.from_runtime_config(config)
     assert policy is not None
@@ -364,16 +384,19 @@ def test_policy_maps_every_threshold_when_enabled() -> None:
     assert policy.round2_admission == AdmissionFloor(0.0, 1, 0.08)
     assert policy.rerank_enabled is True
     assert policy.allow_expansion_with_rerank is True
-    assert policy.round2_rerank_candidate_limit == 42
 
 
-def test_policy_keeps_the_rerank_bound_unset_unless_explicitly_allowed() -> None:
+def test_policy_carries_no_pool_size_knob_and_no_base_admission() -> None:
     config = RuntimeConfig(recall_gate_enabled=True, memory_rerank_enabled=True)
     policy = RecallSufficiencyPolicy.from_runtime_config(config)
     assert policy is not None
     assert policy.rerank_enabled is True
     assert policy.allow_expansion_with_rerank is False
-    assert policy.round2_rerank_candidate_limit is None
+    # RFC 1560 forbids expansion from touching the backend candidate pool, so the policy has
+    # no knob that could resize it, and no `base_admission` that could duplicate `None`.
+    policy_names = {item.name for item in fields(policy)}
+    assert "round2_rerank_candidate_limit" not in policy_names
+    assert "base_admission" not in policy_names
 
 
 # ── Score honesty and normalization ─────────────────────────────────────────────────────────
@@ -544,3 +567,106 @@ def test_build_recall_candidates_orders_memory_then_topic_then_experience() -> N
 def test_expansion_status_vocabulary_is_stable() -> None:
     assert REASON_AT_MAX_ROUNDS == "at-max-rounds"
     assert REASON_EXPANSION_FAILED == "expansion-failed"
+
+
+# ── RecallEffort shape and invariants ───────────────────────────────────────────────────────
+
+
+def test_effort_rounds_is_one_plus_the_committed_expansions() -> None:
+    policy = RecallSufficiencyPolicy()
+    none = recall_effort(policy=policy, assessment=REASON_SUFFICIENT, candidates_by_round=(7,))
+    one = recall_effort(
+        policy=policy,
+        assessment=REASON_THIN_CANDIDATES,
+        expansion_actions=("admission",),
+        candidates_by_round=(3, 9),
+    )
+    two = recall_effort(
+        policy=policy,
+        assessment=REASON_AT_MAX_ROUNDS,
+        expansion_actions=("admission", "policy-floor"),
+        candidates_by_round=(3, 6, 9),
+    )
+
+    assert none.rounds == 1
+    assert none.expansion_actions == ()
+    assert one.rounds == 2
+    assert one.expansion_actions == ("admission",)
+    assert two.rounds == 3
+    assert two.expansion_actions == ("admission", "policy-floor")
+    for effort in (none, one, two):
+        assert effort.rounds == 1 + len(effort.expansion_actions)
+        assert len(effort.candidates_by_round) == effort.rounds
+        assert effort.policy == POLICY_ID
+
+
+def test_effort_folds_the_builder_omission_counts_and_keeps_their_sum() -> None:
+    omissions = PreparedContextOmissions(
+        truncated_items=2,
+        dropped_items=3,
+        dropped_below_min_bytes=1,
+        dropped_no_fitting_truncation=2,
+    )
+    effort = recall_effort(
+        policy=RecallSufficiencyPolicy(),
+        assessment=REASON_SUFFICIENT,
+        candidates_by_round=(4,),
+        omissions=omissions,
+    )
+
+    assert effort.truncated_items == 2
+    assert effort.dropped_items == 3
+    assert effort.dropped_below_min_bytes == 1
+    assert effort.dropped_no_fitting_truncation == 2
+    assert effort.dropped_items == effort.dropped_below_min_bytes + effort.dropped_no_fitting_truncation
+
+
+def test_effort_carries_per_family_admission_counts_and_search_reported_costs() -> None:
+    counts = (
+        AdmissionCounts(family=MEMORY_FAMILY, scope_id="project:demo", retrieved=64, admitted=3),
+        AdmissionCounts(family=EXPERIENCE_FAMILY, scope_id="project:demo", retrieved=3, admitted=1),
+    )
+    effort = recall_effort(
+        policy=RecallSufficiencyPolicy(),
+        assessment=REASON_THIN_CANDIDATES,
+        expansion_actions=("admission",),
+        candidates_by_round=(3, 7),
+        admission_by_family=counts,
+        added_embeddings=0,
+        added_generation_calls=1,
+    )
+
+    assert effort.admission_by_family == counts
+    assert effort.added_embeddings == 0
+    assert effort.added_generation_calls == 1
+
+
+def test_effort_cost_counts_default_to_zero_rather_than_an_inference() -> None:
+    effort = RecallEffort(
+        policy=POLICY_ID,
+        assessment=REASON_SUFFICIENT,
+        rounds=1,
+        expansion_actions=(),
+        candidates_by_round=(1,),
+    )
+
+    assert effort.added_embeddings == 0
+    assert effort.added_generation_calls == 0
+    assert effort.admission_by_family == ()
+
+
+def test_budget_view_is_bound_at_the_floor_or_when_a_full_fit_dropped_items() -> None:
+    assert RecallBudgetView(max_bytes=BUDGET_FLOOR_BYTES).budget_bounded is True
+    assert RecallBudgetView(max_bytes=BUDGET_FLOOR_BYTES + 1, unused_bytes=0).budget_bounded is False
+    assert RecallBudgetView(max_bytes=8000, dropped_items=1, unused_bytes=0).budget_bounded is True
+    assert RecallBudgetView(max_bytes=8000, dropped_items=1, unused_bytes=1).budget_bounded is False
+
+
+def test_gate_reads_the_budget_view_and_ignores_a_missing_probe() -> None:
+    policy = RecallSufficiencyPolicy()
+    gate = RecallSufficiencyGate()
+    candidates = (_memory_candidate("alpha beta"),)
+
+    assert gate.assess(candidates, "alpha beta", policy, budget=_budget_bound_view()).reason == REASON_BUDGET_FLOOR
+    open_policy = RecallSufficiencyPolicy(min_candidates=1, min_top_score=0.0, min_top_gap=0.0)
+    assert gate.assess(candidates, "alpha beta", open_policy, budget=None).reason == REASON_SUFFICIENT

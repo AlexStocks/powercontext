@@ -42,7 +42,7 @@ from powercontext.builtin.artifacts.experience import (
     ExperienceCandidatePipeline,
     ExperienceContent,
     ExperienceGenerator,
-    ExperienceSearchHit,
+    ExperienceSearchOutcome,
 )
 from powercontext.builtin.artifacts.handoff import (
     ActivateHandoff,
@@ -771,8 +771,12 @@ class RelationalContexts:
         /,
         *,
         admission: AdmissionFloor | None = None,
-    ) -> tuple[ExperienceSearchHit, ...]:
-        """Recall relevant approved Experience heads in one scope."""
+    ) -> ExperienceSearchOutcome:
+        """Recall relevant approved Experience heads in one scope.
+
+        The outcome carries the admission counts alongside the hits so the recall gate can
+        report retrieved-versus-admitted without a second pass.
+        """
 
         if limit < 1:
             raise ValueError("Experience search limit must be positive")  # noqa: TRY003

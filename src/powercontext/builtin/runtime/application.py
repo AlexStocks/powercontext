@@ -20,7 +20,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from time import perf_counter
@@ -34,6 +34,7 @@ from powercontext.builtin.artifacts.experience import (
     EXPERIENCE_INCUBATION_WINDOW_LIMIT,
     Experience,
     ExperienceSearchHit,
+    ExperienceSearchOutcome,
 )
 from powercontext.builtin.artifacts.handoff import (
     ActivateHandoff,
@@ -59,6 +60,7 @@ from powercontext.builtin.artifacts.memory import (
     MemoryEntryInput,
     MemoryEntryVersion,
     MemoryHit,
+    MemoryQueryEmbedding,
     MemoryService,
 )
 from powercontext.builtin.artifacts.memory.errors import (
@@ -74,7 +76,7 @@ from powercontext.builtin.artifacts.prompt import (
     PromptError,
 )
 from powercontext.builtin.artifacts.prompt.service import PromptService
-from powercontext.builtin.artifacts.search import AdmissionFloor, analyze_text
+from powercontext.builtin.artifacts.search import AdmissionCounts, AdmissionFloor, analyze_text
 from powercontext.builtin.artifacts.skill import (
     AgentKind,
     AgentSkillTarget,
@@ -222,7 +224,6 @@ from powercontext.builtin.runtime.readiness import (
     RuntimeReadinessStatus,
 )
 from powercontext.builtin.runtime.recall_sufficiency import (
-    BUDGET_FLOOR_BYTES,
     EXPERIENCE_FAMILY,
     MEMORY_FAMILY,
     REASON_AT_MAX_ROUNDS,
@@ -234,6 +235,7 @@ from powercontext.builtin.runtime.recall_sufficiency import (
     RecallSufficiencyGate,
     RecallSufficiencyPolicy,
     build_recall_candidates,
+    recall_effort,
 )
 from powercontext.builtin.runtime.statistics import RelationalScopedStatistics
 from powercontext.builtin.scope import ScopeApplication, ScopeDescriptor, ScopeSelection
@@ -332,7 +334,11 @@ ExperienceIncubator = Callable[[str, int], Awaitable[ExperienceIncubationResult]
 
 
 class ExperienceRecall(Protocol):
-    """Callable contract for one scoped Experience recall."""
+    """Callable contract for one scoped Experience recall.
+
+    The outcome carries the hits *and* the admission counts for the search, so the recall gate
+    can report retrieved-versus-admitted without a second pass.
+    """
 
     def __call__(
         self,
@@ -342,7 +348,37 @@ class ExperienceRecall(Protocol):
         /,
         *,
         admission: AdmissionFloor | None = None,
-    ) -> Awaitable[tuple[ExperienceSearchHit, ...]]: ...
+    ) -> Awaitable[ExperienceSearchOutcome]: ...
+
+
+@dataclass(frozen=True)
+class TopicMemoryRecallOutcome:
+    """Topic Memory hits, their admission counts, and the reusable query embedding.
+
+    Produced and consumed entirely inside the Runtime layer, which is why it lives here rather
+    than under ``artifacts/**``. ``query_embedding`` is the vector this search resolved (or
+    reused); a later expansion round can hand it back so the next search does not re-embed. It
+    stays ``None`` when the search ran without a vector channel, in which case the next round
+    must pay for its own embedding.
+    """
+
+    hits: tuple[TopicMemorySearchHit, ...] = ()
+    admission: AdmissionCounts | None = None
+    query_embedding: MemoryQueryEmbedding | None = None
+
+
+@dataclass(frozen=True)
+class _ScopeRecallOutcome:
+    """One Scope's recall result: the two candidate containers plus their admission counts.
+
+    A named type rather than a tuple because the count fields are the whole point of this
+    increment and a silent field-order mistake there would be invisible.
+    """
+
+    memory: PreparedMemoryCandidates
+    experience: PreparedExperienceCandidates
+    memory_admission: AdmissionCounts | None = None
+    experience_admission: AdmissionCounts | None = None
 
 
 SkillRecall = Callable[[str, str, int], Awaitable[tuple[SkillSearchHit, ...]]]
@@ -356,6 +392,7 @@ SkillPackageUploader = Callable[[str, bytes, str | None, ArtifactRef | None], Aw
 SkillUsageRecorder = Callable[[str, SkillUsageCapture], Awaitable[SourceReceipt]]
 StatisticsServiceFactory = Callable[[str], RelationalScopedStatistics]
 RecallTokenEstimator = Callable[[str, PreparedContextBuild], Awaitable[RecallTokenMeasurement | None]]
+RecallEffortSink = Callable[[RecallEffort], Awaitable[None]]
 Clock = Callable[[], datetime]
 ScheduledSourceRunner = Callable[[str, "BuiltinRuntime"], Awaitable[MemoryFlushResult]]
 ScheduledExperienceRunner = Callable[[str, "BuiltinRuntime"], Awaitable[ExperienceIncubationResult]]
@@ -775,7 +812,22 @@ class ScopedContextApplication:
             return await self._prepare(request, scope)
 
     async def _prepare(self, request: PrepareContextRequest, scope: ScopeDescriptor, /) -> PreparedContext:
-        build = await self._prepare_build(request, scope)
+        build, effort = await self._prepare_build(request, scope)
+        if effort is not None and self._runtime._recall_effort_sink is not None:
+            try:
+                await self._runtime._recall_effort_sink(effort)
+            except Exception as error:
+                log_safely(
+                    logger,
+                    logging.ERROR,
+                    "Recall effort sink failed",
+                    exc_info=error,
+                    extra={
+                        "event": "context.recall_gate.sink_failed",
+                        "outcome": "failure",
+                        "unit": "context",
+                    },
+                )
         if self._runtime._recall_token_estimator is not None:
             try:
                 measurement = await self._runtime._recall_token_estimator(self.scope_id, build)
@@ -801,15 +853,19 @@ class ScopedContextApplication:
         request: PrepareContextRequest,
         scope: ScopeDescriptor,
         /,
-    ) -> PreparedContextBuild:
+    ) -> tuple[PreparedContextBuild, RecallEffort | None]:
         """Recall the participating families, optionally expand, then build the context.
 
         The controlled expansion loop lives here. It runs at most ``policy.max_rounds`` extra
         searches, each of which only lowers the admission floor for the families the caller
         already selected — never a new family, a larger ``limit``, or a different ``mode``.
-        Every gate or expansion error degrades to the round-zero candidate set. The public
-        ``prepare`` still returns only ``build.context``; this in-process seam returns the full
-        build (including the attached ``recall_effort`` trace).
+        Every gate or expansion error degrades to the round-zero candidate set.
+
+        Returns ``(build, effort)``. The RFC 1560 trace is **not** a field of the build:
+        ``_prepare`` returns ``build.context`` and discards the rest, so a field there would
+        have no production observer. The trace is returned alongside the build and delivered
+        by ``_prepare`` to the Runtime's optional sink. ``effort`` is ``None`` whenever the
+        policy is not configured, so the default-off path allocates nothing.
         """
 
         builder = PreparedContextBuilder()
@@ -819,14 +875,19 @@ class ScopedContextApplication:
             if request.assembly is not None
             else {MEMORY_FAMILY, EXPERIENCE_FAMILY, TOPIC_MEMORY_FAMILY}
         )
+        # Caller-owned cache of the query vectors round 0 already paid for, keyed by scope.
+        # Expansion rounds read it so a repeat search does not re-embed; round 0 fills it.
+        reuse: dict[str, MemoryQueryEmbedding] = {}
 
-        memory_candidates, experience_candidates, topic_memory_hits = await self._recall_round(
+        memory_candidates, experience_candidates, topic_outcome, _round_zero_admission = await self._recall_round(
             request,
             scope_ids,
             families,
             builder,
             admission=None,
+            reuse=reuse,
         )
+        topic_memory_hits = topic_outcome.hits
         profile_candidates: list[PreparedProfileCandidate] = []
         profiles = self._runtime.profiles
         if "profile" in families and profiles is not None:
@@ -853,6 +914,8 @@ class ScopedContextApplication:
                 memory_candidates=memory_candidates,
                 experience_candidates=experience_candidates,
                 topic_memory_hits=topic_memory_hits,
+                profile_candidates=profile_candidates,
+                reuse=reuse,
             )
         with self._runtime._stage(
             "context.build",
@@ -876,22 +939,31 @@ class ScopedContextApplication:
                 experience_candidates=experience_candidates,
                 profile_candidates=profile_candidates,
             )
+            if recall_effort is not None:
+                recall_effort = replace(
+                    recall_effort,
+                    truncated_items=build.omissions.truncated_items,
+                    dropped_items=build.omissions.dropped_items,
+                    dropped_below_min_bytes=build.omissions.dropped_below_min_bytes,
+                    dropped_no_fitting_truncation=build.omissions.dropped_no_fitting_truncation,
+                )
             if span is not None:
                 span.set_attributes({
                     "powercontext.context.build.selected_count": len(build.origins),
                     "powercontext.context.build.status": build.context.status,
                     "powercontext.context.build.content_bytes": build.context.content_bytes,
                 })
-        if recall_effort is not None:
-            build = replace(
-                build,
-                recall_effort=replace(
-                    recall_effort,
-                    truncated_items=build.omissions.truncated_items,
-                    dropped_items=build.omissions.dropped_items,
-                ),
-            )
-        return build
+                if recall_effort is not None:
+                    # RFC 0028 permits "internal search mode and aggregate selection counts".
+                    # These four are aggregates only: no query text, no entry id, no per-entry
+                    # attribution, and nothing is written to a table.
+                    span.set_attributes({
+                        "powercontext.context.build.recall.rounds": recall_effort.rounds,
+                        "powercontext.context.build.recall.assessment": recall_effort.assessment,
+                        "powercontext.context.build.recall.truncated_items": recall_effort.truncated_items,
+                        "powercontext.context.build.recall.dropped_items": recall_effort.dropped_items,
+                    })
+        return build, recall_effort
 
     async def _gated_recall_effort(  # noqa: C901 - the bounded expansion loop is intentionally explicit
         self,

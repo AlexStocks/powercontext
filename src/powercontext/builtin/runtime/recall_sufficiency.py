@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING
 from powercontext.builtin.artifacts.experience import ExperienceSearchHit, experience_search_text
 from powercontext.builtin.artifacts.memory import MemoryHit
 from powercontext.builtin.artifacts.search import (
-    DEFAULT_ADMISSION_FLOOR,
+    AdmissionCounts,
     AdmissionFloor,
     analyze_text,
     fts_query_requirements,
@@ -38,6 +38,7 @@ from powercontext.builtin.artifacts.topic_memory import TopicMemorySearchHit
 
 if TYPE_CHECKING:
     from powercontext.builtin.runtime.config import RuntimeConfig
+    from powercontext.builtin.runtime.prepared_context import PreparedContextOmissions
 
 # ── Policy identifier and reason vocabulary ────────────────────────────────────────────────
 POLICY_ID = "powercontext.recall-gate.v1"
@@ -54,7 +55,7 @@ REASON_AT_MAX_ROUNDS = "at-max-rounds"
 REASON_EXPANSION_FAILED = "expansion-failed"
 
 ACTION_ADMISSION = "admission"
-ACTION_BEST_AVAILABLE = "best-available"
+ACTION_POLICY_FLOOR = "policy-floor"
 
 MEMORY_FAMILY = "memory"
 TOPIC_MEMORY_FAMILY = "topic-memory"
@@ -136,11 +137,18 @@ class GateAssessment:
 
 @dataclass(frozen=True)
 class SearchPlan:
-    """Describes the next round. It never names a family and never sets ``limit`` or ``mode``."""
+    """Describes the next round.
+
+    It never names a family and never sets ``limit``, ``mode`` or a rerank candidate bound.
+    The last point is deliberate and load-bearing: ``MemoryService`` uses
+    ``memory_rerank_candidate_limit`` to *size the backend request*
+    (``coarse_limit`` → ``candidate_limit = max(coarse_limit * 4, 32)``), so raising it from
+    30 to 100 would grow the backend pool from 120 to 400 candidates and break the same-pool
+    guarantee the cost model rests on. RFC 1560 rejects it as an expansion action outright.
+    """
 
     action: str
     admission: AdmissionFloor
-    rerank_candidate_limit: int | None = None
 
 
 @dataclass(frozen=True)
@@ -156,13 +164,18 @@ class ExpansionDecision:
 class RecallSufficiencyPolicy:
     """A frozen, versioned bundle of thresholds and per-round expansion descriptors.
 
-    ``base_admission`` is fixed to the shared defaults so a disabled round-0 lookup is
-    bit-identical to today; only the semantic baseline of the expansion rounds is tunable.
+    Only the *expansion* rounds are tunable. Round 0 passes ``admission=None``, which already
+    means "use this module's historical constants" and is therefore bit-identical to a
+    disabled lookup; a separate ``base_admission`` field would only duplicate that default.
+
+    ``rerank_enabled`` is read from Runtime configuration, not from whether a reranker
+    instance exists, because the gate must decide *before* searching whether expansion is
+    allowed at all. If configuration and reality ever diverge, the cost column stays honest
+    separately: ``added_generation_calls`` is filled from the search-reported rerank counts.
     """
 
     policy_id: str = POLICY_ID
     max_rounds: int = 2
-    base_admission: AdmissionFloor = DEFAULT_ADMISSION_FLOOR
     round1_admission: AdmissionFloor = field(
         default_factory=lambda: AdmissionFloor(
             lexical_coverage=0.0, lexical_min_matched_terms=1, min_semantic_similarity=0.15
@@ -179,7 +192,6 @@ class RecallSufficiencyPolicy:
     min_lexical_overlap: float = 0.5
     rerank_enabled: bool = False
     allow_expansion_with_rerank: bool = False
-    round2_rerank_candidate_limit: int | None = None
 
     @classmethod
     def from_runtime_config(cls, runtime_config: RuntimeConfig) -> RecallSufficiencyPolicy | None:
@@ -205,23 +217,134 @@ class RecallSufficiencyPolicy:
             min_lexical_overlap=runtime_config.recall_gate_min_lexical_overlap,
             rerank_enabled=runtime_config.memory_rerank_enabled,
             allow_expansion_with_rerank=runtime_config.recall_gate_allow_with_rerank,
-            round2_rerank_candidate_limit=(
-                runtime_config.memory_rerank_candidate_limit if runtime_config.recall_gate_allow_with_rerank else None
-            ),
         )
 
 
 @dataclass(frozen=True)
+class RecallBudgetView:
+    """The byte-budget half of one round's assessment.
+
+    Produced by :meth:`PreparedContextBuilder.probe_budget`: one pass of the Builder's own pure
+    fitting code over the round's candidate set, rendered and then discarded. It exists so the
+    gate can tell *budget-limited* thinness from *recall-limited* thinness — without it the
+    512-byte-floor edge case is undecidable, and the gate would expand a query whose real
+    constraint is the output budget.
+
+    ``unused_bytes`` is the headroom the fit left inside ``max_bytes``. Every field is an
+    aggregate: no query text, no entry identity, no per-entry attribution.
+    """
+
+    max_bytes: int = 0
+    delivered_items: int = 0
+    truncated_items: int = 0
+    dropped_items: int = 0
+    unused_bytes: int = 0
+
+    @property
+    def budget_bounded(self) -> bool:
+        """Whether the request budget, not recall, is what limits delivery.
+
+        Two complementary tests, deliberately kept together rather than split across callers:
+
+        * the static one — the request sits at or below the declared byte floor
+          (:data:`BUDGET_FLOOR_BYTES`), where one item may be all that fits, so thinness is a
+          budget property and no amount of extra recall can help;
+        * the probe-derived one — the fit dropped whole items *and* left no headroom, i.e. the
+          budget consumed everything it was offered.
+
+        The first alone would miss a large budget that is already full; the second alone would
+        miss the floor case, where a probe over a still-unknown candidate set may report drops
+        for reasons that are purely a consequence of the floor.
+        """
+
+        if self.max_bytes <= BUDGET_FLOOR_BYTES:
+            return True
+        return self.dropped_items > 0 and self.unused_bytes <= 0
+
+
+@dataclass(frozen=True)
 class RecallEffort:
-    """In-process trace of the recall loop; never persisted and never added to the HTTP body."""
+    """In-process trace of the recall loop; never persisted and never added to the HTTP body.
+
+    The trace is delivered to the Runtime's optional ``RecallEffortSink`` and to nothing else.
+    It is **not** attached to ``PreparedContextBuild``: ``_prepare`` returns ``build.context``
+    and discards the rest of the build result, so a field there would have no production
+    observer.
+
+    The fields are deliberately coarse — aggregate counts, one reason code, and per-family
+    admission totals. There is no query text, no entry id and no per-entry attribution, so the
+    value cannot leak evidence through a trace.
+
+    ``rounds`` counts the search passes actually executed, so it is ``1 + len(expansion_actions)``
+    (1..3): round 0 always runs and each *committed* expansion adds one. ``candidates_by_round``
+    holds the accumulated candidate-pool size the gate saw after each committed round, so
+    ``len(candidates_by_round) == rounds``; it measures the **un-truncated** accumulated pool
+    the gate assessed, not the subset the Builder finally selected (the Builder is called once,
+    after the loop, and applies the family ceilings there). ``expansion_actions`` is a prefix of
+    ``("admission", "policy-floor")``.
+
+    ``admission_by_family`` is measured in the **last committed round** (round 0 is always
+    committed), which is the same committed-only basis as ``candidates_by_round`` and
+    ``expansion_actions``.
+
+    ``added_embeddings`` and ``added_generation_calls`` are **search-reported**: the Runtime
+    copies what the searches said they paid. It never infers, interpolates or estimates them —
+    a fabricated cost is worse than a missing one, so when a family cannot report, the count
+    stays at its default of ``0``.
+
+    ``dropped_items`` equals ``dropped_below_min_bytes + dropped_no_fitting_truncation``, so
+    "the budget could not fit this item" can be told apart from "this item was too short to
+    truncate into the remaining space".
+    """
 
     policy: str
+    assessment: str
     rounds: int
-    gate_reason: str
-    expansions: tuple[str, ...]
+    expansion_actions: tuple[str, ...]
     candidates_by_round: tuple[int, ...]
-    truncated_items: int
-    dropped_items: int
+    admission_by_family: tuple[AdmissionCounts, ...] = ()
+    added_embeddings: int = 0
+    added_generation_calls: int = 0
+    truncated_items: int = 0
+    dropped_items: int = 0
+    dropped_below_min_bytes: int = 0
+    dropped_no_fitting_truncation: int = 0
+
+
+def recall_effort(
+    *,
+    policy: RecallSufficiencyPolicy,
+    assessment: str,
+    expansion_actions: Sequence[str] = (),
+    candidates_by_round: Sequence[int] = (),
+    admission_by_family: Sequence[AdmissionCounts] = (),
+    added_embeddings: int = 0,
+    added_generation_calls: int = 0,
+    omissions: PreparedContextOmissions | None = None,
+) -> RecallEffort:
+    """Assemble one :class:`RecallEffort`, folding a build's omission counts into it.
+
+    The Builder already counts truncations and drops for its own callers; this is the single
+    place those counts are copied onto the trace, so the two can never disagree about what
+    "dropped" means. The caller supplies the round bookkeeping; ``rounds`` is derived from
+    ``expansion_actions`` so the two can never drift apart.
+    """
+
+    actions = tuple(expansion_actions)
+    return RecallEffort(
+        policy=policy.policy_id,
+        assessment=assessment,
+        rounds=1 + len(actions),
+        expansion_actions=actions,
+        candidates_by_round=tuple(candidates_by_round),
+        admission_by_family=tuple(admission_by_family),
+        added_embeddings=added_embeddings,
+        added_generation_calls=added_generation_calls,
+        truncated_items=0 if omissions is None else omissions.truncated_items,
+        dropped_items=0 if omissions is None else omissions.dropped_items,
+        dropped_below_min_bytes=0 if omissions is None else omissions.dropped_below_min_bytes,
+        dropped_no_fitting_truncation=0 if omissions is None else omissions.dropped_no_fitting_truncation,
+    )
 
 
 def candidate_identity(candidate: RecallCandidate, /) -> tuple[str, str, int, str | None, str | None]:
@@ -311,15 +434,20 @@ class RecallSufficiencyGate:
         /,
         *,
         scope_has_content: bool = True,
-        budget_bounded: bool = False,
+        budget: RecallBudgetView | None = None,
         families_expected: int = 0,
     ) -> GateAssessment:
-        """Assess one candidate set. No I/O, no clock, no model; deterministic in its inputs."""
+        """Assess one candidate set. No I/O, no clock, no model; deterministic in its inputs.
+
+        ``budget`` carries the result of the round's budget probe, or ``None`` when no probe
+        was run. The gate does not perform the probe itself; the Runtime does it once, on
+        round 0, and reuses the view for every round.
+        """
 
         signals = _build_signals(candidates, query, families_expected)
         if not scope_has_content:
             return GateAssessment(sufficient=True, reason=REASON_NO_CONTENT, signals=signals)
-        if budget_bounded:
+        if budget is not None and budget.budget_bounded:
             return GateAssessment(sufficient=True, reason=REASON_BUDGET_FLOOR, signals=signals)
         if policy.rerank_enabled and not policy.allow_expansion_with_rerank:
             return GateAssessment(sufficient=True, reason=REASON_RERANK_ENABLED, signals=signals)
@@ -345,11 +473,7 @@ class RecallExpander:
         if round_number == 1:
             return SearchPlan(action=ACTION_ADMISSION, admission=policy.round1_admission)
         if round_number == 2:
-            return SearchPlan(
-                action=ACTION_BEST_AVAILABLE,
-                admission=policy.round2_admission,
-                rerank_candidate_limit=policy.round2_rerank_candidate_limit,
-            )
+            return SearchPlan(action=ACTION_POLICY_FLOOR, admission=policy.round2_admission)
         raise ValueError("recall expansion round must be 1 or 2")  # noqa: TRY003
 
 
@@ -426,7 +550,7 @@ def _score_signals(candidates: Sequence[RecallCandidate]) -> tuple[float, float,
 
 __all__ = [
     "ACTION_ADMISSION",
-    "ACTION_BEST_AVAILABLE",
+    "ACTION_POLICY_FLOOR",
     "BUDGET_FLOOR_BYTES",
     "EXPERIENCE_FAMILY",
     "MEMORY_FAMILY",
@@ -444,6 +568,7 @@ __all__ = [
     "TOPIC_MEMORY_FAMILY",
     "ExpansionDecision",
     "GateAssessment",
+    "RecallBudgetView",
     "RecallCandidate",
     "RecallEffort",
     "RecallExpander",
@@ -453,4 +578,5 @@ __all__ = [
     "SearchPlan",
     "build_recall_candidates",
     "candidate_identity",
+    "recall_effort",
 ]

@@ -23,6 +23,7 @@ from collections.abc import Sequence
 from powercontext.builtin.artifacts.search import AdmissionFloor, admits_fts_text, analyze_text, analyze_text_with_spans
 from powercontext.builtin.artifacts.topic_memory.models import (
     TopicMemoryChannelHit,
+    TopicMemoryFusionOutcome,
     TopicMemoryMatchedBy,
     TopicMemorySearchChannels,
     TopicMemorySearchHit,
@@ -53,10 +54,14 @@ def fuse_topic_memory_rankings(
     *,
     mode: TopicMemoryUsedSearchMode = "hybrid",
     admission: AdmissionFloor | None = None,
-) -> tuple[TopicMemorySearchHit, ...]:
+) -> TopicMemoryFusionOutcome:
     """Collapse each channel by Topic and fuse ranks without comparing raw scores.
 
     ``admission=None`` applies the historical fusion-time thresholds bit for bit.
+
+    The returned outcome also reports how many channel hits the resolved mode actually
+    retrieved and how many survived admission, measured around the two admit helpers so the
+    numbers cannot drift from the admission rule itself.
     """
 
     candidates: dict[tuple[str, int], TopicMemoryChannelHit] = {}
@@ -69,7 +74,15 @@ def fuse_topic_memory_rankings(
         ("detail_fts", _admit_fts(query, channels.detail_fts, admission)),
         ("detail_vector", _admit_vector(channels.detail_vector, admission)),
     )
+    channel_inputs: tuple[tuple[TopicMemoryMatchedBy, Sequence[TopicMemoryChannelHit]], ...] = (
+        ("topic_fts", channels.topic_fts),
+        ("topic_vector", channels.topic_vector),
+        ("detail_fts", channels.detail_fts),
+        ("detail_vector", channels.detail_vector),
+    )
     enabled_channels = _MODE_CHANNELS[mode]
+    retrieved = sum(len(hits) for channel, hits in channel_inputs if channel in enabled_channels)
+    admitted = sum(len(hits) for channel, hits in rankings if channel in enabled_channels)
     max_score = len(enabled_channels) / (_RRF_CONSTANT + 1)
     for channel, ranking in rankings:
         if channel not in enabled_channels:
@@ -90,16 +103,20 @@ def fuse_topic_memory_rankings(
         candidates,
         key=lambda identity: (-scores[identity], identity[0].encode(), -identity[1]),
     )[:limit]
-    return tuple(
-        TopicMemorySearchHit(
-            artifact_ref=candidates[identity].artifact_ref,
-            title=candidates[identity].title,
-            summary=candidates[identity].summary,
-            snippet=snippets.get(identity),
-            score=min(100.0, scores[identity] / max_score * 100.0),
-            matched_by=tuple(channel for channel in _CHANNEL_ORDER if channel in matched[identity]),
-        )
-        for identity in ordered
+    return TopicMemoryFusionOutcome(
+        hits=tuple(
+            TopicMemorySearchHit(
+                artifact_ref=candidates[identity].artifact_ref,
+                title=candidates[identity].title,
+                summary=candidates[identity].summary,
+                snippet=snippets.get(identity),
+                score=min(100.0, scores[identity] / max_score * 100.0),
+                matched_by=tuple(channel for channel in _CHANNEL_ORDER if channel in matched[identity]),
+            )
+            for identity in ordered
+        ),
+        retrieved=retrieved,
+        admitted=admitted,
     )
 
 

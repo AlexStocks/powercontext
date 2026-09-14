@@ -34,6 +34,11 @@ class AdmissionFloor:
     The defaults MUST equal the historical module constants — ``0.25`` and ``2`` in this
     module and ``0.3`` mirrored by ``memory/fusion.py`` and ``topic_memory/fusion.py`` — so
     that a ``floor=None`` / ``admission=None`` call reproduces today's behaviour bit for bit.
+
+    This type plays the ``RecallAdmissionPolicy`` role described by RFC 1560: it is the value
+    threaded into each searchable family's search to override its floor. Passing ``None``
+    (the historical default) is therefore equivalent to the RFC's ``RecallAdmissionPolicy()``
+    with both overrides unset, which is exactly what round 0 does.
     """
 
     lexical_coverage: float = _FTS_MIN_QUERY_COVERAGE
@@ -42,6 +47,27 @@ class AdmissionFloor:
 
 
 DEFAULT_ADMISSION_FLOOR = AdmissionFloor()
+
+
+@dataclass(frozen=True)
+class AdmissionCounts:
+    """Per-family, per-scope admission accounting for one search.
+
+    ``retrieved`` is what the backend returned *before* the admission floor was applied;
+    ``admitted`` is what survived it. Both are plain aggregate integers with no candidate
+    identity, no query text and no per-entry attribution, so the value is safe to carry in a
+    trace and safe to hand to the Runtime without touching HTTP or persistence.
+
+    It lives next to :class:`AdmissionFloor` in ``artifacts/search.py`` because that is the
+    only module importable by ``artifacts/**``, ``persistence/**`` and ``runtime/**`` at once
+    without a layering violation: the counts are produced under ``artifacts/`` and
+    ``persistence/`` and consumed under ``runtime/``.
+    """
+
+    family: str = ""
+    scope_id: str = ""
+    retrieved: int = 0
+    admitted: int = 0
 
 
 def analyze_text(value: str) -> str:
@@ -153,6 +179,7 @@ def _is_cjk(character: str) -> bool:
 
 __all__ = [
     "DEFAULT_ADMISSION_FLOOR",
+    "AdmissionCounts",
     "AdmissionFloor",
     "admits_fts_text",
     "analyze_text",

@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.artifacts.memory import EmbeddingProfile
 from powercontext.builtin.artifacts.memory.canonical import canonical_embedding
-from powercontext.builtin.artifacts.search import AdmissionFloor, analyze_text
+from powercontext.builtin.artifacts.search import AdmissionCounts, AdmissionFloor, analyze_text
 from powercontext.builtin.artifacts.topic_memory import (
     MAX_TOPIC_MEMORY_QUERY_LENGTH,
     MAX_TOPIC_MEMORY_QUERY_TERMS,
@@ -449,9 +449,16 @@ class TopicMemoryRepository:
         )
         channels = await self.index.search(connection, scope_id, request)
         await self._check_retrieval_shape(connection)
+        outcome = fuse_topic_memory_rankings(query, channels, limit, mode=used_mode, admission=admission)
         return TopicMemorySearchResult(
             mode=used_mode,
-            hits=fuse_topic_memory_rankings(query, channels, limit, mode=used_mode, admission=admission),
+            hits=outcome.hits,
+            admission=AdmissionCounts(
+                family=TopicMemory.family,
+                scope_id=scope_id,
+                retrieved=outcome.retrieved,
+                admitted=outcome.admitted,
+            ),
         )
 
     async def _activate(

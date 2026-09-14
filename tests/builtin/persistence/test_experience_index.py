@@ -137,14 +137,17 @@ def test_sqlite_experience_fts_tracks_only_approved_current_heads_and_rebuilds()
                 reason=None,
             )
 
-            assert await contexts.search_experience("project", "hamsterlegacy", 8) == ()
+            assert (await contexts.search_experience("project", "hamsterlegacy", 8)).hits == ()
 
             approved = await review.approve(candidate.candidate_id, candidate.version)
             assert approved.result_artifact is not None
-            first_hits = await contexts.search_experience("project", "hamsterlegacy", 8)
-            assert tuple(hit.artifact_ref for hit in first_hits) == (approved.result_artifact,)
-            assert await contexts.search_experience("other-project", "hamsterlegacy", 8) == ()
-            assert await contexts.search_experience("project", "situation outcome", 8) == ()
+            first_outcome = await contexts.search_experience("project", "hamsterlegacy", 8)
+            assert tuple(hit.artifact_ref for hit in first_outcome.hits) == (approved.result_artifact,)
+            assert first_outcome.admission is not None
+            assert first_outcome.admission.admitted == 1
+            assert first_outcome.admission.retrieved >= 1
+            assert (await contexts.search_experience("other-project", "hamsterlegacy", 8)).hits == ()
+            assert (await contexts.search_experience("project", "situation outcome", 8)).hits == ()
 
             second_source, _ = await context.sources.capture(
                 ContentCapture(source_id="task-2", content="The corrected client repair passed.")
@@ -159,9 +162,9 @@ def test_sqlite_experience_fts_tracks_only_approved_current_heads_and_rebuilds()
             replaced = await review.approve(replacement.candidate_id, replacement.version)
             assert replaced.result_artifact is not None
             assert replaced.result_artifact.revision == 2
-            assert await contexts.search_experience("project", "hamsterlegacy", 8) == ()
-            current_hits = await contexts.search_experience("project", "falconcurrent", 8)
-            assert tuple(hit.artifact_ref for hit in current_hits) == (replaced.result_artifact,)
+            assert (await contexts.search_experience("project", "hamsterlegacy", 8)).hits == ()
+            current_outcome = await contexts.search_experience("project", "falconcurrent", 8)
+            assert tuple(hit.artifact_ref for hit in current_outcome.hits) == (replaced.result_artifact,)
 
             skill_candidate = await review.propose_skill(
                 _skill(),
@@ -222,11 +225,11 @@ def test_sqlite_experience_fts_tracks_only_approved_current_heads_and_rebuilds()
                     .values(searchable_text=None)
                 )
                 await connection.exec_driver_sql("DELETE FROM pc_artifact_fts")
-            assert await contexts.search_experience("project", "falconcurrent", 8) == ()
+            assert (await contexts.search_experience("project", "falconcurrent", 8)).hits == ()
 
             async with contexts.database.transaction() as connection:
                 await contexts.experience_index.initialize(connection)
-            rebuilt_hits = await contexts.search_experience("project", "falconcurrent", 8)
-            assert tuple(hit.artifact_ref for hit in rebuilt_hits) == (replaced.result_artifact,)
+            rebuilt_outcome = await contexts.search_experience("project", "falconcurrent", 8)
+            assert tuple(hit.artifact_ref for hit in rebuilt_outcome.hits) == (replaced.result_artifact,)
 
     asyncio.run(scenario())

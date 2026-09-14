@@ -62,6 +62,7 @@ from powercontext.builtin.artifacts.memory.models import (
     MemoryHit,
     MemoryManifest,
     MemoryManifestEntry,
+    MemoryQueryEmbedding,
     MemoryRerankTrace,
     MemoryRevisionChanges,
     MemorySearchMode,
@@ -79,7 +80,7 @@ from powercontext.builtin.artifacts.memory.protocols import (
 )
 from powercontext.builtin.artifacts.memory.reranking import MemoryReranker
 from powercontext.builtin.artifacts.prompt.service import ScopedPrompts, current_prompt, prompt_operation
-from powercontext.builtin.artifacts.search import AdmissionFloor, analyze_text
+from powercontext.builtin.artifacts.search import AdmissionCounts, AdmissionFloor, analyze_text
 from powercontext.builtin.inference import (
     EmbeddingModel,
     EmbeddingVector,
@@ -404,10 +405,19 @@ class MemoryService:
         mode: MemorySearchMode = "auto",
         tag_filter: TagFilter | None = None,
         admission: AdmissionFloor | None = None,
+        query_embedding: MemoryQueryEmbedding | None = None,
     ) -> MemorySearchResult:
         """Search explicit current Memory heads with capability-safe fallback.
 
         ``admission=None`` applies the historical fusion-time thresholds bit for bit.
+
+        ``query_embedding`` lets a caller reuse a vector it already paid for (RFC 1560's
+        expansion rounds reuse the round-0 vector). Reuse is best-effort and honest: it is
+        applied only when the supplied profile equals the one this search resolved, and the
+        call reports ``embedding_calls = 0`` in that case, ``1`` when it embedded. The
+        resolved vector is handed back on :attr:`MemorySearchResult.query_embedding` so the
+        next round can reuse it. When the mode resolved to ``fts`` there is no vector to
+        report, so the field stays ``None`` and the next round must pay again.
         """
 
         if not memories:
@@ -433,6 +443,8 @@ class MemoryService:
         normalized_query = normalize_text(query)
         query_vector = None
         profile = None
+        embedding_calls = 0
+        resolved_embedding: MemoryQueryEmbedding | None = None
         if selected_mode in {"vector", "hybrid"}:
             profile = capabilities.embedding_profile
             if profile is None:
@@ -442,17 +454,21 @@ class MemoryService:
                     selected_mode,
                     "cosine admission requires a unit-normalized L2 embedding profile",
                 )
-            try:
-                query_vector = (await self._embed_texts((normalized_query,), profile))[0]
-            except (InferenceUnavailableError, InferenceTimeoutError) as error:
-                if mode == "auto" and capabilities.fts:
-                    selected_mode = "fts"
-                    profile = None
-                else:
-                    raise CapabilityNotSupportedError(
-                        selected_mode,
-                        "embedding model is temporarily unavailable",
-                    ) from error
+            (
+                selected_mode,
+                query_vector,
+                resolved_embedding,
+                embedding_calls,
+            ) = await self._resolve_query_vector(
+                query=normalized_query,
+                requested_mode=mode,
+                selected_mode=selected_mode,
+                profile=profile,
+                capabilities=capabilities,
+                reuse=query_embedding,
+            )
+            if resolved_embedding is None:
+                profile = None
         coarse_limit = limit if self._reranker is None else max(limit, self._rerank_candidate_limit)
         request = MemorySearchRequest(
             query=normalized_query,
@@ -477,6 +493,53 @@ class MemoryService:
             query=normalized_query,
             hits=hits,
             limit=limit,
+            admission=AdmissionCounts(
+                family=Memory.family,
+                scope_id="",
+                retrieved=len(channels.fts) + len(channels.vector),
+                admitted=len(admitted_fts) + len(admitted_vector),
+            ),
+            embedding_calls=embedding_calls,
+            query_embedding=resolved_embedding,
+        )
+
+    async def _resolve_query_vector(
+        self,
+        *,
+        query: str,
+        requested_mode: MemorySearchMode,
+        selected_mode: MemoryUsedSearchMode,
+        profile: EmbeddingProfile,
+        capabilities: MemoryCapabilities,
+        reuse: MemoryQueryEmbedding | None,
+    ) -> tuple[MemoryUsedSearchMode, tuple[float, ...] | None, MemoryQueryEmbedding | None, int]:
+        """Resolve — or reuse — the query vector for a vector or hybrid search.
+
+        Returns ``(selected_mode, query_vector, resolved_embedding, embedding_calls)``.
+        ``resolved_embedding`` is ``None`` exactly when the search fell back to ``fts``, which
+        is also when the caller must drop the embedding profile from the backend request.
+
+        Reuse applies only when the supplied profile equals the resolved one; otherwise the
+        round embeds and reports one call. A failed embedding is still counted as one call,
+        because the call was issued — the cost is real even though it produced nothing.
+        """
+
+        if reuse is not None and reuse.embedding_profile == profile:
+            return selected_mode, reuse.query_vector, reuse, 0
+        try:
+            query_vector = (await self._embed_texts((query,), profile))[0]
+        except (InferenceUnavailableError, InferenceTimeoutError) as error:
+            if requested_mode == "auto" and capabilities.fts:
+                return "fts", None, None, 1
+            raise CapabilityNotSupportedError(
+                selected_mode,
+                "embedding model is temporarily unavailable",
+            ) from error
+        return (
+            selected_mode,
+            query_vector,
+            MemoryQueryEmbedding(query_vector=query_vector, embedding_profile=profile),
+            1,
         )
 
     async def _reranked_search_result(
@@ -486,9 +549,26 @@ class MemoryService:
         query: str,
         hits: tuple[MemoryHit, ...],
         limit: int,
+        admission: AdmissionCounts | None = None,
+        embedding_calls: int = 0,
+        query_embedding: MemoryQueryEmbedding | None = None,
     ) -> MemorySearchResult:
+        """Apply the optional reranker and report what this search paid and admitted.
+
+        ``generation_calls`` counts the RFC 0080 rerank call this search actually issued: ``1``
+        when the reranker ran over a non-empty pool, ``0`` otherwise. It is never inferred
+        from configuration — a deployment whose rerank flag is on but whose reranker did not
+        run reports ``0``, which is the honest number.
+        """
+
         if self._reranker is None or not hits:
-            return MemorySearchResult(mode=mode, hits=hits[:limit])
+            return MemorySearchResult(
+                mode=mode,
+                hits=hits[:limit],
+                admission=admission,
+                embedding_calls=embedding_calls,
+                query_embedding=query_embedding,
+            )
         rerank_started = perf_counter()
         decision = await self._reranker.rerank(
             query,
@@ -509,6 +589,10 @@ class MemoryService:
                 latency_ms=rerank_latency_ms,
                 usage=decision.usage,
             ),
+            admission=admission,
+            embedding_calls=embedding_calls,
+            generation_calls=1,
+            query_embedding=query_embedding,
         )
 
     async def expand(

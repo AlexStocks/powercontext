@@ -43,9 +43,9 @@ def test_fts_snippet_centers_its_window_on_analyzer_match(match_offset: int) -> 
         1,
     )
 
-    assert result[0].snippet is not None
-    assert "late-needle" in result[0].snippet
-    assert len(result[0].snippet) <= 480
+    assert result.hits[0].snippet is not None
+    assert "late-needle" in result.hits[0].snippet
+    assert len(result.hits[0].snippet) <= 480
 
 
 def test_vector_snippet_uses_a_stable_chunk_local_window() -> None:
@@ -67,9 +67,9 @@ def test_vector_snippet_uses_a_stable_chunk_local_window() -> None:
         1,
     )
 
-    assert result[0].snippet is not None
-    assert "stable-center" in result[0].snippet
-    assert len(result[0].snippet) <= 480
+    assert result.hits[0].snippet is not None
+    assert "stable-center" in result.hits[0].snippet
+    assert len(result.hits[0].snippet) <= 480
 
 
 def test_fts_snippet_prefers_the_window_with_the_most_query_terms() -> None:
@@ -90,8 +90,8 @@ def test_fts_snippet_prefers_the_window_with_the_most_query_terms() -> None:
         1,
     )
 
-    assert result[0].snippet is not None
-    assert "common unique" in result[0].snippet
+    assert result.hits[0].snippet is not None
+    assert "common unique" in result.hits[0].snippet
 
 
 def test_fts_snippet_maps_casefold_expansion_back_to_source_offsets() -> None:
@@ -112,9 +112,9 @@ def test_fts_snippet_maps_casefold_expansion_back_to_source_offsets() -> None:
         1,
     )
 
-    assert result[0].snippet is not None
-    assert "needle" in result[0].snippet
-    assert len(result[0].snippet) <= 480
+    assert result.hits[0].snippet is not None
+    assert "needle" in result.hits[0].snippet
+    assert len(result.hits[0].snippet) <= 480
 
 
 def test_fts_snippet_uses_analyzer_token_boundaries() -> None:
@@ -135,9 +135,9 @@ def test_fts_snippet_uses_analyzer_token_boundaries() -> None:
         1,
     )
 
-    assert result[0].snippet is not None
-    assert "needle" in result[0].snippet
-    assert "party" not in result[0].snippet
+    assert result.hits[0].snippet is not None
+    assert "needle" in result.hits[0].snippet
+    assert "party" not in result.hits[0].snippet
 
 
 def test_rrf_scores_are_normalized_against_the_enabled_first_place_channels() -> None:
@@ -178,6 +178,36 @@ def test_rrf_scores_are_normalized_against_the_enabled_first_place_channels() ->
         1,
     )
 
-    assert single[0].score == pytest.approx(25.0)
-    assert fts_only[0].score == pytest.approx(100.0)
-    assert all_channels[0].score == pytest.approx(100.0)
+    assert single.hits[0].score == pytest.approx(25.0)
+    assert fts_only.hits[0].score == pytest.approx(100.0)
+    assert all_channels.hits[0].score == pytest.approx(100.0)
+
+
+def test_fusion_outcome_counts_retrieved_and_admitted_over_enabled_channels() -> None:
+    def hit(channel: str, *, text: str, distance: float | None = None) -> TopicMemoryChannelHit:
+        return TopicMemoryChannelHit(
+            artifact_ref=ArtifactRef(family="topic-memory", artifact_id="topic-1", revision=1),
+            title="Needle topic",
+            summary="Summary carrying the needle.",
+            channel=channel,
+            chunk_ordinal=0,
+            chunk_start=0,
+            chunk_text=text,
+            distance=distance,
+        )
+
+    channels = TopicMemorySearchChannels(
+        topic_fts=(hit("topic_fts", text="needle"), hit("topic_fts", text="unrelated nothing here")),
+        topic_vector=(hit("topic_vector", text="needle", distance=0.1),),
+        detail_fts=(hit("detail_fts", text="needle"),),
+        detail_vector=(hit("detail_vector", text="needle", distance=0.1),),
+    )
+    outcome = fuse_topic_memory_rankings("needle", channels, 4)
+    assert outcome.hits
+    assert outcome.admitted <= outcome.retrieved
+    # The default admission floor keeps the unrelated lexical candidate out.
+    assert outcome.admitted < outcome.retrieved
+
+    fts_only = fuse_topic_memory_rankings("needle", channels, 4, mode="fts")
+    assert fts_only.retrieved == len(channels.topic_fts) + len(channels.detail_fts)
+    assert fts_only.admitted <= fts_only.retrieved
