@@ -15,8 +15,7 @@
 召回不足时，操作仍然正常返回，只是交付更少的条目，或一个正常的空结果。
 
 本 RFC 让 Runtime 在渲染之前，用低成本方式判断候选集对当前 query 是否充分；不充分时，最多执行两轮受控扩展
-——提高每个类别的搜索 `limit`，并在搜索模式为 `auto` 时切换到 `hybrid`——然后在**同一个**调用方给定的总预算内
-重新选择。
+——降低对各类别搜索**已经取回**的候选所施加的准入下限——然后在**同一个**调用方给定的总预算内重新选择。
 
 闸门默认不调用模型，不会抬高交付字节数，不改变公开 `PreparedContext` 契约，并在任何异常时退化为当前行为。
 
@@ -25,9 +24,9 @@
 RFC 0028 有意把内部原因（没有 Memory、没有命中、异常）对调用方合并为同一个正常空结果。该决定继续有效，本 RFC
 不重新讨论。**合并"对外报告的原因"与"完全没有恢复路径"是两件事。**
 
-具体地，当相关证据恰好落在第一轮召回之外——措辞不同的条目，或在 `auto` 模式下排名低于截断线的条目——当前会得到
-一份静默变薄的上下文，每个集成都观察到同样的变薄。RFC 1489 让调用方可以控制参与类别、类别顺序和每类条数上限，
-但没有回答：当参与的类别合起来返回的内容太少时，Runtime 应该做什么。
+具体地，当相关证据恰好落在第一轮召回之外——措辞不同的条目，或搜索**已经取回**、却被准入下限丢弃的条目——当前会
+得到一份静默变薄的上下文，每个集成都观察到同样的变薄。RFC 1489 让调用方可以控制参与类别、类别顺序和每类条数
+上限，但没有回答：当参与的类别合起来返回的内容太少时，Runtime 应该做什么。
 
 当前流水线在结构上就是单趟的：
 
@@ -38,21 +37,32 @@ RFC 0028 有意把内部原因（没有 Memory、没有命中、异常）对调�
   -> 渲染
 ```
 
-现有实现中有两个事实，让"有界地再看一次"既便宜又安全：
+现有实现中有两个事实，决定了"有界地再看一次"究竟能在哪里改变候选集：
 
-- 每个类别的搜索上限已经是 `PreparedContextBuilder` 上的固定常量（`prepared_context.py:103-110`：
-  `memory_candidate_limit = 16`、`topic_memory_candidate_limit = 8`、`experience_candidate_limit = 8`），超过即抛出
-  `PreparedContextInvariantError`（`prepared_context.py:165-169`）。因此现有不变量内部存在第一轮没有用满的余量：
-  `SearchMemoryRequest.limit` 默认为 `10`，低于 Memory 候选上限 `16`。
-- `ScopedContextApplication._prepare`（`application.py:727`）经 `_recall_scope`（`application.py:814`）调用 Memory
-  搜索时，硬编码了 `mode="auto"`（`application.py:849`）。把该模式参数化后，第一轮只走单一检索通道的 query，
-  第二轮可以同时走两个通道——不需要新增任何请求字段。
+- **第 0 轮已经把上限允许的量全部取满：余量在搜索结果内部，而不在它旁边。** 每个类别的搜索上限是
+  `PreparedContextBuilder` 上的固定常量（`prepared_context.py:103-110`：`memory_candidate_limit = 16`、
+  `topic_memory_candidate_limit = 8`、`experience_candidate_limit = 8`），超过即抛出 `PreparedContextInvariantError`
+  （`prepared_context.py:165-169`），而 Runtime 请求的就是这些值本身（Memory 与 Experience 见
+  `application.py:742-743`，Topic Memory 见 `application.py:761`）。因此 `SearchMemoryRequest.limit` **完全没有**余量：
+  提高它在结构上就是空操作。未被动用的余量在下一层——每个类别向其后端请求的候选数已经是自身 limit 的四倍左右：
+  Memory 为 `candidate_limit = max(4 × limit, 32)`（`service.py:457`，在 prepare 路径的 limit 16 下即 64），
+  Experience 为 `limit * 4`（`sqlite/experience_index.py:156`），Topic Memory 为
+  `min(MAX_TOPIC_MEMORY_SEARCH_LIMIT, limit * 4)`（`persistence/topic_memory.py:441`）；而这个候选池在融合之前先被
+  准入下限过滤——词项证据门槛要求覆盖足够多的不同 query 词项（`search.py:104`，各类别共用），向量通道还有固定的
+  余弦基线 `0.3`（`memory/fusion.py:29`、`topic_memory/fusion.py:33`）。偏薄是**这道下限**造成的，不是 limit 造成的，
+  而第 0 轮从不重新审视它。
+- **切换 `mode` 同样不是扩展杠杆。** `_recall_scope` 硬编码了 `mode="auto"`（`application.py:849`），但 `auto` 在
+  hybrid 通道可用时已经是 `hybrid`（`service.py:602-607`），所以能同时服务两个通道的 Scope 本来就在这么做。而在
+  没有向量部署的 Scope 上，显式传 `hybrid` 不会优雅降级：它会抛出 `CapabilityNotSupportedError`
+  （`service.py:598-601`）。
 
 第三个观察催生了本 RFC 的报告部分：当前**没有任何地方统计输给预算的条目**。非 assembly 路径下 `_fit_entry` 按
-`max_entry_content_bytes` 截断，放得下就返回（`prepared_context.py:461`），只有在原文短于
-`_MIN_TRUNCATED_CONTENT_BYTES` 时才返回 `None`、整条丢弃（`prepared_context.py:462-463`）；assembly 路径下
-`fit_context_text_item` 同理，在没有可用内容时整条丢弃（`prepared_text.py:103-104`）。`truncated` 会逐条渲染，
-但截断条数与整条丢弃数都没有被计数。让它们可计数是一个很小的改动，也是诚实评估本功能的前提。
+`max_entry_content_bytes` 截断，放得下就返回（`prepared_context.py:461`）；它会整条丢弃，且有两条路径——原文短于
+`_MIN_TRUNCATED_CONTENT_BYTES` 时（`prepared_context.py:462-463`），以及在此之外、随后的截断搜索找不到任何放得下的
+渲染结果、只能返回仍为 `None` 的 `best` 时（`prepared_context.py:465-485`，`:485` 处 `return best`）。assembly 路径下
+`fit_context_text_item` 同理，在截断搜索找不到可用内容、或最佳结果低于正文下限时整条丢弃（`prepared_text.py:93-104`）。
+`truncated` 会逐条渲染，但截断条数与整条丢弃数都没有被计数。让它们可计数是一个很小的改动，也是诚实评估本功能的
+前提。
 
 本 RFC 并不是主张"召回越多越好"。它主张的是：**有条件的**额外召回——只在第一轮看起来偏薄时才付出代价——
 值得在现有 workload 基础设施下被评估。
@@ -80,7 +90,7 @@ Stage C  报告召回代价与省略情况                  （进程内）
 
 | 信号 | 检测什么 |
 | --- | --- |
-| 返回的候选数与该类上限之比 | 某个类别几乎没返回内容。 |
+| 返回的候选数与该类向搜索请求的候选池之比 | 某个类别的准入下限把取回的内容几乎全部丢弃了。 |
 | Top-1 分数及其与均分的差距 | 一条看似可用的命中被噪声包围，或根本没有明显胜出者。 |
 | query 词项与头部候选的重叠度 | 命中只是靠停用词或某一个共现 token 匹配上的。 |
 | 至少返回一条候选的类别数量 | 选了三个类别，只有一个有结果。 |
@@ -92,10 +102,17 @@ Stage C  报告召回代价与省略情况                  （进程内）
 
 | 轮次 | 动作 | 前置条件 |
 | --- | --- | --- |
-| 1 | 把每个类别的搜索 `limit` 提高到 Builder 候选上限；把 `mode` 从 `auto` 切到 `hybrid`。 | 第 0 轮判定不充分。 |
-| 2 | 放宽闸门阈值（接受当前最好的证据）；若启用了 RFC 0080 rerank，则提高其候选上限。 | 第 1 轮判定不充分。 |
+| 1 | 在配置的扩展下限范围内，降低施加于各类别搜索**已经取回**的候选上的准入下限：词项证据要求（`search.py:104`）与余弦基线（`memory/fusion.py:29`）。 | 第 0 轮判定不充分。 |
+| 2 | 把准入降到 policy 下限，接受当前最好的证据；若启用了 RFC 0080 rerank，则在配置的最大值内提高其候选上限（`config.py:133-134`）。 | 第 1 轮判定不充分。 |
 
 每一轮的代价都严格高于上一轮，且轮数上限为二，因此一次 prepare 的最坏代价是有界且可预测的。
+
+**扩展绝不提高 `limit`，也绝不切换 `mode`**，理由见 Motivation：第 0 轮已经按 Builder 上限请求了每个类别，而
+`mode="auto"` 在 hybrid 可用时本来就是 `hybrid`。准入是唯一一个既改变哪些候选参与竞争、又不破坏候选上限、能力契约
+或调用方类别选择的杠杆。
+
+**准入放宽不写入任何东西，也不需要新的请求字段。** 它只是用另一条准入下限重跑参与类别的搜索，改变的是 Runtime
+本来就拥有的那道边界上"哪些候选存活"。后端候选池大小不变，query、Scope、索引都不变。
 
 **扩展绝不增加类别。** RFC 1489 规定 `assembly.sections` 决定哪些类别参与，未被调用方选择的类别既不执行召回、
 也不分配输出预算。静默搜索一个未选择的类别会违反该契约，因此类别成员不属于扩展范围。调用方完全省略
@@ -120,7 +137,7 @@ class RecallEffort:
     policy: str                       # 带版本的 policy id，如 "powercontext.recall-gate.v1"
     rounds: int                       # 0、1 或 2
     gate_reason: str                  # "sufficient" | "thin-candidates" | "weak-top-1" | ...
-    expansions: tuple[str, ...]       # 例如 ("limit", "hybrid")
+    expansions: tuple[str, ...]       # 例如 ("admission", "best-available")
     candidates_by_round: tuple[int, ...]
     truncated_items: int              # 已交付但被截断；当前未计数
     dropped_items: int                # 整条输给预算；当前未计数
@@ -132,7 +149,7 @@ class RecallEffort:
 
 进程内 trace 留在进程内。Benchmark 和 `powercontext doctor` 类的诊断可以读取它；公开契约不变。
 
-## Example
+## 示例
 
 Codex Hook 用默认预算请求上下文，第一轮只返回一条很弱的 Memory 命中。
 
@@ -147,8 +164,9 @@ Content-Type: application/json
 }
 ```
 
-第 0 轮返回三条 Memory 候选，其中一条分数可用。闸门判定为 `weak-top-1`，扩展一次（提高 limit、`mode` 切到
-`hybrid`），第 1 轮返回另一条携带实际验证指令的候选。随后选择与渲染完全按现有逻辑进行，仍在同样的 8000 字节内。
+第 0 轮返回三条 Memory 候选，其中一条分数可用。闸门判定为 `weak-top-1`，扩展一次（降低准入下限），第 1 轮返回
+另一条携带实际验证指令的候选——它本就在第 0 轮搜索已取回的候选池里，只是被当时的下限丢弃了。随后选择与渲染完全
+按现有逻辑进行，仍在同样的 8000 字节内。
 
 如果第 1 轮没有返回更好的结果，prepare 会交付第 0 轮的结果——也就是今天的行为——并附 `rounds: 2` 与说明原因的
 `gate_reason`。
@@ -174,6 +192,7 @@ Content-Type: application/json
 memory_candidate_limit = 16
 topic_memory_candidate_limit = 8
 experience_candidate_limit = 8
+candidate_limit = memory_candidate_limit
 entry_limit = 8
 topic_memory_entry_limit = 8
 experience_entry_limit = 2
@@ -188,7 +207,22 @@ max_entry_content_bytes = 2000
 
 `PrepareContextRequest` 含 `query`、`max_bytes`（512–32768，默认 8000）和可选 `assembly`。
 `SearchMemoryRequest` 含 `query`、`limit`（默认 10）、`mode`（`fts` / `vector` / `hybrid` / `auto`，默认 `auto`）与
-`tag_filter`。两个请求都**没有**时间窗或 as-of 参数。
+`tag_filter`。两个请求都**没有**时间窗或 as-of 参数。prepare 路径从不使用 `limit` 的默认值：`_prepare` 传的就是
+Builder 的上限本身（`application.py:742-743`、`:761`），与上文一致。
+
+## 候选集在哪里被削薄
+
+理解准入边界，是本 RFC 的扩展动作得以良定义的前提，因此在这里记录下来，而不是留给实现者去猜。
+
+每个参与类别的搜索分两阶段。阶段一是取回：向后端请求的候选数约为该类别 limit 的四倍（`service.py:457`、
+`sqlite/experience_index.py:156`、`persistence/topic_memory.py:441`）。阶段二是准入：取回的候选在融合之前先被过滤
+——词项证据要求，即候选必须覆盖足够多的不同 query 词项（`search.py:104`；Memory 在 `memory/fusion.py:34-40` 应用，
+Topic Memory 在 `topic_memory/fusion.py:106` 应用，Experience 在其索引内部应用
+（`persistence/experience_index.py:309`））——向量通道另有余弦基线 `0.3`（`memory/fusion.py:29`、
+`topic_memory/fusion.py:33`）。
+
+一个已经是交付上限四倍、却被过滤到几乎无剩余的候选池，正是闸门要检测的情形。因此扩展动作被定义为**准入下限**：
+在这条路径上，它是唯一的、既能放宽、又不会突破 Builder 不变量、不会触发能力错误、也不必改动公开请求的边界。
 
 ## 新增组件
 
@@ -196,8 +230,8 @@ max_entry_content_bytes = 2000
    构造；功能关闭时默认值保持当前行为。
 2. **`RecallSufficiencyGate`** —— 纯函数 `assess(candidates, query, policy) -> GateAssessment`。无 I/O、无模型调用、
    除候选自身已携带的信息外不访问时钟。
-3. **`RecallExpander`** —— 纯函数 `(round, policy) -> SearchPlan`，`SearchPlan` 描述下一轮使用的 `limit` 与 `mode`。
-   它不涉及类别，因此不可能违反 assembly 契约。
+3. **`RecallExpander`** —— 纯函数 `(round, policy) -> SearchPlan`，`SearchPlan` 描述下一轮使用的准入下限，以及
+   （适用时）rerank 候选界。它不涉及类别，因此不可能违反 assembly 契约，也绝不设置 `limit` 或 `mode`。
 4. **`RecallEffort`** —— 上文描述的 trace 值，挂在 `PreparedContextBuild` 上。
 
 四者都位于 `src/powercontext/builtin/runtime/` 下。闸门与扩展器是纯函数，可以直接测试，不需要数据库。
@@ -207,6 +241,17 @@ max_entry_content_bytes = 2000
 循环属于当前执行各类别搜索、随后调用 `PreparedContextBuilder.build_scopes_result()` 的 Runtime 层，即
 `ScopedContextApplication._prepare`（`application.py:727`）与 `_recall_scope`（`application.py:814`）。正如 Builder
 的 docstring 所述，Builder 本身保持无 I/O、无持久化、无 rerank；它接收胜出轮次的候选，与今天完全一致。
+
+## 轮次之间
+
+Builder 只接收一份候选集，所以必须说清它来自哪一轮。规则是：候选在轮次之间**累积**，按 Builder 已经用于 origins
+的身份去重（`PreparedContextOrigin`：Artifact revision，或 Memory entry 身份）；后一轮的结果只有在贡献了前面各轮
+尚未产生的候选时才被采纳，否则沿用先前的结果集。一轮没有贡献新候选并不是错误，它会在 `RecallEffort` 中记录为
+"一次什么都没改变的扩展"（`expansions` 非空、`candidates_by_round` 持平）——而 `truncated_items` 与 `dropped_items`
+正是让这种情况可被解释的字段。
+
+因此，某一轮返回的候选**少于**上一轮是正常且预期的，不构成降级触发条件：累积意味着后一轮永远不可能删除前一轮已
+产生的候选。
 
 ## 持久化边界
 
@@ -221,6 +266,10 @@ telemetry 持久化"（`docs/zh/rfcs/0028_context_pack.md:464`）。本 RFC 保�
 "这条被选中"或"这条输给了预算"，需要修改 RFC 0028 的 write-free 条款，那是一次基础契约变更，且正在别处决定：#1554
 提出的正是这个选择，而 maintainer 在那里的意见是首版保持 prepare 只读。因此本 trace 的任何跨会话版本都需要它自己的
 RFC。
+
+`truncated_items` 与 `dropped_items` 是单次调用内的聚合计数——绝不是逐条归因，也绝不是对某个条目的评价。这一区分是
+刻意的，因为 #1554 已经裁定：条目输给 byte budget **不**构成关于该条目的负向结果。本 RFC 统计省略情况，只是为了解释
+自己的扩展，不记录任何 `candidate_not_selected` 式信号，也不向 HTTP 契约增加任何字段。
 
 有一点纠正值得记录，因为它关系到未来那个 RFC 该如何论证：`RelationalRecallTokenEstimator` 在 prepare 内解析召回
 血缘（`recall.py:106`）**并不能**作为允许写入的先例。`resolve()` 与 `estimate()` 都是读操作，而 RFC 0028 约束的是
@@ -240,15 +289,19 @@ RFC。
 | 扩展一次 | 每个参与类别 2 次 | 0（若启用 RFC 0080 rerank，则每类别 1 次） |
 | 扩展两次 | 每个参与类别 3 次 | 0（若启用 rerank，则每类别 2 次） |
 
+一次扩展轮用更低的准入下限重跑参与类别的搜索：后端候选池大小不变，也不新增任何 embedding、rerank 或抽取调用，
+因此新增代价是"每个类别多一次搜索"，而不是"一次更深的搜索"。
+
 rerank 是扩展唯一可能引入模型代价的地方，因为 RFC 0080 对每次非空 reranked search 执行一次结构化生成请求。同时
 启用两个特性的部署需要显式接受该代价：启用 rerank 时，除非配置允许，否则跳过扩展轮。这一点记录在 `RecallEffort`
-中。
+中。rerank 界本身已经是 Runtime 配置项 `memory_rerank_candidate_limit`（默认 30、最大 100，`config.py:134`），因此
+第 2 轮是在这个既有最大值内提高它，而不是引入新的可调参数。
 
 ## 失败与降级
 
-所有错误路径都退化为当前行为：闸门抛错、扩展抛错、某一轮返回的候选少于上一轮，或配置缺失。闸门永远不会把一次
-成功的 prepare 变成失败，也不会改变 `status`。因为闸门在选择之前运行，一次失败最多多花一次搜索，永远不会丢掉
-已有结果。
+所有错误路径都退化为当前行为：闸门抛错、扩展抛错，或配置缺失。除此之外不算失败：因为候选在轮次之间累积（见
+**轮次之间**），一轮没有新增候选、或新增的候选少于上一轮，都只是沿用先前的结果集。闸门永远不会把一次成功的
+prepare 变成失败，也不会改变 `status`。因为闸门在选择之前运行，一次失败最多多花一次搜索，永远不会丢掉已有结果。
 
 ## 边界条件
 
@@ -261,16 +314,19 @@ rerank 是扩展唯一可能引入模型代价的地方，因为 RFC 0080 对每
   扩展理由。
 - **指定了 `assembly` 的请求。** 扩展不得引入未选择的类别。若调用方只选择了 Memory，则"补 Experience"不是一个
   合法动作，无论第 0 轮多薄。
+- **没有向量部署的 Scope。** hybrid 不可用，`mode` 本来就是 `fts`，余弦基线也不适用；此时只有词项证据要求可以放宽，
+  且第 1 轮不得尝试切换模式（`service.py:598-601`）。
 
 ## 兼容性与 API 影响
 
 无。`PreparedContext` 保持四个字段；`openapi/powercontext.yaml` 不变，因此不需要执行 `make api-generate`。
 `PreparedContextBuild` 增加一个默认为 `None` 的可选字段，它是进程内对象。功能默认关闭，由 Runtime 配置启用。
 
-## Testing
+## 测试
 
 闸门与扩展器作为纯函数测试。Runtime 层测试在固定候选集与固定预算下断言：未扩展路径产生与今天逐字节相同的输出；
-一轮不充分导致恰好一次扩展；第二轮仍不充分则停止；空 Scope 永不扩展；显式选定的类别集合永不被扩大。
+一轮不充分导致恰好一次扩展；第二轮仍不充分则停止；空 Scope 永不扩展；显式选定的类别集合永不被扩大；一轮没有贡献
+新候选时沿用先前的候选集，且任何一轮都不能移除先前的候选。
 
 现有测试位置：`tests/builtin/runtime/test_prepared_context.py`（Builder 与渲染的纯逻辑）与
 `tests/e2e/test_builtin_runtime.py`（Runtime 层 prepare 行为）；assembly 路径的对应测试是
@@ -285,8 +341,10 @@ OceanBase 上各跑一遍，报告任务成功率、注入字节数、`truncated
 
 - **偏薄查询上增加延迟。** 每次 prepare 多出一到两次搜索，而这恰好发生在召回本就偏弱的场景，因此新增延迟可能
   换不来任何东西。
-- **新增可调参数面。** 决定"是否充分"的阈值很容易设错，也很难用经验证据证明。以带版本 policy 的形式发布可以
-  缓解但不能消除这一点。
+- **被降低的准入下限会放进它本来要挡住的候选。** 词项证据要求与余弦基线的作用，就是不让弱匹配进入有界预算；放宽
+  它们可能挤掉默认下限本可交付的证据。这是该特性默认关闭、且必须先标定而不能直接打开的主要原因。
+- **新增可调参数面。** 决定"是否充分"的阈值，现在又加上了决定"放宽到哪"的一组阈值。两者都容易设错，也很难用经验
+  证据证明。以带版本 policy 的形式发布可以缓解但不能消除这一点。
 - **可能掩盖检索缺陷。** 如果第一轮偏薄的原因是索引或 embedding 有问题，用同样机制再跑一轮往往同样偏薄，
   闸门只是增加了工作量而没有给出诊断。
 - **与 rerank 的交互。** 启用 RFC 0080 时，扩展可能使每次 prepare 的生成调用翻倍或三倍。
@@ -298,8 +356,9 @@ OceanBase 上各跑一遍，报告任务成功率、注入字节数、`truncated
   provider adapter，正是 RFC 0028 motivation 反对的方向，并且每个集成会各自发明不同的重试规则。
 - **让调用方用改写后的 query 重试。** 同样的反对理由，而且它额外要求调用方去做 RFC 0028 刻意放进 Runtime 的
   检索工作。
-- **无条件提高默认搜索 limit**（例如 `limit` 从 10 到 16，或 `mode` 从 `auto` 改为 `hybrid`）。这会让所有查询
-  ——包括已经服务得很好的那些——都付出代价，并给有界预算增加噪声。闸门只在召回确实偏薄时付出代价。
+- **无条件放宽准入下限**，或无条件抬高 Builder 候选上限。这会让所有查询——包括已经服务得很好的那些——都付出代价，
+  并让更弱的候选进入有界预算。闸门只在召回确实偏薄时付出代价。需要说明的是，提高 `SearchMemoryRequest.limit` 不在
+  可选项之内：Runtime 已经按上限请求了每个类别（`application.py:742-743`、`:761`）。
 - **交给 RFC 0080 的 listwise reranker。** Rerank 在候选池内部选择，无法捞出从未进入候选池的证据。它默认关闭，
   且每次搜索都有生成调用成本。
 - **在宿主插件里实现。** 宿主侧上下文插件已经在做这件事。对 PowerContext 而言，那会把选择权重新移出 Runtime 的
@@ -325,8 +384,11 @@ OceanBase 上各跑一遍，报告任务成功率、注入字节数、`truncated
    suite 标定后再在任何地方启用。
 2. **闸门应该按类别还是全局？** 全局更简单；按类别可以发现"某个被选中的类别没返回内容而另一个表现良好"。
    按类别可能严格更优，但它与 RFC 1489 的每节 limit 交互方式需要先做出决定。
-3. **`hybrid` 切换是否该放在第 1 轮？** 在没有向量部署的 Scope 上，切换 `mode` 是空操作，这一轮只付出延迟。
-   扩展器可能应该在未配置向量通道时跳过模式切换。
+3. **准入下限可以放宽到什么程度，按通道还是按类别？** 下限是真正的可调项，也有真正的失败模式，而且它并非处处
+   相同：词项要求是共用的（`search.py:104`），但 Experience 在自己的索引内部应用它
+   （`persistence/experience_index.py:309`），余弦基线则是每个类别各自一个常量（`memory/fusion.py:29`、
+   `topic_memory/fusion.py:33`）。单一的全局扩展下限更容易推理；按类别的下限则能发现"偏薄只局限在某一个类别"。
+   闸门与扩展下限应当一起，针对现有 workload suite 做标定。
 4. **代价在评测报告中放在哪里？** RFC 1229 workload 应在收益指标之外，报告新增延迟以及启用 rerank 时新增的
    生成调用次数。
 5. **调用方是否需要按请求退出？** 当前该特性是部署级的。为延迟敏感的集成提供按请求的逃生舱，可能是不必要的
@@ -334,8 +396,7 @@ OceanBase 上各跑一遍，报告任务成功率、注入字节数、`truncated
 
 # Future possibilities
 
-- **给搜索增加时间窗参数**，让后续 RFC 可以把"放宽时间窗"作为真正的扩展动作，而不仅限于本 RFC 的 limit / mode
-  动作。
+- **给搜索增加时间窗参数**，让后续 RFC 可以把"放宽时间窗"作为真正的扩展动作，而不仅限于本 RFC 的准入下限动作。
 - **把闸门结果回灌到检索排序**——记录哪些候选被选中、哪些落选，使检索质量可以演化。刻意排除在本 RFC 之外，
   且必须遵守 RFC 0051 与 #1425 的边界：不自动衰减，不自动淘汰。
 - **在公开契约中报告扩展**，如果未来的 profile 要求 Agent 或运维人员看到召回代价。那将是一次独立的 API 变更。
