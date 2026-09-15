@@ -491,7 +491,7 @@ async def open_builtin_runtime(
                     attest_candidate=dream_candidate_attester,
                 ),
                 generation_concurrency=config.runtime.generation_concurrency,
-                experience_recall=contexts.search_experience,
+                experience_recall=contexts.search_experience_outcome,
                 skill_recall=contexts.search_skills,
                 skill_lister=contexts.list_skills,
                 skill_origin_reader=contexts.get_skill_origins,

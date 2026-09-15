@@ -109,10 +109,9 @@ class RecallSignals:
     ``entry_version_id``) or another family's Artifact revision. It is recorded for observation
     only; no branch of the v1 verdict reads it.
 
-    ``families_expected`` is the number of caller-selected families that are actually searchable
-    in this Scope: Memory requires a head, while Experience and Topic Memory require a configured
-    recall callable. A caller that selected three families but has only one searchable one is
-    therefore *not* treated as thin — absence of content is not thin recall.
+    ``families_expected`` is the number of caller-selected families where round zero retrieved
+    candidates that a lower admission floor may recover. Configured callbacks with no retrieved
+    rows are therefore not treated as thin recall, because expansion would be a no-op.
     """
 
     candidate_count: int
@@ -244,22 +243,18 @@ class RecallBudgetView:
     def budget_bounded(self) -> bool:
         """Whether the request budget, not recall, is what limits delivery.
 
-        Two complementary tests, deliberately kept together rather than split across callers:
-
-        * the static one — the request sits at or below the declared byte floor
-          (:data:`BUDGET_FLOOR_BYTES`), where one item may be all that fits, so thinness is a
-          budget property and no amount of extra recall can help;
-        * the probe-derived one — the fit dropped whole items *and* left no headroom, i.e. the
-          budget consumed everything it was offered.
-
-        The first alone would miss a large budget that is already full; the second alone would
-        miss the floor case, where a probe over a still-unknown candidate set may report drops
-        for reasons that are purely a consequence of the floor.
+        The gate treats budget as binding only when the Builder observed fitting pressure:
+        delivered content consumed all headroom, an item was truncated, or a whole item was
+        dropped. A bare 512-byte request with no candidates is not budget-bound, because recall
+        could still recover a short item that fits.
         """
 
+        fitting_pressure = (
+            self.dropped_items > 0 or self.truncated_items > 0 or (self.delivered_items > 0 and self.unused_bytes <= 0)
+        )
         if self.max_bytes <= BUDGET_FLOOR_BYTES:
-            return True
-        return self.dropped_items > 0 and self.unused_bytes <= 0
+            return fitting_pressure
+        return self.unused_bytes <= 0 and (self.dropped_items > 0 or self.truncated_items > 0)
 
 
 @dataclass(frozen=True)

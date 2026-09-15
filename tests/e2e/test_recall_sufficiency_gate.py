@@ -30,7 +30,10 @@ from typing import Any
 
 import pytest
 
+from powercontext.artifacts import ArtifactRef
+from powercontext.builtin.artifacts.experience import ExperienceSearchOutcome
 from powercontext.builtin.artifacts.memory import MemoryEntryInput
+from powercontext.builtin.artifacts.search import AdmissionCounts
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime import (
     BuiltinConfig,
@@ -44,7 +47,7 @@ from powercontext.builtin.runtime.application import (
     ScopedContextApplication,
     _RecallRoundOutcome,
 )
-from powercontext.builtin.runtime.prepared_context import PreparedContextBuild
+from powercontext.builtin.runtime.prepared_context import PreparedContextBuild, PreparedMemoryCandidates
 from powercontext.builtin.runtime.recall_sufficiency import (
     REASON_AT_MAX_ROUNDS,
     REASON_BUDGET_FLOOR,
@@ -259,6 +262,39 @@ def test_empty_scope_is_no_content_and_does_not_expand(tmp_path, monkeypatch) ->
     asyncio.run(scenario())
 
 
+def test_configured_experience_with_no_retrieved_rows_does_not_expand(tmp_path, monkeypatch) -> None:
+    log = _RecallRoundLog()
+    log.install(monkeypatch)
+
+    async def no_experience(scope_id: str, _query: str, _limit: int, **_kwargs: Any) -> ExperienceSearchOutcome:
+        return ExperienceSearchOutcome(
+            admission=AdmissionCounts(family="experience", scope_id=scope_id, retrieved=0, admitted=0)
+        )
+
+    async def scenario() -> None:
+        database = tmp_path / "empty-experience.db"
+        async with _runtime(database, RuntimeConfig(recall_gate_enabled=True)) as runtime:
+            scope_id = await _create_scope(runtime, "empty-experience")
+            monkeypatch.setattr(runtime, "_experience_recall", no_experience)
+            monkeypatch.setattr(runtime, "_topic_memory_search", None)
+            build, effort = await _prepare_build(
+                runtime,
+                scope_id,
+                PrepareContextRequest.model_validate({
+                    "query": _QUERY,
+                    "assembly": {"sections": [{"family": "experience", "limit": 2}]},
+                }),
+            )
+
+        assert effort is not None
+        assert effort.assessment == REASON_NO_CONTENT
+        assert effort.rounds == 1
+        assert len(log.calls) == 1
+        assert build.context.status == "empty"
+
+    asyncio.run(scenario())
+
+
 def test_expansion_never_widens_the_selected_family_set(tmp_path, monkeypatch) -> None:
     log = _RecallRoundLog()
     log.install(monkeypatch)
@@ -281,6 +317,70 @@ def test_expansion_never_widens_the_selected_family_set(tmp_path, monkeypatch) -
         assert build.context.status == "ready"
         assert len(log.calls) == 3
         assert {frozenset(call["families"]) for call in log.calls} == {frozenset({"memory"})}
+
+    asyncio.run(scenario())
+
+
+def test_memory_head_change_during_expansion_fails_open_to_round_zero(tmp_path, monkeypatch) -> None:
+    async def scenario() -> None:
+        database = tmp_path / "head-change.db"
+        request = _memory_request()
+
+        async with _runtime(database) as disabled:
+            scope_id = await _create_scope(disabled, "head-change")
+            await _seed(disabled, scope_id, ["alpha beta gamma evidence", "alpha solo marker"])
+            baseline, _baseline_effort = await _prepare_build(disabled, scope_id, request)
+
+        original = ScopedContextApplication._recall_round
+        calls = 0
+
+        async def changed_head(
+            application: ScopedContextApplication,
+            request: PrepareContextRequest,
+            scope_ids: Any,
+            families: set[str],
+            builder: Any,
+            *,
+            admission: Any,
+            reuse: Any,
+            topic_reuse: Any,
+        ) -> Any:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return await original(
+                    application,
+                    request,
+                    scope_ids,
+                    families,
+                    builder,
+                    admission=admission,
+                    reuse=reuse,
+                    topic_reuse=topic_reuse,
+                )
+            return _RecallRoundOutcome(
+                memory=(
+                    PreparedMemoryCandidates(
+                        scope_id=scope_ids[0],
+                        memory_ref=ArtifactRef(family="memory", artifact_id="memory", revision=999),
+                        hits=(),
+                    ),
+                )
+            )
+
+        monkeypatch.setattr(ScopedContextApplication, "_recall_round", changed_head)
+        async with _runtime(
+            database,
+            RuntimeConfig(recall_gate_enabled=True, recall_gate_min_candidates=100),
+        ) as runtime:
+            build, effort = await _prepare_build(runtime, scope_id, request)
+
+        assert effort is not None
+        assert effort.assessment == REASON_EXPANSION_FAILED
+        assert effort.rounds == 1
+        assert calls == 2
+        assert build.context.content == baseline.context.content
+        assert build.origins == baseline.origins
 
     asyncio.run(scenario())
 
@@ -312,6 +412,64 @@ def test_later_rounds_never_remove_an_accumulated_candidate(tmp_path, monkeypatc
         # accumulated pool never shrinks after the round it was seeded at.
         assert effort.candidates_by_round == (2, 3, 3)
         assert all(origin in build.origins for origin in baseline.origins)
+
+    asyncio.run(scenario())
+
+
+def test_later_round_failure_preserves_committed_expansion_trace(tmp_path, monkeypatch) -> None:
+    async def scenario() -> None:
+        database = tmp_path / "later-failure.db"
+        request = _memory_request()
+
+        async with _runtime(database) as disabled:
+            scope_id = await _create_scope(disabled, "later-failure")
+            await _seed(disabled, scope_id, ["alpha beta gamma evidence", "alpha solo marker", "beta gamma marker"])
+            baseline, _baseline_effort = await _prepare_build(disabled, scope_id, request)
+
+        original = ScopedContextApplication._recall_round
+        calls = 0
+
+        async def fails_on_second_expansion(
+            application: ScopedContextApplication,
+            request: PrepareContextRequest,
+            scope_ids: Any,
+            families: set[str],
+            builder: Any,
+            *,
+            admission: Any,
+            reuse: Any,
+            topic_reuse: Any,
+        ) -> Any:
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                raise RuntimeError("later expansion failed")  # noqa: TRY003
+            return await original(
+                application,
+                request,
+                scope_ids,
+                families,
+                builder,
+                admission=admission,
+                reuse=reuse,
+                topic_reuse=topic_reuse,
+            )
+
+        monkeypatch.setattr(ScopedContextApplication, "_recall_round", fails_on_second_expansion)
+        async with _runtime(
+            database,
+            RuntimeConfig(recall_gate_enabled=True, recall_gate_min_candidates=100),
+        ) as runtime:
+            build, effort = await _prepare_build(runtime, scope_id, request)
+
+        assert effort is not None
+        assert effort.assessment == REASON_EXPANSION_FAILED
+        assert effort.rounds == 2
+        assert effort.expansion_actions == ("admission",)
+        assert len(effort.candidates_by_round) == 2
+        assert calls == 3
+        assert build.context.content == baseline.context.content
+        assert build.origins == baseline.origins
 
     asyncio.run(scenario())
 

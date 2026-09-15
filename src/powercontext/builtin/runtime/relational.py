@@ -42,6 +42,7 @@ from powercontext.builtin.artifacts.experience import (
     ExperienceCandidatePipeline,
     ExperienceContent,
     ExperienceGenerator,
+    ExperienceSearchHit,
     ExperienceSearchOutcome,
 )
 from powercontext.builtin.artifacts.handoff import (
@@ -770,10 +771,21 @@ class RelationalContexts:
         query: str,
         limit: int,
         /,
+    ) -> tuple[ExperienceSearchHit, ...]:
+        """Recall relevant approved Experience heads in one scope."""
+
+        return (await self.search_experience_outcome(scope_id, query, limit)).hits
+
+    async def search_experience_outcome(
+        self,
+        scope_id: str,
+        query: str,
+        limit: int,
+        /,
         *,
         admission: AdmissionFloor | None = None,
     ) -> ExperienceSearchOutcome:
-        """Recall relevant approved Experience heads in one scope.
+        """Recall Experience heads and include internal admission accounting.
 
         The outcome carries the admission counts alongside the hits so the recall gate can
         report retrieved-versus-admitted without a second pass.

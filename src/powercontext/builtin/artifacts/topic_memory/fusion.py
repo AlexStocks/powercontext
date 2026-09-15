@@ -54,10 +54,25 @@ def fuse_topic_memory_rankings(
     *,
     mode: TopicMemoryUsedSearchMode = "hybrid",
     admission: AdmissionFloor | None = None,
-) -> TopicMemoryFusionOutcome:
+) -> tuple[TopicMemorySearchHit, ...]:
     """Collapse each channel by Topic and fuse ranks without comparing raw scores.
 
     ``admission=None`` applies the historical fusion-time thresholds bit for bit.
+    """
+
+    return _fuse_topic_memory_rankings(query, channels, limit, mode=mode, admission=admission).hits
+
+
+def _fuse_topic_memory_rankings(
+    query: str,
+    channels: TopicMemorySearchChannels,
+    limit: int,
+    /,
+    *,
+    mode: TopicMemoryUsedSearchMode = "hybrid",
+    admission: AdmissionFloor | None = None,
+) -> TopicMemoryFusionOutcome:
+    """Return fused hits plus internal admission accounting.
 
     The returned outcome also reports how many channel hits the resolved mode actually
     retrieved and how many survived admission, measured around the two admit helpers so the

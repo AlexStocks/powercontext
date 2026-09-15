@@ -1020,7 +1020,7 @@ class ScopedContextApplication:
 
         gate = RecallSufficiencyGate()
         expander = RecallExpander()
-        families_expected = self._families_with_content(families, memory_candidates)
+        families_expected = _families_with_recoverable_candidates(families, round_zero.admissions)
         memory_hits_by_scope = {group.scope_id: list(group.hits) for group in memory_candidates}
         memory_ref_by_scope = {group.scope_id: group.memory_ref for group in memory_candidates}
         seen_memory = {_memory_identity(group.scope_id, hit) for group in memory_candidates for hit in group.hits}
@@ -1054,11 +1054,11 @@ class ScopedContextApplication:
                 candidates,
                 request.query,
                 policy,
-                scope_has_content=families_expected > 0,
+                scope_has_content=bool(candidates) or families_expected > 0,
                 budget=budget,
                 families_expected=families_expected,
             )
-            while not assessment.sufficient and len(expansions) < policy.max_rounds:
+            while not assessment.sufficient and families_expected > 0 and len(expansions) < policy.max_rounds:
                 plan = expander.plan(len(expansions) + 1, policy)
                 issued = await self._recall_round(
                     request,
@@ -1070,9 +1070,10 @@ class ScopedContextApplication:
                     topic_reuse=topic_reuse,
                 )
                 for group in issued.memory:
+                    _ensure_memory_head_stable(
+                        group.scope_id, group.memory_ref, memory_ref_by_scope.get(group.scope_id)
+                    )
                     bucket = memory_hits_by_scope.setdefault(group.scope_id, [])
-                    if memory_ref_by_scope.get(group.scope_id) is None:
-                        memory_ref_by_scope[group.scope_id] = group.memory_ref
                     for hit in group.hits:
                         identity = _memory_identity(group.scope_id, hit)
                         if identity in seen_memory:
@@ -1107,11 +1108,11 @@ class ScopedContextApplication:
                     candidates,
                     request.query,
                     policy,
-                    scope_has_content=families_expected > 0,
+                    scope_has_content=bool(candidates) or families_expected > 0,
                     budget=budget,
                     families_expected=families_expected,
                 )
-            if not assessment.sufficient:
+            if not assessment.sufficient and families_expected > 0 and len(expansions) >= policy.max_rounds:
                 assessment = replace(assessment, reason=REASON_AT_MAX_ROUNDS)
         except Exception as error:
             log_safely(
@@ -1132,7 +1133,8 @@ class ScopedContextApplication:
                 recall_effort(
                     policy=policy,
                     assessment=REASON_EXPANSION_FAILED,
-                    candidates_by_round=(round_zero_count,),
+                    expansion_actions=expansions,
+                    candidates_by_round=candidates_by_round,
                     admission_by_family=admission_by_family,
                     added_embeddings=added_embeddings,
                     added_generation_calls=added_generation_calls,
@@ -1140,7 +1142,7 @@ class ScopedContextApplication:
             )
         capped_topic = tuple(accumulated_topic[: builder.topic_memory_candidate_limit])
         return (
-            _limit_memory_candidates(
+            _limit_expanded_memory_candidates(
                 [
                     PreparedMemoryCandidates(
                         scope_id=scope_id,
@@ -1149,9 +1151,10 @@ class ScopedContextApplication:
                     )
                     for scope_id in scope_ids
                 ],
+                memory_candidates,
                 builder.memory_candidate_limit,
             ),
-            _limit_experience_candidates(
+            _limit_expanded_experience_candidates(
                 [
                     PreparedExperienceCandidates(
                         scope_id=scope_id,
@@ -1159,6 +1162,7 @@ class ScopedContextApplication:
                     )
                     for scope_id in scope_ids
                 ],
+                experience_candidates,
                 builder.experience_candidate_limit,
             ),
             capped_topic,
@@ -1232,27 +1236,6 @@ class ScopedContextApplication:
             embedding_calls=embedding_calls + topic_outcome.embedding_calls,
             generation_calls=generation_calls,
         )
-
-    def _families_with_content(
-        self,
-        families: set[str],
-        memory_candidates: Sequence[PreparedMemoryCandidates],
-    ) -> int:
-        """Count the selected recall families that actually executed for this scope.
-
-        A selected family counts only when it is searchable here: Memory requires a head,
-        Experience and Topic Memory require a configured recall callable. Absence of content is
-        not thin recall, so zero searchable families means the gate must not expand.
-        """
-
-        count = 0
-        if MEMORY_FAMILY in families and any(group.memory_ref is not None for group in memory_candidates):
-            count += 1
-        if EXPERIENCE_FAMILY in families and self._runtime._experience_recall is not None:
-            count += 1
-        if TOPIC_MEMORY_FAMILY in families and self._runtime._topic_memory_search is not None:
-            count += 1
-        return count
 
     async def _recall_scope(
         self,
@@ -1414,6 +1397,35 @@ def _limit_memory_candidates(
     ]
 
 
+def _ensure_memory_head_stable(
+    scope_id: str,
+    actual: ArtifactRef | None,
+    expected: ArtifactRef | None,
+) -> None:
+    if actual != expected:
+        raise RuntimeError(f"Memory head changed during recall expansion for scope {scope_id}")  # noqa: TRY003
+
+
+def _limit_expanded_memory_candidates(
+    candidates: list[PreparedMemoryCandidates],
+    round_zero: list[PreparedMemoryCandidates],
+    limit: int,
+) -> list[PreparedMemoryCandidates]:
+    counts = _prefix_preserving_counts(
+        tuple(len(group.hits) for group in candidates),
+        tuple(len(group.hits) for group in round_zero),
+        limit,
+    )
+    return [
+        PreparedMemoryCandidates(
+            scope_id=group.scope_id,
+            memory_ref=group.memory_ref,
+            hits=group.hits[:count],
+        )
+        for group, count in zip(candidates, counts, strict=True)
+    ]
+
+
 def _limit_experience_candidates(
     candidates: list[PreparedExperienceCandidates],
     limit: int,
@@ -1423,6 +1435,49 @@ def _limit_experience_candidates(
         PreparedExperienceCandidates(scope_id=group.scope_id, hits=group.hits[:count])
         for group, count in zip(candidates, counts, strict=True)
     ]
+
+
+def _limit_expanded_experience_candidates(
+    candidates: list[PreparedExperienceCandidates],
+    round_zero: list[PreparedExperienceCandidates],
+    limit: int,
+) -> list[PreparedExperienceCandidates]:
+    counts = _prefix_preserving_counts(
+        tuple(len(group.hits) for group in candidates),
+        tuple(len(group.hits) for group in round_zero),
+        limit,
+    )
+    return [
+        PreparedExperienceCandidates(scope_id=group.scope_id, hits=group.hits[:count])
+        for group, count in zip(candidates, counts, strict=True)
+    ]
+
+
+def _prefix_preserving_counts(
+    sizes: tuple[int, ...],
+    prefix_sizes: tuple[int, ...],
+    limit: int,
+) -> tuple[int, ...]:
+    prefix_counts = tuple(min(size, prefix) for size, prefix in zip(sizes, prefix_sizes, strict=True))
+    remaining = max(0, limit - sum(prefix_counts))
+    suffix_counts = _round_robin_counts(
+        tuple(size - prefix for size, prefix in zip(sizes, prefix_counts, strict=True)),
+        remaining,
+    )
+    return tuple(prefix + suffix for prefix, suffix in zip(prefix_counts, suffix_counts, strict=True))
+
+
+def _families_with_recoverable_candidates(
+    families: set[str],
+    admissions: Sequence[AdmissionCounts],
+) -> int:
+    """Count families where a lower admission floor can recover backend candidates."""
+
+    return len({
+        admission.family
+        for admission in admissions
+        if admission.family in families and admission.retrieved > admission.admitted
+    })
 
 
 def _round_robin_counts(sizes: tuple[int, ...], limit: int) -> tuple[int, ...]:

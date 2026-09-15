@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field, StrictInt, field_validator, model_validat
 
 from powercontext.artifacts import Artifact, ArtifactDraft, ArtifactRef
 from powercontext.builtin.artifacts.memory import EmbeddingProfile, MemoryQueryEmbedding
-from powercontext.builtin.artifacts.search import AdmissionCounts
+from powercontext.builtin.artifacts.search import AdmissionCounts, AdmissionFloor
 from powercontext.builtin.inference import EmbeddingVector
 
 MAX_TOPIC_MEMORY_TITLE_LENGTH = 512
@@ -137,6 +137,7 @@ class TopicMemorySearchRequest(BaseModel):
     mode: TopicMemoryUsedSearchMode
     query_vector: EmbeddingVector | None = None
     embedding_profile: EmbeddingProfile | None = None
+    admission: AdmissionFloor | None = Field(default=None, exclude=True)
 
 
 class TopicMemoryChannelHit(BaseModel):

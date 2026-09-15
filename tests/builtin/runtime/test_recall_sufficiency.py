@@ -68,7 +68,7 @@ MEMORY_REF = ArtifactRef(family="memory", artifact_id="memory", revision=3)
 def _budget_bound_view() -> RecallBudgetView:
     """A probe view at the declared byte floor, where the budget is the constraint."""
 
-    return RecallBudgetView(max_bytes=512)
+    return RecallBudgetView(max_bytes=512, delivered_items=1, unused_bytes=0)
 
 
 def _budget_open_view() -> RecallBudgetView:
@@ -386,6 +386,20 @@ def test_policy_maps_every_threshold_when_enabled() -> None:
     assert policy.allow_expansion_with_rerank is True
 
 
+def test_runtime_config_rejects_expansion_thresholds_stricter_than_round_zero() -> None:
+    with pytest.raises(ValueError, match="round1_min_semantic_similarity"):
+        RuntimeConfig(recall_gate_enabled=True, recall_gate_round1_min_semantic_similarity=0.31)
+
+
+def test_runtime_config_requires_round_two_to_widen_or_equal_round_one() -> None:
+    with pytest.raises(ValueError, match="round2_min_semantic_similarity"):
+        RuntimeConfig(
+            recall_gate_enabled=True,
+            recall_gate_round1_min_semantic_similarity=0.12,
+            recall_gate_round2_min_semantic_similarity=0.13,
+        )
+
+
 def test_policy_carries_no_pool_size_knob_and_no_base_admission() -> None:
     config = RuntimeConfig(recall_gate_enabled=True, memory_rerank_enabled=True)
     policy = RecallSufficiencyPolicy.from_runtime_config(config)
@@ -655,11 +669,13 @@ def test_effort_cost_counts_default_to_zero_rather_than_an_inference() -> None:
     assert effort.admission_by_family == ()
 
 
-def test_budget_view_is_bound_at_the_floor_or_when_a_full_fit_dropped_items() -> None:
-    assert RecallBudgetView(max_bytes=BUDGET_FLOOR_BYTES).budget_bounded is True
+def test_budget_view_is_bound_only_when_the_probe_observed_fitting_pressure() -> None:
+    assert RecallBudgetView(max_bytes=BUDGET_FLOOR_BYTES).budget_bounded is False
+    assert RecallBudgetView(max_bytes=BUDGET_FLOOR_BYTES, delivered_items=1, unused_bytes=0).budget_bounded is True
     assert RecallBudgetView(max_bytes=BUDGET_FLOOR_BYTES + 1, unused_bytes=0).budget_bounded is False
     assert RecallBudgetView(max_bytes=8000, dropped_items=1, unused_bytes=0).budget_bounded is True
     assert RecallBudgetView(max_bytes=8000, dropped_items=1, unused_bytes=1).budget_bounded is False
+    assert RecallBudgetView(max_bytes=8000, truncated_items=1, dropped_items=0, unused_bytes=0).budget_bounded is True
 
 
 def test_gate_reads_the_budget_view_and_ignores_a_missing_probe() -> None:

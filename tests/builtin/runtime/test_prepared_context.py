@@ -28,6 +28,10 @@ from powercontext.builtin.artifacts.memory import MemoryCitation, MemoryHit
 from powercontext.builtin.artifacts.profile.models import Profile, ProfileContent, ProfileGeneration
 from powercontext.builtin.artifacts.topic_memory import TopicMemorySearchHit
 from powercontext.builtin.runtime import ContextAssembly, PrepareContextRequest
+from powercontext.builtin.runtime.application import (
+    _limit_expanded_experience_candidates,
+    _limit_expanded_memory_candidates,
+)
 from powercontext.builtin.runtime.errors import PreparedContextInvariantError
 from powercontext.builtin.runtime.prepared_context import (
     _MIN_TRUNCATED_CONTENT_BYTES,
@@ -760,13 +764,55 @@ def test_probe_budget_agrees_with_the_build_it_describes() -> None:
 
 def test_probe_budget_is_budget_bound_at_the_byte_floor() -> None:
     view = RecallBudgetView(max_bytes=512)
-    assert view.budget_bounded is True
+    assert view.budget_bounded is False
+
+    full_view = RecallBudgetView(max_bytes=512, delivered_items=1, unused_bytes=0)
+    assert full_view.budget_bounded is True
 
 
 def test_probe_budget_is_budget_bound_when_the_fit_drops_items_and_leaves_no_headroom() -> None:
     assert RecallBudgetView(max_bytes=8000, dropped_items=2, unused_bytes=0).budget_bounded is True
     assert RecallBudgetView(max_bytes=8000, dropped_items=2, unused_bytes=1).budget_bounded is False
     assert RecallBudgetView(max_bytes=8000, dropped_items=0, unused_bytes=0).budget_bounded is False
+    assert RecallBudgetView(max_bytes=8000, truncated_items=1, dropped_items=0, unused_bytes=0).budget_bounded is True
+
+
+def test_expanded_memory_cap_preserves_the_round_zero_prefix() -> None:
+    round_zero = [
+        PreparedMemoryCandidates(
+            scope_id="current", memory_ref=MEMORY_REF, hits=tuple(_hit(str(i), "x") for i in range(4))
+        ),
+        PreparedMemoryCandidates(scope_id="reference", memory_ref=MEMORY_REF, hits=()),
+    ]
+    expanded = [
+        PreparedMemoryCandidates(scope_id="current", memory_ref=MEMORY_REF, hits=round_zero[0].hits),
+        PreparedMemoryCandidates(
+            scope_id="reference",
+            memory_ref=MEMORY_REF,
+            hits=tuple(_hit(f"ref-{i}", "x") for i in range(4)),
+        ),
+    ]
+
+    limited = _limit_expanded_memory_candidates(expanded, round_zero, 4)
+
+    assert [hit.entry_id for hit in limited[0].hits] == ["0", "1", "2", "3"]
+    assert limited[1].hits == ()
+
+
+def test_expanded_experience_cap_preserves_the_round_zero_prefix() -> None:
+    round_zero = [
+        PreparedExperienceCandidates(scope_id="current", hits=tuple(_experience_hit(str(i)) for i in range(4))),
+        PreparedExperienceCandidates(scope_id="reference", hits=()),
+    ]
+    expanded = [
+        PreparedExperienceCandidates(scope_id="current", hits=round_zero[0].hits),
+        PreparedExperienceCandidates(scope_id="reference", hits=tuple(_experience_hit(f"ref-{i}") for i in range(4))),
+    ]
+
+    limited = _limit_expanded_experience_candidates(expanded, round_zero, 4)
+
+    assert [hit.artifact_ref.artifact_id for hit in limited[0].hits] == ["0", "1", "2", "3"]
+    assert limited[1].hits == ()
 
 
 def test_omission_counting_leaves_rendered_content_and_origins_unchanged() -> None:

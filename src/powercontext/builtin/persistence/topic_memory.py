@@ -45,8 +45,8 @@ from powercontext.builtin.artifacts.topic_memory import (
     TopicMemoryStorageInvariantError,
     TopicMemoryUsedSearchMode,
     chunk_topic_memory_detail,
-    fuse_topic_memory_rankings,
 )
+from powercontext.builtin.artifacts.topic_memory.fusion import _fuse_topic_memory_rankings
 from powercontext.builtin.persistence.artifacts import ArtifactRepository
 from powercontext.builtin.persistence.errors import InvalidRepositoryArgumentError
 from powercontext.builtin.persistence.supervision import database_utc_now
@@ -446,10 +446,11 @@ class TopicMemoryRepository:
             mode=used_mode,
             query_vector=query_vector,
             embedding_profile=embedding_profile,
+            admission=admission,
         )
         channels = await self.index.search(connection, scope_id, request)
         await self._check_retrieval_shape(connection)
-        outcome = fuse_topic_memory_rankings(query, channels, limit, mode=used_mode, admission=admission)
+        outcome = _fuse_topic_memory_rankings(query, channels, limit, mode=used_mode, admission=admission)
         return TopicMemorySearchResult(
             mode=used_mode,
             hits=outcome.hits,

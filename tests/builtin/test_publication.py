@@ -168,7 +168,7 @@ def test_published_experience_is_searchable_in_target_scope_immediately() -> Non
             )
             outcome = await contexts.search_experience(target_scope.scope_id, "projection updates atomic", 8)
 
-            assert tuple(hit.artifact_ref for hit in outcome.hits) == (published.target.artifact,)
+            assert tuple(hit.artifact_ref for hit in outcome) == (published.target.artifact,)
 
     asyncio.run(scenario())
 
