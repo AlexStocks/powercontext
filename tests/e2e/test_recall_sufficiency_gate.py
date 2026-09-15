@@ -39,7 +39,11 @@ from powercontext.builtin.runtime import (
     RuntimeConfig,
     open_builtin_runtime,
 )
-from powercontext.builtin.runtime.application import BuiltinRuntime, ScopedContextApplication
+from powercontext.builtin.runtime.application import (
+    BuiltinRuntime,
+    ScopedContextApplication,
+    _RecallRoundOutcome,
+)
 from powercontext.builtin.runtime.prepared_context import PreparedContextBuild
 from powercontext.builtin.runtime.recall_sufficiency import (
     REASON_AT_MAX_ROUNDS,
@@ -77,11 +81,22 @@ class _RecallRoundLog:
             builder: Any,
             *,
             admission: Any,
+            reuse: Any,
+            topic_reuse: Any,
         ) -> Any:
             log.calls.append({"families": set(families), "admission": admission})
             if log.empty_from is not None and len(log.calls) >= log.empty_from:
-                return [], [], ()
-            return await original(application, request, scope_ids, families, builder, admission=admission)
+                return _RecallRoundOutcome()
+            return await original(
+                application,
+                request,
+                scope_ids,
+                families,
+                builder,
+                admission=admission,
+                reuse=reuse,
+                topic_reuse=topic_reuse,
+            )
 
         monkeypatch.setattr(ScopedContextApplication, "_recall_round", counted)
 
@@ -124,7 +139,7 @@ async def _prepare_build(
     runtime: BuiltinRuntime,
     scope_id: str,
     request: PrepareContextRequest,
-) -> PreparedContextBuild:
+) -> tuple[PreparedContextBuild, Any]:
     application = runtime.context.for_scope(scope_id)
     async with runtime._scope_operation(scope_id) as scope:
         return await application._prepare_build(request, scope)
@@ -142,7 +157,8 @@ def test_default_off_matches_a_sufficient_round_zero_byte_for_byte(tmp_path, mon
             scope_id = await _create_scope(disabled, "e1")
             await _seed(disabled, scope_id, [f"alpha beta gamma memory {index}" for index in range(8)])
             disabled_build = await _prepare_build(disabled, scope_id, request)
-        assert disabled_build.recall_effort is None
+        disabled_build, disabled_effort = disabled_build
+        assert disabled_effort is None
         assert len(log.calls) == 1
 
         log.calls.clear()
@@ -152,11 +168,12 @@ def test_default_off_matches_a_sufficient_round_zero_byte_for_byte(tmp_path, mon
         ) as enabled:
             enabled_build = await _prepare_build(enabled, scope_id, request)
 
-        assert enabled_build.recall_effort is not None
+        enabled_build, effort = enabled_build
+        assert effort is not None
         assert len(log.calls) == 1
-        assert enabled_build.recall_effort.rounds == 0
-        assert enabled_build.recall_effort.gate_reason == REASON_SUFFICIENT
-        assert len(enabled_build.recall_effort.candidates_by_round) == 1
+        assert effort.rounds == 1
+        assert effort.assessment == REASON_SUFFICIENT
+        assert len(effort.candidates_by_round) == 1
         assert enabled_build.context.status == "ready"
         assert enabled_build.context.content == disabled_build.context.content
         assert enabled_build.context.content_bytes == disabled_build.context.content_bytes
@@ -183,12 +200,11 @@ def test_one_expansion_round_re_admits_a_candidate_blocked_at_round_zero(tmp_pat
         ) as runtime:
             scope_id = await _create_scope(runtime, "e2")
             await _seed(runtime, scope_id, ["alpha beta gamma evidence", "alpha solo marker"])
-            build = await _prepare_build(runtime, scope_id, _memory_request())
+            build, effort = await _prepare_build(runtime, scope_id, _memory_request())
 
-        effort = build.recall_effort
         assert effort is not None
-        assert effort.rounds == 1
-        assert effort.expansions == ("admission",)
+        assert effort.rounds == 2
+        assert effort.expansion_actions == ("admission",)
         assert len(effort.candidates_by_round) == 2
         assert effort.candidates_by_round[1] > effort.candidates_by_round[0]
         assert len(log.calls) == 2
@@ -211,13 +227,12 @@ def test_two_expansion_rounds_stop_at_max_rounds(tmp_path, monkeypatch) -> None:
         ) as runtime:
             scope_id = await _create_scope(runtime, "e3")
             await _seed(runtime, scope_id, ["alpha beta gamma evidence", "alpha solo marker", "beta gamma marker"])
-            build = await _prepare_build(runtime, scope_id, _memory_request())
+            _build, effort = await _prepare_build(runtime, scope_id, _memory_request())
 
-        effort = build.recall_effort
         assert effort is not None
-        assert effort.rounds == 2
-        assert effort.gate_reason == REASON_AT_MAX_ROUNDS
-        assert effort.expansions == ("admission", "best-available")
+        assert effort.rounds == 3
+        assert effort.assessment == REASON_AT_MAX_ROUNDS
+        assert effort.expansion_actions == ("admission", "policy-floor")
         assert len(log.calls) == 3
 
     asyncio.run(scenario())
@@ -233,12 +248,11 @@ def test_empty_scope_is_no_content_and_does_not_expand(tmp_path, monkeypatch) ->
             scope_id = await _create_scope(runtime, "e4")
             monkeypatch.setattr(runtime, "_experience_recall", None)
             monkeypatch.setattr(runtime, "_topic_memory_search", None)
-            build = await _prepare_build(runtime, scope_id, PrepareContextRequest(query=_QUERY))
+            build, effort = await _prepare_build(runtime, scope_id, PrepareContextRequest(query=_QUERY))
 
-        effort = build.recall_effort
         assert effort is not None
-        assert effort.gate_reason == REASON_NO_CONTENT
-        assert effort.rounds == 0
+        assert effort.assessment == REASON_NO_CONTENT
+        assert effort.rounds == 1
         assert len(log.calls) == 1
         assert build.context.status == "empty"
 
@@ -262,7 +276,7 @@ def test_expansion_never_widens_the_selected_family_set(tmp_path, monkeypatch) -
             await _seed(runtime, scope_id, ["alpha beta gamma evidence", "alpha solo marker", "beta gamma marker"])
             monkeypatch.setattr(runtime, "_experience_recall", unavailable)
             monkeypatch.setattr(runtime, "_topic_memory_search", unavailable)
-            build = await _prepare_build(runtime, scope_id, _memory_request())
+            build, _effort = await _prepare_build(runtime, scope_id, _memory_request())
 
         assert build.context.status == "ready"
         assert len(log.calls) == 3
@@ -279,7 +293,7 @@ def test_later_rounds_never_remove_an_accumulated_candidate(tmp_path, monkeypatc
         async with _runtime(database) as disabled:
             scope_id = await _create_scope(disabled, "e6")
             await _seed(disabled, scope_id, ["alpha beta gamma evidence", "alpha solo marker", "beta gamma marker"])
-            baseline = await _prepare_build(disabled, scope_id, request)
+            baseline, _baseline_effort = await _prepare_build(disabled, scope_id, request)
 
         log = _RecallRoundLog()
         log.empty_from = 3  # the round-two lookup returns no new candidates at all
@@ -288,11 +302,10 @@ def test_later_rounds_never_remove_an_accumulated_candidate(tmp_path, monkeypatc
             database,
             RuntimeConfig(recall_gate_enabled=True, recall_gate_min_candidates=100),
         ) as runtime:
-            build = await _prepare_build(runtime, scope_id, request)
+            build, effort = await _prepare_build(runtime, scope_id, request)
 
-        effort = build.recall_effort
         assert effort is not None
-        assert effort.rounds == 2
+        assert effort.rounds == 3
         assert len(log.calls) == 3
         # Round zero admits the two entries covering >= 2 query terms; round one lowers the floor
         # and re-admits the one-term entry (3 total); the starved round two adds nothing, so the
@@ -311,20 +324,19 @@ def test_gate_failure_fails_open_to_the_round_zero_result(tmp_path, monkeypatch)
         async with _runtime(database) as disabled:
             scope_id = await _create_scope(disabled, "e7")
             await _seed(disabled, scope_id, ["alpha beta gamma evidence", "alpha solo marker"])
-            baseline = await _prepare_build(disabled, scope_id, request)
+            baseline, _baseline_effort = await _prepare_build(disabled, scope_id, request)
 
         def exploded(*_args: Any, **_kwargs: Any) -> Any:
             raise RuntimeError("gate exploded")  # noqa: TRY003
 
         monkeypatch.setattr(RecallSufficiencyGate, "assess", exploded)
         async with _runtime(database, RuntimeConfig(recall_gate_enabled=True)) as runtime:
-            build = await _prepare_build(runtime, scope_id, request)
+            build, effort = await _prepare_build(runtime, scope_id, request)
 
-        effort = build.recall_effort
         assert effort is not None
-        assert effort.gate_reason == REASON_EXPANSION_FAILED
-        assert effort.rounds == 0
-        assert effort.expansions == ()
+        assert effort.assessment == REASON_EXPANSION_FAILED
+        assert effort.rounds == 1
+        assert effort.expansion_actions == ()
         assert len(effort.candidates_by_round) == 1
         assert build.context.content == baseline.context.content
         assert build.origins == baseline.origins
@@ -362,12 +374,99 @@ def test_budget_floor_short_circuits_the_gate(tmp_path, monkeypatch) -> None:
         async with _runtime(database, RuntimeConfig(recall_gate_enabled=True)) as runtime:
             scope_id = await _create_scope(runtime, "e9")
             await _seed(runtime, scope_id, ["alpha beta gamma evidence", "alpha solo marker"])
-            build = await _prepare_build(runtime, scope_id, _memory_request(max_bytes=512))
+            _build, effort = await _prepare_build(runtime, scope_id, _memory_request(max_bytes=512))
 
-        effort = build.recall_effort
         assert effort is not None
-        assert effort.gate_reason == REASON_BUDGET_FLOOR
-        assert effort.rounds == 0
+        assert effort.assessment == REASON_BUDGET_FLOOR
+        assert effort.rounds == 1
         assert len(log.calls) == 1
+
+    asyncio.run(scenario())
+
+
+def test_prepare_delivers_final_recall_effort_to_the_optional_sink(tmp_path) -> None:
+    async def scenario() -> None:
+        observed = []
+
+        async def sink(effort) -> None:
+            observed.append(effort)
+
+        database = tmp_path / "sink.db"
+        config = BuiltinConfig(
+            database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"),
+            runtime=RuntimeConfig(
+                recall_gate_enabled=True,
+                recall_gate_min_candidates=1,
+                recall_gate_min_top_gap=0.0,
+            ),
+        )
+        async with open_builtin_runtime(
+            config,
+            scheduler_path=database.with_suffix(".scheduler.db"),
+            recall_effort_sink=sink,
+        ) as runtime:
+            scope_id = await _create_scope(runtime, "sink")
+            await _seed(runtime, scope_id, ["alpha beta gamma " + "evidence " * 500])
+            prepared = await runtime.context.for_scope(scope_id).prepare(_memory_request(max_bytes=800))
+
+        assert prepared.status == "ready"
+        assert len(observed) == 1
+        assert observed[0].rounds == 1
+        assert observed[0].truncated_items == 1
+        assert observed[0].dropped_items == 0
+        assert not hasattr(prepared, "recall_effort")
+
+    asyncio.run(scenario())
+
+
+def test_recall_effort_sink_failure_does_not_fail_prepare(tmp_path, caplog) -> None:
+    async def scenario() -> None:
+        async def sink(_effort) -> None:
+            raise RuntimeError("sink failed")  # noqa: TRY003
+
+        database = tmp_path / "sink-failure.db"
+        config = BuiltinConfig(
+            database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"),
+            runtime=RuntimeConfig(recall_gate_enabled=True),
+        )
+        async with open_builtin_runtime(
+            config,
+            scheduler_path=database.with_suffix(".scheduler.db"),
+            recall_effort_sink=sink,
+        ) as runtime:
+            scope_id = await _create_scope(runtime, "sink-failure")
+            await _seed(runtime, scope_id, ["alpha beta gamma evidence"])
+            prepared = await runtime.context.for_scope(scope_id).prepare(_memory_request())
+
+        assert prepared.status == "ready"
+        assert any(record.message == "Recall effort sink failed" for record in caplog.records)
+
+    asyncio.run(scenario())
+
+
+def test_disabled_gate_does_not_call_recall_effort_sink(tmp_path) -> None:
+    async def scenario() -> None:
+        calls = 0
+
+        async def sink(_effort) -> None:
+            nonlocal calls
+            calls += 1
+
+        database = tmp_path / "sink-disabled.db"
+        config = BuiltinConfig(
+            database=SQLiteConfig(url=f"sqlite+aiosqlite:///{database}"),
+            runtime=RuntimeConfig(recall_gate_enabled=False),
+        )
+        async with open_builtin_runtime(
+            config,
+            scheduler_path=database.with_suffix(".scheduler.db"),
+            recall_effort_sink=sink,
+        ) as runtime:
+            scope_id = await _create_scope(runtime, "sink-disabled")
+            await _seed(runtime, scope_id, ["alpha beta gamma evidence"])
+            prepared = await runtime.context.for_scope(scope_id).prepare(_memory_request())
+
+        assert prepared.status == "ready"
+        assert calls == 0
 
     asyncio.run(scenario())

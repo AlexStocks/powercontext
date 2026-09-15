@@ -286,7 +286,7 @@ def test_assembly_path_reports_omissions_through_the_runtime_seam(tmp_path):
             })
             application = runtime.context.for_scope(scope.scope_id)
             async with runtime._scope_operation(scope.scope_id) as descriptor:
-                build = await application._prepare_build(request, descriptor)
+                build, _effort = await application._prepare_build(request, descriptor)
 
             assert build.context.status == "ready"
             assert build.omissions.truncated_items == 1

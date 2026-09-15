@@ -19,6 +19,7 @@ import pytest
 from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.artifacts.topic_memory import (
     TopicMemoryChannelHit,
+    TopicMemoryMatchedBy,
     TopicMemorySearchChannels,
     fuse_topic_memory_rankings,
 )
@@ -184,7 +185,12 @@ def test_rrf_scores_are_normalized_against_the_enabled_first_place_channels() ->
 
 
 def test_fusion_outcome_counts_retrieved_and_admitted_over_enabled_channels() -> None:
-    def hit(channel: str, *, text: str, distance: float | None = None) -> TopicMemoryChannelHit:
+    def hit(
+        channel: TopicMemoryMatchedBy,
+        *,
+        text: str,
+        distance: float | None = None,
+    ) -> TopicMemoryChannelHit:
         return TopicMemoryChannelHit(
             artifact_ref=ArtifactRef(family="topic-memory", artifact_id="topic-1", revision=1),
             title="Needle topic",

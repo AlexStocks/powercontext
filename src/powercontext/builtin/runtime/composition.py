@@ -109,7 +109,12 @@ from powercontext.builtin.persistence.topic_memory_index import (
     TopicMemoryIndex,
 )
 from powercontext.builtin.runtime._scope_cache import ScopeCacheObserver
-from powercontext.builtin.runtime.application import BuiltinRuntime, ScheduledExperienceRunner, ScheduledSourceRunner
+from powercontext.builtin.runtime.application import (
+    BuiltinRuntime,
+    RecallEffortSink,
+    ScheduledExperienceRunner,
+    ScheduledSourceRunner,
+)
 from powercontext.builtin.runtime.artifact_processing import (
     ArtifactProcessingBinding,
     ArtifactProcessingSupervisor,
@@ -282,6 +287,7 @@ async def open_builtin_runtime(
     source_registry: SourceDefinitionRegistry | None = None,
     cursor_secret: bytes | None = None,
     handoff_verification_keys: tuple[bytes, ...] = (),
+    recall_effort_sink: RecallEffortSink | None = None,
 ) -> AsyncIterator[BuiltinRuntime]:
     """Open the selected database, inference adapters, and built-in runtime."""
 
@@ -511,6 +517,7 @@ async def open_builtin_runtime(
                 record_service=contexts.records,
                 prompt_service=contexts.prompts,
                 recall_token_estimator=contexts.estimate_recall_tokens,
+                recall_effort_sink=recall_effort_sink,
                 publication_application=contexts.publications,
                 scope_application=contexts.scopes,
                 readiness=RuntimeReadinessChecks(readiness_probes),

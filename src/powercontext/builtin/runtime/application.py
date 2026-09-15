@@ -228,7 +228,6 @@ from powercontext.builtin.runtime.recall_sufficiency import (
     MEMORY_FAMILY,
     REASON_AT_MAX_ROUNDS,
     REASON_EXPANSION_FAILED,
-    REASON_SUFFICIENT,
     TOPIC_MEMORY_FAMILY,
     RecallEffort,
     RecallExpander,
@@ -304,6 +303,7 @@ class TopicMemorySearch(Protocol):
         query_vector: tuple[float, ...] | None = None,
         embedding_profile: EmbeddingProfile | None = None,
         admission: AdmissionFloor | None = None,
+        query_embedding: MemoryQueryEmbedding | None = None,
     ) -> Awaitable[TopicMemorySearchResult]: ...
 
 
@@ -365,6 +365,7 @@ class TopicMemoryRecallOutcome:
     hits: tuple[TopicMemorySearchHit, ...] = ()
     admission: AdmissionCounts | None = None
     query_embedding: MemoryQueryEmbedding | None = None
+    embedding_calls: int = 0
 
 
 @dataclass(frozen=True)
@@ -379,6 +380,21 @@ class _ScopeRecallOutcome:
     experience: PreparedExperienceCandidates
     memory_admission: AdmissionCounts | None = None
     experience_admission: AdmissionCounts | None = None
+    memory_query_embedding: MemoryQueryEmbedding | None = None
+    embedding_calls: int = 0
+    generation_calls: int = 0
+
+
+@dataclass(frozen=True)
+class _RecallRoundOutcome:
+    """All observable results produced by one bounded recall pass."""
+
+    memory: tuple[PreparedMemoryCandidates, ...] = ()
+    experience: tuple[PreparedExperienceCandidates, ...] = ()
+    topic_memory: TopicMemoryRecallOutcome = TopicMemoryRecallOutcome()
+    admissions: tuple[AdmissionCounts, ...] = ()
+    embedding_calls: int = 0
+    generation_calls: int = 0
 
 
 SkillRecall = Callable[[str, str, int], Awaitable[tuple[SkillSearchHit, ...]]]
@@ -878,16 +894,20 @@ class ScopedContextApplication:
         # Caller-owned cache of the query vectors round 0 already paid for, keyed by scope.
         # Expansion rounds read it so a repeat search does not re-embed; round 0 fills it.
         reuse: dict[str, MemoryQueryEmbedding] = {}
+        topic_reuse: dict[str, MemoryQueryEmbedding] = {}
 
-        memory_candidates, experience_candidates, topic_outcome, _round_zero_admission = await self._recall_round(
+        round_zero = await self._recall_round(
             request,
             scope_ids,
             families,
             builder,
             admission=None,
             reuse=reuse,
+            topic_reuse=topic_reuse,
         )
-        topic_memory_hits = topic_outcome.hits
+        memory_candidates = list(round_zero.memory)
+        experience_candidates = list(round_zero.experience)
+        topic_memory_hits = round_zero.topic_memory.hits
         profile_candidates: list[PreparedProfileCandidate] = []
         profiles = self._runtime.profiles
         if "profile" in families and profiles is not None:
@@ -916,6 +936,8 @@ class ScopedContextApplication:
                 topic_memory_hits=topic_memory_hits,
                 profile_candidates=profile_candidates,
                 reuse=reuse,
+                topic_reuse=topic_reuse,
+                round_zero=round_zero,
             )
         with self._runtime._stage(
             "context.build",
@@ -976,6 +998,10 @@ class ScopedContextApplication:
         memory_candidates: list[PreparedMemoryCandidates],
         experience_candidates: list[PreparedExperienceCandidates],
         topic_memory_hits: tuple[TopicMemorySearchHit, ...],
+        profile_candidates: Sequence[PreparedProfileCandidate],
+        reuse: dict[str, MemoryQueryEmbedding],
+        topic_reuse: dict[str, MemoryQueryEmbedding],
+        round_zero: _RecallRoundOutcome,
     ) -> tuple[
         list[PreparedMemoryCandidates],
         list[PreparedExperienceCandidates],
@@ -995,7 +1021,6 @@ class ScopedContextApplication:
         gate = RecallSufficiencyGate()
         expander = RecallExpander()
         families_expected = self._families_with_content(families, memory_candidates)
-        budget_bounded = request.max_bytes <= BUDGET_FLOOR_BYTES
         memory_hits_by_scope = {group.scope_id: list(group.hits) for group in memory_candidates}
         memory_ref_by_scope = {group.scope_id: group.memory_ref for group in memory_candidates}
         seen_memory = {_memory_identity(group.scope_id, hit) for group in memory_candidates for hit in group.hits}
@@ -1012,29 +1037,39 @@ class ScopedContextApplication:
         )
         round_zero_count = len(candidates)
         candidates_by_round = [round_zero_count]
-        rounds = 0
         expansions: list[str] = []
-        gate_reason = REASON_SUFFICIENT
+        added_embeddings = 0
+        added_generation_calls = 0
+        admission_by_family = list(round_zero.admissions)
         try:
+            budget = builder.probe_budget(
+                request=request,
+                current_scope_id=self.scope_id,
+                memory_candidates=memory_candidates,
+                topic_memory_hits=topic_memory_hits,
+                experience_candidates=experience_candidates,
+                profile_candidates=profile_candidates,
+            )
             assessment = gate.assess(
                 candidates,
                 request.query,
                 policy,
                 scope_has_content=families_expected > 0,
-                budget_bounded=budget_bounded,
+                budget=budget,
                 families_expected=families_expected,
             )
-            gate_reason = assessment.reason
-            while not assessment.sufficient and rounds < policy.max_rounds:
-                plan = expander.plan(rounds + 1, policy)
-                issued_memory, issued_experience, issued_topic = await self._recall_round(
+            while not assessment.sufficient and len(expansions) < policy.max_rounds:
+                plan = expander.plan(len(expansions) + 1, policy)
+                issued = await self._recall_round(
                     request,
                     scope_ids,
                     families,
                     builder,
                     admission=plan.admission,
+                    reuse=reuse,
+                    topic_reuse=topic_reuse,
                 )
-                for group in issued_memory:
+                for group in issued.memory:
                     bucket = memory_hits_by_scope.setdefault(group.scope_id, [])
                     if memory_ref_by_scope.get(group.scope_id) is None:
                         memory_ref_by_scope[group.scope_id] = group.memory_ref
@@ -1044,7 +1079,7 @@ class ScopedContextApplication:
                             continue
                         seen_memory.add(identity)
                         bucket.append(hit)
-                for group in issued_experience:
+                for group in issued.experience:
                     bucket = experience_hits_by_scope.setdefault(group.scope_id, [])
                     for hit in group.hits:
                         identity = _experience_identity(group.scope_id, hit)
@@ -1052,14 +1087,16 @@ class ScopedContextApplication:
                             continue
                         seen_experience.add(identity)
                         bucket.append(hit)
-                for hit in issued_topic:
+                for hit in issued.topic_memory.hits:
                     identity = _topic_identity(hit)
                     if identity in seen_topic:
                         continue
                     seen_topic.add(identity)
                     accumulated_topic.append(hit)
                 expansions.append(plan.action)
-                rounds += 1
+                added_embeddings += issued.embedding_calls
+                added_generation_calls += issued.generation_calls
+                admission_by_family = list(issued.admissions)
                 candidates = build_recall_candidates(
                     memory_hits=_flatten_scope_memory(memory_hits_by_scope, scope_ids),
                     topic_memory_hits=tuple(accumulated_topic),
@@ -1071,12 +1108,11 @@ class ScopedContextApplication:
                     request.query,
                     policy,
                     scope_has_content=families_expected > 0,
-                    budget_bounded=budget_bounded,
+                    budget=budget,
                     families_expected=families_expected,
                 )
-                gate_reason = assessment.reason
             if not assessment.sufficient:
-                gate_reason = REASON_AT_MAX_ROUNDS
+                assessment = replace(assessment, reason=REASON_AT_MAX_ROUNDS)
         except Exception as error:
             log_safely(
                 logger,
@@ -1093,14 +1129,13 @@ class ScopedContextApplication:
                 memory_candidates,
                 experience_candidates,
                 topic_memory_hits,
-                RecallEffort(
-                    policy=policy.policy_id,
-                    rounds=0,
-                    gate_reason=REASON_EXPANSION_FAILED,
-                    expansions=(),
+                recall_effort(
+                    policy=policy,
+                    assessment=REASON_EXPANSION_FAILED,
                     candidates_by_round=(round_zero_count,),
-                    truncated_items=0,
-                    dropped_items=0,
+                    admission_by_family=admission_by_family,
+                    added_embeddings=added_embeddings,
+                    added_generation_calls=added_generation_calls,
                 ),
             )
         capped_topic = tuple(accumulated_topic[: builder.topic_memory_candidate_limit])
@@ -1127,14 +1162,14 @@ class ScopedContextApplication:
                 builder.experience_candidate_limit,
             ),
             capped_topic,
-            RecallEffort(
-                policy=policy.policy_id,
-                rounds=rounds,
-                gate_reason=gate_reason,
-                expansions=tuple(expansions),
-                candidates_by_round=tuple(candidates_by_round),
-                truncated_items=0,
-                dropped_items=0,
+            recall_effort(
+                policy=policy,
+                assessment=assessment.reason,
+                expansion_actions=expansions,
+                candidates_by_round=candidates_by_round,
+                admission_by_family=admission_by_family,
+                added_embeddings=added_embeddings,
+                added_generation_calls=added_generation_calls,
             ),
         )
 
@@ -1146,34 +1181,57 @@ class ScopedContextApplication:
         builder: PreparedContextBuilder,
         *,
         admission: AdmissionFloor | None,
-    ) -> tuple[list[PreparedMemoryCandidates], list[PreparedExperienceCandidates], tuple[TopicMemorySearchHit, ...]]:
+        reuse: dict[str, MemoryQueryEmbedding],
+        topic_reuse: dict[str, MemoryQueryEmbedding],
+    ) -> _RecallRoundOutcome:
         memory_candidates: list[PreparedMemoryCandidates] = []
         experience_candidates: list[PreparedExperienceCandidates] = []
+        admissions: list[AdmissionCounts] = []
+        embedding_calls = 0
+        generation_calls = 0
         for scope_id in scope_ids:
-            memory, experiences = await self._recall_scope(
+            outcome = await self._recall_scope(
                 scope_id,
                 request,
                 memory_limit=builder.memory_candidate_limit if MEMORY_FAMILY in families else 0,
                 experience_limit=builder.experience_candidate_limit if EXPERIENCE_FAMILY in families else 0,
                 admission=admission,
+                reuse=reuse.get(scope_id),
             )
-            memory_candidates.append(memory)
-            experience_candidates.append(experiences)
+            memory_candidates.append(outcome.memory)
+            experience_candidates.append(outcome.experience)
+            if outcome.memory_query_embedding is not None:
+                reuse[scope_id] = outcome.memory_query_embedding
+            admissions.extend(
+                count for count in (outcome.memory_admission, outcome.experience_admission) if count is not None
+            )
+            embedding_calls += outcome.embedding_calls
+            generation_calls += outcome.generation_calls
         memory_candidates = _limit_memory_candidates(memory_candidates, builder.memory_candidate_limit)
         experience_candidates = _limit_experience_candidates(
             experience_candidates,
             builder.experience_candidate_limit,
         )
-        topic_memory_hits = (
+        topic_outcome = (
             await self._topic_memory_hits(
                 request.query.strip(),
                 builder.topic_memory_candidate_limit,
                 admission=admission,
+                reuse=topic_reuse.get(self.scope_id),
             )
             if TOPIC_MEMORY_FAMILY in families
-            else ()
+            else TopicMemoryRecallOutcome()
         )
-        return memory_candidates, experience_candidates, topic_memory_hits
+        if topic_outcome.query_embedding is not None:
+            topic_reuse[self.scope_id] = topic_outcome.query_embedding
+        return _RecallRoundOutcome(
+            memory=tuple(memory_candidates),
+            experience=tuple(experience_candidates),
+            topic_memory=topic_outcome,
+            admissions=tuple(admissions) + (() if topic_outcome.admission is None else (topic_outcome.admission,)),
+            embedding_calls=embedding_calls + topic_outcome.embedding_calls,
+            generation_calls=generation_calls,
+        )
 
     def _families_with_content(
         self,
@@ -1204,7 +1262,8 @@ class ScopedContextApplication:
         memory_limit: int,
         experience_limit: int,
         admission: AdmissionFloor | None,
-    ) -> tuple[PreparedMemoryCandidates, PreparedExperienceCandidates]:
+        reuse: MemoryQueryEmbedding | None,
+    ) -> _ScopeRecallOutcome:
         context_manager = (
             self._runtime._context(scope_id, embedding_purpose=ModelUsagePurpose.MEMORY_RECALL)
             if memory_limit > 0
@@ -1234,9 +1293,25 @@ class ScopedContextApplication:
                             limit=memory_limit,
                             mode="auto",
                             admission=admission,
+                            query_embedding=reuse,
                         )
                         memory_hits = result.hits
                         search_mode = result.mode
+                        memory_admission = (
+                            None if result.admission is None else replace(result.admission, scope_id=scope_id)
+                        )
+                        if result.query_embedding is not None:
+                            reuse = result.query_embedding
+                        memory_embedding_calls = result.embedding_calls
+                        memory_generation_calls = result.generation_calls
+                    else:
+                        memory_admission = None
+                        memory_embedding_calls = 0
+                        memory_generation_calls = 0
+                else:
+                    memory_admission = None
+                    memory_embedding_calls = 0
+                    memory_generation_calls = 0
                 if span is not None:
                     attributes: dict[str, TraceAttribute] = {
                         _MEMORY_SEARCH_MEMORY_PRESENT: current is not None,
@@ -1255,25 +1330,35 @@ class ScopedContextApplication:
                 },
             ) as span:
                 if experience_recall is None or experience_limit == 0:
-                    experience_hits: tuple[ExperienceSearchHit, ...] = ()
+                    experience_outcome = ExperienceSearchOutcome()
                 elif admission is None:
-                    experience_hits = await experience_recall(scope_id, request.query, experience_limit)
+                    experience_outcome = await experience_recall(scope_id, request.query, experience_limit)
                 else:
-                    experience_hits = await experience_recall(
+                    experience_outcome = await experience_recall(
                         scope_id,
                         request.query,
                         experience_limit,
                         admission=admission,
                     )
+                experience_hits = experience_outcome.hits
                 if span is not None:
                     span.set_attributes({"powercontext.experience.search.result_count": len(experience_hits)})
-        return (
-            PreparedMemoryCandidates(
+        return _ScopeRecallOutcome(
+            memory=PreparedMemoryCandidates(
                 scope_id=scope_id,
                 memory_ref=None if current is None else current.as_ref(),
                 hits=memory_hits,
             ),
-            PreparedExperienceCandidates(scope_id=scope_id, hits=experience_hits),
+            experience=PreparedExperienceCandidates(scope_id=scope_id, hits=experience_hits),
+            memory_admission=memory_admission,
+            experience_admission=(
+                None
+                if experience_outcome.admission is None
+                else replace(experience_outcome.admission, scope_id=scope_id)
+            ),
+            memory_query_embedding=reuse,
+            embedding_calls=memory_embedding_calls,
+            generation_calls=memory_generation_calls,
         )
 
     async def _topic_memory_hits(
@@ -1282,7 +1367,8 @@ class ScopedContextApplication:
         limit: int,
         *,
         admission: AdmissionFloor | None,
-    ) -> tuple[TopicMemorySearchHit, ...]:
+        reuse: MemoryQueryEmbedding | None,
+    ) -> TopicMemoryRecallOutcome:
         configured = self._runtime._topic_memory_search is not None
         bounded_query = _bounded_topic_memory_recall_query(query)
         with self._runtime._stage(
@@ -1292,19 +1378,25 @@ class ScopedContextApplication:
                 "powercontext.topic_memory.search.limit": limit,
             },
         ) as span:
-            hits = (
-                ()
+            result = (
+                TopicMemorySearchResult(mode="fts")
                 if not configured
                 else (
                     await self._runtime.topic_memory.for_scope(self.scope_id).search(
                         SearchTopicMemoryRequest(query=bounded_query, limit=limit),
                         admission=admission,
+                        query_embedding=reuse,
                     )
-                ).hits
+                )
             )
             if span is not None:
-                span.set_attributes({"powercontext.topic_memory.search.result_count": len(hits)})
-            return hits
+                span.set_attributes({"powercontext.topic_memory.search.result_count": len(result.hits)})
+            return TopicMemoryRecallOutcome(
+                hits=result.hits,
+                admission=result.admission,
+                query_embedding=result.query_embedding,
+                embedding_calls=result.embedding_calls,
+            )
 
 
 def _limit_memory_candidates(
@@ -2338,6 +2430,7 @@ class ScopedTopicMemoryApplication:
         /,
         *,
         admission: AdmissionFloor | None = None,
+        query_embedding: MemoryQueryEmbedding | None = None,
     ) -> TopicMemorySearchResult:
         search = self._runtime._topic_memory_search
         if search is None:
@@ -2364,8 +2457,15 @@ class ScopedTopicMemoryApplication:
                     mode="fts",
                     **_admission_keyword(admission),
                 )
+                result = result.model_copy(update={"embedding_calls": 0})
             else:
-                result, used_fallback = await self._search_with_embedding(request, embedding, search, admission)
+                result, used_fallback = await self._search_with_embedding(
+                    request,
+                    embedding,
+                    search,
+                    admission,
+                    query_embedding,
+                )
         observer = self._runtime._topic_memory_search_observer
         if observer is not None:
             try:
@@ -2390,7 +2490,19 @@ class ScopedTopicMemoryApplication:
         embedding: EmbeddingModel,
         search: TopicMemorySearch,
         admission: AdmissionFloor | None,
+        query_embedding: MemoryQueryEmbedding | None,
     ) -> tuple[TopicMemorySearchResult, bool]:
+        if query_embedding is not None and query_embedding.embedding_profile == embedding.profile:
+            result = await search(
+                self.scope_id,
+                request.query,
+                limit=request.limit,
+                mode="hybrid",
+                query_vector=query_embedding.query_vector,
+                embedding_profile=query_embedding.embedding_profile,
+                **_admission_keyword(admission),
+            )
+            return result.model_copy(update={"query_embedding": query_embedding, "embedding_calls": 0}), False
         try:
             embedded = await embedding.embed((request.query,))
             if len(embedded.vectors) != 1:
@@ -2421,7 +2533,15 @@ class ScopedTopicMemoryApplication:
                 embedding_profile=embedding.profile,
                 **_admission_keyword(admission),
             )
-            return result, False
+            return result.model_copy(
+                update={
+                    "query_embedding": MemoryQueryEmbedding(
+                        query_vector=tuple(embedded.vectors[0]),
+                        embedding_profile=embedding.profile,
+                    ),
+                    "embedding_calls": 1,
+                }
+            ), False
 
         result = await search(
             self.scope_id,
@@ -2430,7 +2550,7 @@ class ScopedTopicMemoryApplication:
             mode="fts",
             **_admission_keyword(admission),
         )
-        return result, used_fallback
+        return result.model_copy(update={"embedding_calls": 1}), used_fallback
 
     async def get(self, request: GetTopicMemoryRequest, /) -> PublishedTopicMemory:
         if self._runtime._topic_memory_get is None:
@@ -2677,6 +2797,7 @@ class BuiltinRuntime:
         record_service: RecordService | None = None,
         prompt_service: PromptService | None = None,
         recall_token_estimator: RecallTokenEstimator | None = None,
+        recall_effort_sink: RecallEffortSink | None = None,
         publication_application: ArtifactPublicationApplication | None = None,
         scope_application: ScopeApplication | None = None,
         readiness: RuntimeReadinessChecks | None = None,
@@ -2731,6 +2852,7 @@ class BuiltinRuntime:
         self._record_service = record_service
         self._prompt_service = prompt_service
         self._recall_token_estimator = recall_token_estimator
+        self._recall_effort_sink = recall_effort_sink
         self.publications = publication_application
         self.scopes = scope_application
         self._readiness = RuntimeReadinessChecks() if readiness is None else readiness

@@ -23,7 +23,7 @@ from typing import Annotated, ClassVar, Literal, TypeAlias
 from pydantic import BaseModel, Field, StrictInt, field_validator, model_validator
 
 from powercontext.artifacts import Artifact, ArtifactDraft, ArtifactRef
-from powercontext.builtin.artifacts.memory import EmbeddingProfile
+from powercontext.builtin.artifacts.memory import EmbeddingProfile, MemoryQueryEmbedding
 from powercontext.builtin.artifacts.search import AdmissionCounts
 from powercontext.builtin.inference import EmbeddingVector
 
@@ -197,6 +197,8 @@ class TopicMemorySearchResult(BaseModel):
     mode: TopicMemoryUsedSearchMode
     hits: tuple[TopicMemorySearchHit, ...] = ()
     admission: AdmissionCounts | None = Field(default=None, exclude=True)
+    query_embedding: MemoryQueryEmbedding | None = Field(default=None, exclude=True)
+    embedding_calls: int = Field(default=0, exclude=True)
 
 
 class PublishedTopicMemory(BaseModel):

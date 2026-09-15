@@ -58,6 +58,7 @@ from powercontext.builtin.artifacts.memory import (
     CandidatePipeline,
     EmbeddingProfile,
     Memory,
+    MemoryQueryEmbedding,
     MemoryReranker,
     MemoryService,
     MemoryWritePlan,
@@ -845,9 +846,13 @@ class RelationalContexts:
         query_vector: tuple[float, ...] | None = None,
         embedding_profile: EmbeddingProfile | None = None,
         admission: AdmissionFloor | None = None,
+        query_embedding: MemoryQueryEmbedding | None = None,
     ) -> TopicMemorySearchResult:
         """Search current active Topic projections in this deployment."""
 
+        if query_embedding is not None:
+            query_vector = query_embedding.query_vector
+            embedding_profile = query_embedding.embedding_profile
         scope = validate_scope_id(scope_id)
         async with self.database.transaction() as connection:
             return await self.repositories.topic_memories.search(

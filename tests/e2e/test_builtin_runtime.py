@@ -312,10 +312,10 @@ def test_prepare_build_reports_no_recall_effort_while_the_gate_is_disabled() -> 
             request = PrepareContextRequest(query="disabled gate evidence")
             application = runtime.context.for_scope(scope.scope_id)
             async with runtime._scope_operation(scope.scope_id) as descriptor:
-                build = await application._prepare_build(request, descriptor)
+                build, effort = await application._prepare_build(request, descriptor)
             prepared = await runtime.context.for_scope(scope.scope_id).prepare(request)
 
-            assert build.recall_effort is None
+            assert effort is None
             assert build.context.status == "ready"
             assert prepared.content == build.context.content
 
