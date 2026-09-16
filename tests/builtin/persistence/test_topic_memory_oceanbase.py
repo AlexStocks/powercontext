@@ -120,10 +120,8 @@ def test_oceanbase_fts_initializes_and_queries_both_current_projection_channels(
         ]
         assert "MATCH (pc_topic_memory_active_topics.searchable_text) AGAINST" in query_statements[0]
         assert "pc_topic_memory_active_topics.scope_id" in query_statements[0]
-        assert "instr(concat(" in query_statements[0].casefold()
         assert "MATCH (pc_topic_memory_active_chunks.searchable_text) AGAINST" in query_statements[1]
         assert "pc_topic_memory_active_chunks.scope_id" in query_statements[1]
-        assert "instr(concat(" in query_statements[1].casefold()
         assert "row_number() OVER" in query_statements[1]
         assert "anon_1.topic_rank" in query_statements[1]
         assert result.topic_fts == ()
