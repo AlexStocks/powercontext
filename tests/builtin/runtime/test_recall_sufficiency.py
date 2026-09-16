@@ -33,6 +33,7 @@ from powercontext.builtin.artifacts.search import (
     fts_query_requirements,
 )
 from powercontext.builtin.artifacts.topic_memory import TopicMemorySearchHit
+from powercontext.builtin.runtime.application import _families_with_retrieved_candidates
 from powercontext.builtin.runtime.config import RuntimeConfig
 from powercontext.builtin.runtime.prepared_context import PreparedContextOmissions
 from powercontext.builtin.runtime.recall_sufficiency import (
@@ -676,6 +677,15 @@ def test_budget_view_is_bound_only_when_the_probe_observed_fitting_pressure() ->
     assert RecallBudgetView(max_bytes=8000, dropped_items=1, unused_bytes=0).budget_bounded is True
     assert RecallBudgetView(max_bytes=8000, dropped_items=1, unused_bytes=1).budget_bounded is False
     assert RecallBudgetView(max_bytes=8000, truncated_items=1, dropped_items=0, unused_bytes=0).budget_bounded is True
+
+
+def test_expected_families_include_retrieved_candidates_already_admitted_at_round_zero() -> None:
+    admissions = (
+        AdmissionCounts(family="memory", scope_id="scope-a", retrieved=4, admitted=4),
+        AdmissionCounts(family="experience", scope_id="scope-a", retrieved=1, admitted=0),
+    )
+
+    assert _families_with_retrieved_candidates({"memory", "experience"}, admissions) == 2
 
 
 def test_gate_reads_the_budget_view_and_ignores_a_missing_probe() -> None:

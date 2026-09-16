@@ -236,7 +236,7 @@ from powercontext.builtin.runtime.recall_sufficiency import (
     build_recall_candidates,
     recall_effort,
 )
-from powercontext.builtin.runtime.statistics import RelationalScopedStatistics
+from powercontext.builtin.runtime.statistics import RelationalScopedStatistics, overview_selection
 from powercontext.builtin.scope import ScopeApplication, ScopeDescriptor, ScopeSelection
 from powercontext.builtin.scope.subject_sources import SubjectSourceService
 from powercontext.builtin.sources import (
@@ -314,6 +314,8 @@ TopicMemorySearchObserver = Callable[[str, bool], None]
 
 logger = logging.getLogger(__name__)
 
+_MEMORY_CAPTURE_STAGE = "memory.capture"
+_MEMORY_CAPTURE_SOURCE_COUNT = "powercontext.memory.capture.source_count"
 _MEMORY_SEARCH_STAGE = "memory.search"
 _MEMORY_SEARCH_REQUESTED_MODE = "powercontext.memory.search.requested_mode"
 _MEMORY_SEARCH_LIMIT = "powercontext.memory.search.limit"
@@ -458,14 +460,17 @@ class ScopedSourceApplication:
         if self._runtime._record_service is not None:
             try:
                 async with self._runtime._scope_operation(self.scope_id), self._runtime._locked(self.scope_id):
-                    record = await self._runtime._records().capture_source(
-                        self.scope_id,
-                        CONTENT_SOURCE_NAME,
-                        value.source_id,
-                        value.content,
-                        value.metadata,
-                        handoff_receipt=handoff_receipt,
-                    )
+                    with self._runtime._stage(_MEMORY_CAPTURE_STAGE, attributes={}) as span:
+                        record = await self._runtime._records().capture_source(
+                            self.scope_id,
+                            CONTENT_SOURCE_NAME,
+                            value.source_id,
+                            value.content,
+                            value.metadata,
+                            handoff_receipt=handoff_receipt,
+                        )
+                        if span is not None:
+                            span.set_attributes({_MEMORY_CAPTURE_SOURCE_COUNT: 1})
             except BaseValueConflictError as error:
                 raise SourceConflictError("identity", error.identity) from None
             return SourceReceipt(
@@ -473,14 +478,17 @@ class ScopedSourceApplication:
                 sequence=record.position,
             )
         async with self._runtime._context(self.scope_id) as context:
-            source, sequence = await context.sources.capture(
-                ContentCapture(
-                    source_id=value.source_id,
-                    content=value.content,
-                    metadata=value.model_dump(mode="json")["metadata"],
-                ),
-                handoff_receipt=handoff_receipt,
-            )
+            with self._runtime._stage(_MEMORY_CAPTURE_STAGE, attributes={}) as span:
+                source, sequence = await context.sources.capture(
+                    ContentCapture(
+                        source_id=value.source_id,
+                        content=value.content,
+                        metadata=value.model_dump(mode="json")["metadata"],
+                    ),
+                    handoff_receipt=handoff_receipt,
+                )
+                if span is not None:
+                    span.set_attributes({_MEMORY_CAPTURE_SOURCE_COUNT: 1})
             return SourceReceipt(source_ref=context.sources.catalog.as_ref(source), sequence=sequence)
 
 
@@ -790,9 +798,11 @@ class StatisticsApplication:
         async with self._runtime._operation():
             resolved = await self._runtime.scopes.resolve_selection(selection)
             captured_at = self._runtime._clock()
-            snapshots = tuple([
-                await self._runtime._statistics(scope.scope_id).overview(period, captured_at) for scope in resolved
-            ])
+            snapshots = await overview_selection(
+                tuple(self._runtime._statistics(scope.scope_id) for scope in resolved),
+                period,
+                captured_at,
+            )
         return aggregate_statistics(
             selection,
             tuple(scope.scope_id for scope in resolved),
@@ -1020,7 +1030,7 @@ class ScopedContextApplication:
 
         gate = RecallSufficiencyGate()
         expander = RecallExpander()
-        families_expected = _families_with_recoverable_candidates(families, round_zero.admissions)
+        families_expected = _families_with_retrieved_candidates(families, round_zero.admissions)
         memory_hits_by_scope = {group.scope_id: list(group.hits) for group in memory_candidates}
         memory_ref_by_scope = {group.scope_id: group.memory_ref for group in memory_candidates}
         seen_memory = {_memory_identity(group.scope_id, hit) for group in memory_candidates for hit in group.hits}
@@ -1104,6 +1114,35 @@ class ScopedContextApplication:
                     experience_hits=_flatten_scope_experience(experience_hits_by_scope, scope_ids),
                 )
                 candidates_by_round.append(len(candidates))
+                budget = builder.probe_budget(
+                    request=request,
+                    current_scope_id=self.scope_id,
+                    memory_candidates=_limit_expanded_memory_candidates(
+                        [
+                            PreparedMemoryCandidates(
+                                scope_id=scope_id,
+                                memory_ref=memory_ref_by_scope.get(scope_id),
+                                hits=tuple(memory_hits_by_scope.get(scope_id, ())),
+                            )
+                            for scope_id in scope_ids
+                        ],
+                        memory_candidates,
+                        builder.memory_candidate_limit,
+                    ),
+                    topic_memory_hits=tuple(accumulated_topic[: builder.topic_memory_candidate_limit]),
+                    experience_candidates=_limit_expanded_experience_candidates(
+                        [
+                            PreparedExperienceCandidates(
+                                scope_id=scope_id,
+                                hits=tuple(experience_hits_by_scope.get(scope_id, ())),
+                            )
+                            for scope_id in scope_ids
+                        ],
+                        experience_candidates,
+                        builder.experience_candidate_limit,
+                    ),
+                    profile_candidates=profile_candidates,
+                )
                 assessment = gate.assess(
                     candidates,
                     request.query,
@@ -1467,16 +1506,14 @@ def _prefix_preserving_counts(
     return tuple(prefix + suffix for prefix, suffix in zip(prefix_counts, suffix_counts, strict=True))
 
 
-def _families_with_recoverable_candidates(
+def _families_with_retrieved_candidates(
     families: set[str],
     admissions: Sequence[AdmissionCounts],
 ) -> int:
-    """Count families where a lower admission floor can recover backend candidates."""
+    """Count selected families that returned backend candidates in this recall pass."""
 
     return len({
-        admission.family
-        for admission in admissions
-        if admission.family in families and admission.retrieved > admission.admitted
+        admission.family for admission in admissions if admission.family in families and admission.retrieved > 0
     })
 
 

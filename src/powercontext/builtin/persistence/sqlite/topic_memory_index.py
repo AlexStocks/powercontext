@@ -149,22 +149,20 @@ _SEARCH_TOPIC_FTS_SQL = """
     SELECT artifact_id, revision, title, summary
     FROM pc_topic_memory_topic_fts
     WHERE pc_topic_memory_topic_fts MATCH :query AND scope_id = :scope_id
-      AND ({coverage}) >= :coverage_required
     ORDER BY bm25(pc_topic_memory_topic_fts), artifact_id, revision DESC
     LIMIT :candidate_limit
     """
 _SEARCH_CHUNK_FTS_SQL = """
     WITH scored AS (
         SELECT artifact_id, revision, title, summary, chunk_ordinal, start_offset, chunk_text,
-               bm25(pc_topic_memory_chunk_fts) AS score
+               bm25(pc_topic_memory_chunk_fts) AS score, ({coverage}) AS coverage
         FROM pc_topic_memory_chunk_fts
         WHERE pc_topic_memory_chunk_fts MATCH :query AND scope_id = :scope_id
-          AND ({coverage}) >= :coverage_required
     ), ranked AS (
         SELECT scored.*,
                row_number() OVER (
                    PARTITION BY artifact_id, revision
-                   ORDER BY score, chunk_ordinal
+                    ORDER BY coverage DESC, score, chunk_ordinal
                ) AS topic_rank
         FROM scored
     )
@@ -339,21 +337,20 @@ class SQLiteTopicMemoryFTSIndex:
         query = fts_match_query(request.query)
         if query is None:
             return TopicMemorySearchChannels()
-        query_terms, coverage_required = fts_query_requirements(request.query, floor=request.admission)
-        coverage = " + ".join(
-            f"CASE WHEN instr(' ' || searchable_text || ' ', :coverage_term_{position}) > 0 THEN 1 ELSE 0 END"
-            for position, _term in enumerate(query_terms)
-        )
         parameters = {
             "query": query,
             "scope_id": scope_id,
             "candidate_limit": request.candidate_limit,
-            "coverage_required": coverage_required,
-            **{f"coverage_term_{position}": f" {term} " for position, term in enumerate(query_terms)},
+            **{
+                f"coverage_term_{position}": f" {term} "
+                for position, term in enumerate(fts_query_requirements(request.query)[0])
+            },
         }
-        topic_rows = (
-            await connection.execute(text(_SEARCH_TOPIC_FTS_SQL.format(coverage=coverage)), parameters)
-        ).mappings()
+        topic_rows = (await connection.execute(text(_SEARCH_TOPIC_FTS_SQL), parameters)).mappings()
+        coverage = " + ".join(
+            f"CASE WHEN instr(' ' || searchable_text || ' ', :coverage_term_{position}) > 0 THEN 1 ELSE 0 END"
+            for position, _term in enumerate(fts_query_requirements(request.query)[0])
+        )
         chunk_rows = (
             await connection.execute(text(_SEARCH_CHUNK_FTS_SQL.format(coverage=coverage)), parameters)
         ).mappings()

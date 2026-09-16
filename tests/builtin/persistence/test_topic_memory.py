@@ -491,6 +491,9 @@ def test_topic_memory_search_threads_lowered_fts_floor_into_the_backend() -> Non
                 )
 
         assert default.hits == ()
+        assert default.admission is not None
+        assert default.admission.retrieved >= 1
+        assert default.admission.admitted == 0
         assert tuple(hit.artifact_ref for hit in lowered.hits) == (published.topic.as_ref(),)
         assert lowered.admission is not None
         assert lowered.admission.retrieved >= lowered.admission.admitted == 1
