@@ -110,8 +110,8 @@ class RecallSignals:
     only; no branch of the v1 verdict reads it.
 
     ``families_expected`` is the number of caller-selected families where round zero retrieved
-    candidates that a lower admission floor may recover. Configured callbacks with no retrieved
-    rows are therefore not treated as thin recall, because expansion would be a no-op.
+    candidates before admission. Configured callbacks with no retrieved rows are therefore not
+    treated as thin recall, because there is no family evidence to cover.
     """
 
     candidate_count: int

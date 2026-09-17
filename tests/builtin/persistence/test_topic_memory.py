@@ -501,8 +501,52 @@ def test_topic_memory_search_threads_lowered_fts_floor_into_the_backend() -> Non
     asyncio.run(scenario())
 
 
+def test_default_topic_memory_search_preserves_eligible_candidates_beyond_the_public_limit() -> None:
+    async def scenario() -> None:
+        index = _fts_index()
+        repository = TopicMemoryRepository(index=index)
+        async with SQLiteProfile.open(SQLiteConfig(), tables=BUILTIN_TABLES + index.tables) as profile:
+            async with profile.database.transaction() as connection:
+                await repository.initialize(connection)
+                for position in range(60):
+                    content = TopicMemoryContent(
+                        title=f"Distractor {position}",
+                        summary="Single-term distractor",
+                        detail="alpha " * 80,
+                    )
+                    await repository.publish_create(
+                        connection,
+                        "scope-a",
+                        f"topic-distractor-{position:02d}",
+                        _draft(content),
+                        prepare_topic_memory_projection(content),
+                    )
+                target = TopicMemoryContent(
+                    title="Target",
+                    summary="Two-term eligible topic",
+                    detail="alpha beta",
+                )
+                published = await repository.publish_create(
+                    connection,
+                    "scope-a",
+                    "topic-target",
+                    _draft(target),
+                    prepare_topic_memory_projection(target),
+                )
+
+            async with profile.database.transaction() as connection:
+                result = await repository.search(connection, "scope-a", "alpha beta gamma", limit=20)
+
+        assert tuple(hit.artifact_ref for hit in result.hits) == (published.topic.as_ref(),)
+        assert result.admission is not None
+        assert result.admission.retrieved > MAX_TOPIC_MEMORY_SEARCH_LIMIT
+        assert result.admission.admitted >= 1
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("limit", [21, 25, 30, 100])
-def test_search_rejects_limits_above_the_channel_candidate_contract(limit: int) -> None:
+def test_search_rejects_limits_above_the_public_search_contract(limit: int) -> None:
     async def scenario() -> None:
         repository = TopicMemoryRepository(index=_fts_index())
         async with (

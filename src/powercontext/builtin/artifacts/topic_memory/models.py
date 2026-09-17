@@ -33,6 +33,7 @@ MAX_TOPIC_MEMORY_DETAIL_LENGTH = 125_000
 MAX_TOPIC_MEMORY_QUERY_LENGTH = 8_192
 MAX_TOPIC_MEMORY_QUERY_TERMS = 64
 MAX_TOPIC_MEMORY_SEARCH_LIMIT = 20
+MAX_TOPIC_MEMORY_CHANNEL_CANDIDATES = 100
 
 TopicMemoryTitle = Annotated[str, Field(min_length=1, max_length=MAX_TOPIC_MEMORY_TITLE_LENGTH)]
 TopicMemorySummary = Annotated[str, Field(min_length=1, max_length=MAX_TOPIC_MEMORY_SUMMARY_LENGTH)]
@@ -133,7 +134,7 @@ class TopicMemorySearchRequest(BaseModel):
 
     query: str = Field(min_length=1, max_length=MAX_TOPIC_MEMORY_QUERY_LENGTH)
     analyzed_query: str = ""
-    candidate_limit: StrictInt = Field(ge=1, le=MAX_TOPIC_MEMORY_SEARCH_LIMIT)
+    candidate_limit: StrictInt = Field(ge=1, le=MAX_TOPIC_MEMORY_CHANNEL_CANDIDATES)
     mode: TopicMemoryUsedSearchMode
     query_vector: EmbeddingVector | None = None
     embedding_profile: EmbeddingProfile | None = None

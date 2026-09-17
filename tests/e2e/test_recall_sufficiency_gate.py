@@ -218,6 +218,37 @@ def test_one_expansion_round_re_admits_a_candidate_blocked_at_round_zero(tmp_pat
     asyncio.run(scenario())
 
 
+def test_fully_admitted_memory_does_not_expand_when_no_candidate_can_be_recovered(tmp_path, monkeypatch) -> None:
+    log = _RecallRoundLog()
+    log.install(monkeypatch)
+
+    async def scenario() -> None:
+        database = tmp_path / "fully-admitted.db"
+        async with _runtime(
+            database,
+            RuntimeConfig(
+                recall_gate_enabled=True,
+                recall_gate_min_candidates=2,
+                recall_gate_min_top_score=0.0,
+                recall_gate_min_top_gap=0.0,
+                recall_gate_min_lexical_overlap=0.0,
+            ),
+        ) as runtime:
+            scope_id = await _create_scope(runtime, "fully-admitted")
+            await _seed(runtime, scope_id, ["alpha beta gamma evidence"])
+            build, effort = await _prepare_build(runtime, scope_id, _memory_request())
+
+        assert effort is not None
+        assert effort.rounds == 1
+        assert effort.expansion_actions == ()
+        assert effort.candidates_by_round == (1,)
+        assert len(log.calls) == 1
+        assert build.context.content is not None
+        assert "alpha beta gamma evidence" in build.context.content
+
+    asyncio.run(scenario())
+
+
 def test_two_expansion_rounds_stop_at_max_rounds(tmp_path, monkeypatch) -> None:
     log = _RecallRoundLog()
     log.install(monkeypatch)

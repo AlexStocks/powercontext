@@ -28,6 +28,7 @@ from powercontext.builtin.artifacts.memory import EmbeddingProfile
 from powercontext.builtin.artifacts.memory.canonical import canonical_embedding
 from powercontext.builtin.artifacts.search import AdmissionCounts, AdmissionFloor, analyze_text
 from powercontext.builtin.artifacts.topic_memory import (
+    MAX_TOPIC_MEMORY_CHANNEL_CANDIDATES,
     MAX_TOPIC_MEMORY_QUERY_LENGTH,
     MAX_TOPIC_MEMORY_QUERY_TERMS,
     MAX_TOPIC_MEMORY_SEARCH_LIMIT,
@@ -442,7 +443,7 @@ class TopicMemoryRepository:
         request = TopicMemorySearchRequest(
             query=query,
             analyzed_query=" ".join(query_terms),
-            candidate_limit=min(MAX_TOPIC_MEMORY_SEARCH_LIMIT, max(limit * 4, limit)),
+            candidate_limit=min(MAX_TOPIC_MEMORY_CHANNEL_CANDIDATES, max(limit * 4, 32)),
             mode=used_mode,
             query_vector=query_vector,
             embedding_profile=embedding_profile,

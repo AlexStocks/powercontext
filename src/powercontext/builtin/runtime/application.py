@@ -1031,6 +1031,7 @@ class ScopedContextApplication:
         gate = RecallSufficiencyGate()
         expander = RecallExpander()
         families_expected = _families_with_retrieved_candidates(families, round_zero.admissions)
+        families_recoverable = _families_with_recoverable_candidates(families, round_zero.admissions)
         memory_hits_by_scope = {group.scope_id: list(group.hits) for group in memory_candidates}
         memory_ref_by_scope = {group.scope_id: group.memory_ref for group in memory_candidates}
         seen_memory = {_memory_identity(group.scope_id, hit) for group in memory_candidates for hit in group.hits}
@@ -1068,7 +1069,7 @@ class ScopedContextApplication:
                 budget=budget,
                 families_expected=families_expected,
             )
-            while not assessment.sufficient and families_expected > 0 and len(expansions) < policy.max_rounds:
+            while not assessment.sufficient and families_recoverable > 0 and len(expansions) < policy.max_rounds:
                 plan = expander.plan(len(expansions) + 1, policy)
                 issued = await self._recall_round(
                     request,
@@ -1151,7 +1152,7 @@ class ScopedContextApplication:
                     budget=budget,
                     families_expected=families_expected,
                 )
-            if not assessment.sufficient and families_expected > 0 and len(expansions) >= policy.max_rounds:
+            if not assessment.sufficient and families_recoverable > 0 and len(expansions) >= policy.max_rounds:
                 assessment = replace(assessment, reason=REASON_AT_MAX_ROUNDS)
         except Exception as error:
             log_safely(
@@ -1514,6 +1515,19 @@ def _families_with_retrieved_candidates(
 
     return len({
         admission.family for admission in admissions if admission.family in families and admission.retrieved > 0
+    })
+
+
+def _families_with_recoverable_candidates(
+    families: set[str],
+    admissions: Sequence[AdmissionCounts],
+) -> int:
+    """Count selected families where a lower admission floor may recover candidates."""
+
+    return len({
+        admission.family
+        for admission in admissions
+        if admission.family in families and admission.retrieved > admission.admitted
     })
 
 

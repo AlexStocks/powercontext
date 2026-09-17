@@ -106,6 +106,7 @@ SQLITE_TOPIC_MEMORY_VECTOR_TABLES = (
     SQLITE_TOPIC_MEMORY_VECTOR_TOPICS_TABLE,
     SQLITE_TOPIC_MEMORY_VECTOR_CHUNKS_TABLE,
 )
+_SQLITE_VEC_MAX_K = 4096
 
 _CREATE_TOPIC_FTS_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS pc_topic_memory_topic_fts USING fts5(
@@ -555,7 +556,10 @@ class SQLiteTopicMemoryVectorIndex:
                 _CHUNK_VECTOR_SEARCH_SQL,
                 {
                     **parameters,
-                    "neighbor_limit": request.candidate_limit * TOPIC_MEMORY_CHUNK_MAX_COUNT,
+                    "neighbor_limit": min(
+                        request.candidate_limit * TOPIC_MEMORY_CHUNK_MAX_COUNT,
+                        _SQLITE_VEC_MAX_K,
+                    ),
                 },
             )
         ).mappings()
