@@ -49,6 +49,7 @@ from powercontext.builtin.runtime.application import (
 )
 from powercontext.builtin.runtime.prepared_context import PreparedContextBuild, PreparedMemoryCandidates
 from powercontext.builtin.runtime.recall_sufficiency import (
+    MEMORY_FAMILY,
     REASON_AT_MAX_ROUNDS,
     REASON_BUDGET_FLOOR,
     REASON_EXPANSION_FAILED,
@@ -71,6 +72,7 @@ class _RecallRoundLog:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
         self.empty_from: int | None = None
+        self.force_recoverable_family: str | None = None
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         original = ScopedContextApplication._recall_round
@@ -90,7 +92,7 @@ class _RecallRoundLog:
             log.calls.append({"families": set(families), "admission": admission})
             if log.empty_from is not None and len(log.calls) >= log.empty_from:
                 return _RecallRoundOutcome()
-            return await original(
+            result = await original(
                 application,
                 request,
                 scope_ids,
@@ -99,6 +101,23 @@ class _RecallRoundLog:
                 admission=admission,
                 reuse=reuse,
                 topic_reuse=topic_reuse,
+            )
+            if log.force_recoverable_family is None:
+                return result
+            return _RecallRoundOutcome(
+                memory=result.memory,
+                experience=result.experience,
+                topic_memory=result.topic_memory,
+                admissions=(
+                    AdmissionCounts(
+                        family=log.force_recoverable_family,
+                        scope_id=scope_ids[0],
+                        retrieved=2,
+                        admitted=1,
+                    ),
+                ),
+                embedding_calls=result.embedding_calls,
+                generation_calls=result.generation_calls,
             )
 
         monkeypatch.setattr(ScopedContextApplication, "_recall_round", counted)
@@ -249,8 +268,40 @@ def test_fully_admitted_memory_does_not_expand_when_no_candidate_can_be_recovere
     asyncio.run(scenario())
 
 
+def test_recoverability_is_refreshed_after_an_expansion_round(tmp_path, monkeypatch) -> None:
+    log = _RecallRoundLog()
+    log.install(monkeypatch)
+
+    async def scenario() -> None:
+        database = tmp_path / "recoverability-refresh.db"
+        async with _runtime(
+            database,
+            RuntimeConfig(
+                recall_gate_enabled=True,
+                recall_gate_min_candidates=2,
+                recall_gate_min_top_score=0.0,
+                recall_gate_min_top_gap=0.0,
+                recall_gate_min_lexical_overlap=0.0,
+            ),
+        ) as runtime:
+            scope_id = await _create_scope(runtime, "recoverability-refresh")
+            await _seed(runtime, scope_id, ["alpha evidence"])
+            build, effort = await _prepare_build(runtime, scope_id, _memory_request())
+
+        assert effort is not None
+        assert effort.rounds == 2
+        assert effort.expansion_actions == ("admission",)
+        assert effort.candidates_by_round == (0, 1)
+        assert len(log.calls) == 2
+        assert build.context.content is not None
+        assert "alpha evidence" in build.context.content
+
+    asyncio.run(scenario())
+
+
 def test_two_expansion_rounds_stop_at_max_rounds(tmp_path, monkeypatch) -> None:
     log = _RecallRoundLog()
+    log.force_recoverable_family = MEMORY_FAMILY
     log.install(monkeypatch)
 
     async def scenario() -> None:
@@ -328,6 +379,7 @@ def test_configured_experience_with_no_retrieved_rows_does_not_expand(tmp_path, 
 
 def test_expansion_never_widens_the_selected_family_set(tmp_path, monkeypatch) -> None:
     log = _RecallRoundLog()
+    log.force_recoverable_family = MEMORY_FAMILY
     log.install(monkeypatch)
 
     async def unavailable(*_args: Any, **_kwargs: Any) -> Any:
@@ -427,6 +479,7 @@ def test_later_rounds_never_remove_an_accumulated_candidate(tmp_path, monkeypatc
             baseline, _baseline_effort = await _prepare_build(disabled, scope_id, request)
 
         log = _RecallRoundLog()
+        log.force_recoverable_family = MEMORY_FAMILY
         log.empty_from = 3  # the round-two lookup returns no new candidates at all
         log.install(monkeypatch)
         async with _runtime(
@@ -475,7 +528,7 @@ def test_later_round_failure_preserves_committed_expansion_trace(tmp_path, monke
             calls += 1
             if calls == 3:
                 raise RuntimeError("later expansion failed")  # noqa: TRY003
-            return await original(
+            result = await original(
                 application,
                 request,
                 scope_ids,
@@ -485,6 +538,23 @@ def test_later_round_failure_preserves_committed_expansion_trace(tmp_path, monke
                 reuse=reuse,
                 topic_reuse=topic_reuse,
             )
+            if calls == 2:
+                return _RecallRoundOutcome(
+                    memory=result.memory,
+                    experience=result.experience,
+                    topic_memory=result.topic_memory,
+                    admissions=(
+                        AdmissionCounts(
+                            family=MEMORY_FAMILY,
+                            scope_id=scope_ids[0],
+                            retrieved=2,
+                            admitted=1,
+                        ),
+                    ),
+                    embedding_calls=result.embedding_calls,
+                    generation_calls=result.generation_calls,
+                )
+            return result
 
         monkeypatch.setattr(ScopedContextApplication, "_recall_round", fails_on_second_expansion)
         async with _runtime(

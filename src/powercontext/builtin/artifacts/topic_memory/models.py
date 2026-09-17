@@ -161,6 +161,10 @@ class TopicMemorySearchChannels(BaseModel):
     topic_vector: tuple[TopicMemoryChannelHit, ...] = ()
     detail_fts: tuple[TopicMemoryChannelHit, ...] = ()
     detail_vector: tuple[TopicMemoryChannelHit, ...] = ()
+    topic_fts_retrieved: StrictInt | None = Field(default=None, ge=0)
+    topic_vector_retrieved: StrictInt | None = Field(default=None, ge=0)
+    detail_fts_retrieved: StrictInt | None = Field(default=None, ge=0)
+    detail_vector_retrieved: StrictInt | None = Field(default=None, ge=0)
 
 
 class TopicMemorySearchHit(BaseModel):

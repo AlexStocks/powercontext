@@ -501,7 +501,7 @@ def test_topic_memory_search_threads_lowered_fts_floor_into_the_backend() -> Non
     asyncio.run(scenario())
 
 
-def test_default_topic_memory_search_preserves_eligible_candidates_beyond_the_public_limit() -> None:
+def test_default_topic_memory_search_preserves_eligible_candidates_before_truncating_the_pool() -> None:
     async def scenario() -> None:
         index = _fts_index()
         repository = TopicMemoryRepository(index=index)
@@ -510,21 +510,34 @@ def test_default_topic_memory_search_preserves_eligible_candidates_beyond_the_pu
                 await repository.initialize(connection)
                 for position in range(60):
                     content = TopicMemoryContent(
-                        title=f"Distractor {position}",
-                        summary="Single-term distractor",
-                        detail="alpha " * 80,
+                        title=f"Alpha distractor {position}",
+                        summary="alpha single-term distractor",
+                        detail="unrelated detail",
                     )
                     await repository.publish_create(
                         connection,
                         "scope-a",
-                        f"topic-distractor-{position:02d}",
+                        f"topic-alpha-distractor-{position:02d}",
+                        _draft(content),
+                        prepare_topic_memory_projection(content),
+                    )
+                for position in range(60):
+                    content = TopicMemoryContent(
+                        title=f"Beta distractor {position}",
+                        summary="beta single-term distractor",
+                        detail="unrelated detail",
+                    )
+                    await repository.publish_create(
+                        connection,
+                        "scope-a",
+                        f"topic-beta-distractor-{position:02d}",
                         _draft(content),
                         prepare_topic_memory_projection(content),
                     )
                 target = TopicMemoryContent(
                     title="Target",
-                    summary="Two-term eligible topic",
-                    detail="alpha beta",
+                    summary="alpha beta " + ("long summary filler " * 50),
+                    detail="unrelated detail",
                 )
                 published = await repository.publish_create(
                     connection,
@@ -535,7 +548,7 @@ def test_default_topic_memory_search_preserves_eligible_candidates_beyond_the_pu
                 )
 
             async with profile.database.transaction() as connection:
-                result = await repository.search(connection, "scope-a", "alpha beta gamma", limit=20)
+                result = await repository.search(connection, "scope-a", "alpha beta gamma", limit=8)
 
         assert tuple(hit.artifact_ref for hit in result.hits) == (published.topic.as_ref(),)
         assert result.admission is not None

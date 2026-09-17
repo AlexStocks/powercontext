@@ -1109,6 +1109,7 @@ class ScopedContextApplication:
                 added_embeddings += issued.embedding_calls
                 added_generation_calls += issued.generation_calls
                 admission_by_family = list(issued.admissions)
+                families_recoverable = _families_with_recoverable_candidates(families, issued.admissions)
                 candidates = build_recall_candidates(
                     memory_hits=_flatten_scope_memory(memory_hits_by_scope, scope_ids),
                     topic_memory_hits=tuple(accumulated_topic),

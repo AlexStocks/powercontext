@@ -96,7 +96,9 @@ def _fuse_topic_memory_rankings(
         ("detail_vector", channels.detail_vector),
     )
     enabled_channels = _MODE_CHANNELS[mode]
-    retrieved = sum(len(hits) for channel, hits in channel_inputs if channel in enabled_channels)
+    retrieved = sum(
+        _retrieved_count(channels, channel, hits) for channel, hits in channel_inputs if channel in enabled_channels
+    )
     admitted = sum(len(hits) for channel, hits in rankings if channel in enabled_channels)
     max_score = len(enabled_channels) / (_RRF_CONSTANT + 1)
     for channel, ranking in rankings:
@@ -133,6 +135,15 @@ def _fuse_topic_memory_rankings(
         retrieved=retrieved,
         admitted=admitted,
     )
+
+
+def _retrieved_count(
+    channels: TopicMemorySearchChannels,
+    channel: TopicMemoryMatchedBy,
+    hits: Sequence[TopicMemoryChannelHit],
+) -> int:
+    value = getattr(channels, f"{channel}_retrieved")
+    return len(hits) if value is None else int(value)
 
 
 def _admit_fts(
