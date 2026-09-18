@@ -167,6 +167,35 @@ def test_embed_raises_invalid_output_on_wrong_vector_count() -> None:
     asyncio.run(scenario())
 
 
+def test_embed_raises_invalid_output_on_malformed_json() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"not-json")
+
+    async def scenario() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            model = _model(http_client=client)
+            with pytest.raises(InvalidInferenceOutputError):
+                await model.embed(("alpha",))
+
+    asyncio.run(scenario())
+
+
+def test_embed_does_not_classify_unexpected_adapter_errors_as_unavailable() -> None:
+    class AdapterBugError(RuntimeError):
+        pass
+
+    class BrokenClient:
+        async def post(self, *_args, **_kwargs):
+            raise AdapterBugError
+
+    async def scenario() -> None:
+        model = _model(http_client=BrokenClient())
+        with pytest.raises(AdapterBugError):
+            await model.embed(("alpha",))
+
+    asyncio.run(scenario())
+
+
 def test_embed_raises_invalid_output_on_dimension_mismatch() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return _ok_response([[0.1, 0.2, 0.3, 0.4]])

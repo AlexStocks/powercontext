@@ -111,8 +111,6 @@ class MiniMaxEmbeddingModel:
             raise InferenceTimeoutError("embed", self._timeout) from error
         except httpx.HTTPError as error:
             raise InferenceUnavailableError("embed") from error
-        except Exception as error:
-            raise InferenceUnavailableError("embed") from error
         return result
 
     async def _embed_batches(self, texts: tuple[str, ...], *, embedding_type: str) -> EmbeddingResult:
@@ -136,7 +134,10 @@ class MiniMaxEmbeddingModel:
         # MiniMax returns HTTP 200 with a non-zero base_resp.status_code on error;
         # only a real transport/HTTP failure reaches raise_for_status first.
         response.raise_for_status()
-        data = response.json()
+        try:
+            data = response.json()
+        except ValueError as error:
+            raise InvalidInferenceOutputError("embed", "provider response was not valid JSON") from error
         if not isinstance(data, Mapping):
             raise InvalidInferenceOutputError("embed", "provider response was not a JSON object")
         base_resp = data.get("base_resp")
