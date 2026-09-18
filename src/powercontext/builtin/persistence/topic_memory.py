@@ -460,6 +460,7 @@ class TopicMemoryRepository:
                 scope_id=scope_id,
                 retrieved=outcome.retrieved,
                 admitted=outcome.admitted,
+                rejected=outcome.rejected,
             ),
         )
 

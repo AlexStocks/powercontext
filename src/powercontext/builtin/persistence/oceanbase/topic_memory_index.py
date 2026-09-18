@@ -188,6 +188,15 @@ class OceanBaseTopicMemoryFTSIndex:
                 topic_score,
             )
         )
+        topic_eligible = await connection.scalar(
+            select(func.count())
+            .select_from(TOPIC_MEMORY_ACTIVE_TOPICS_TABLE)
+            .where(
+                TOPIC_MEMORY_ACTIVE_TOPICS_TABLE.c.scope_id == scope_id,
+                topic_score,
+                topic_coverage,
+            )
+        )
         topic_rows = (
             await connection.execute(
                 select(
@@ -256,6 +265,11 @@ class OceanBaseTopicMemoryFTSIndex:
         detail_retrieved = await connection.scalar(
             select(func.count()).select_from(chunk_candidates).where(chunk_candidates.c.topic_rank == 1)
         )
+        detail_eligible = await connection.scalar(
+            select(func.count())
+            .select_from(chunk_candidates)
+            .where(chunk_candidates.c.topic_rank == 1, chunk_candidates.c.coverage)
+        )
         chunk_rows = (
             await connection.execute(
                 select(
@@ -282,6 +296,8 @@ class OceanBaseTopicMemoryFTSIndex:
             detail_fts=tuple(_channel_hit(row, "detail_fts") for row in chunk_rows),
             topic_fts_retrieved=int(topic_retrieved or 0),
             detail_fts_retrieved=int(detail_retrieved or 0),
+            topic_fts_eligible=int(topic_eligible or 0),
+            detail_fts_eligible=int(detail_eligible or 0),
         )
 
     async def vector_complete(

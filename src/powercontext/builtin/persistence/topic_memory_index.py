@@ -175,6 +175,16 @@ class CompositeTopicMemoryIndex:
                     channels.detail_vector_retrieved,
                     result.detail_vector_retrieved,
                 ),
+                topic_fts_eligible=_combine_retrieved(channels.topic_fts_eligible, result.topic_fts_eligible),
+                topic_vector_eligible=_combine_retrieved(
+                    channels.topic_vector_eligible,
+                    result.topic_vector_eligible,
+                ),
+                detail_fts_eligible=_combine_retrieved(channels.detail_fts_eligible, result.detail_fts_eligible),
+                detail_vector_eligible=_combine_retrieved(
+                    channels.detail_vector_eligible,
+                    result.detail_vector_eligible,
+                ),
             )
         return channels
 

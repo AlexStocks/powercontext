@@ -100,6 +100,11 @@ def _fuse_topic_memory_rankings(
         _retrieved_count(channels, channel, hits) for channel, hits in channel_inputs if channel in enabled_channels
     )
     admitted = sum(len(hits) for channel, hits in rankings if channel in enabled_channels)
+    rejected = sum(
+        _rejected_count(channels, channel, raw_hits, admitted_hits)
+        for (channel, raw_hits), (_same_channel, admitted_hits) in zip(channel_inputs, rankings, strict=True)
+        if channel in enabled_channels
+    )
     max_score = len(enabled_channels) / (_RRF_CONSTANT + 1)
     for channel, ranking in rankings:
         if channel not in enabled_channels:
@@ -134,6 +139,7 @@ def _fuse_topic_memory_rankings(
         ),
         retrieved=retrieved,
         admitted=admitted,
+        rejected=rejected,
     )
 
 
@@ -144,6 +150,19 @@ def _retrieved_count(
 ) -> int:
     value = getattr(channels, f"{channel}_retrieved")
     return len(hits) if value is None else int(value)
+
+
+def _rejected_count(
+    channels: TopicMemorySearchChannels,
+    channel: TopicMemoryMatchedBy,
+    hits: Sequence[TopicMemoryChannelHit],
+    admitted: Sequence[TopicMemoryChannelHit],
+) -> int:
+    retrieved = _retrieved_count(channels, channel, hits)
+    eligible = getattr(channels, f"{channel}_eligible")
+    if eligible is None:
+        eligible = len(hits)
+    return max(0, retrieved - int(eligible), len(hits) - len(admitted))
 
 
 def _admit_fts(

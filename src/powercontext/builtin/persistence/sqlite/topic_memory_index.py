@@ -164,6 +164,16 @@ _COUNT_TOPIC_FTS_SQL = """
     FROM pc_topic_memory_topic_fts
     WHERE pc_topic_memory_topic_fts MATCH :query AND scope_id = :scope_id
     """
+_COUNT_TOPIC_FTS_ELIGIBLE_SQL = """
+    WITH scored AS (
+        SELECT ({coverage}) AS coverage
+        FROM pc_topic_memory_topic_fts
+        WHERE pc_topic_memory_topic_fts MATCH :query AND scope_id = :scope_id
+    )
+    SELECT count(*)
+    FROM scored
+    WHERE coverage >= :required_matches
+    """
 _SEARCH_CHUNK_FTS_SQL = """
     WITH scored AS (
         SELECT artifact_id, revision, title, summary, chunk_ordinal, start_offset, chunk_text,
@@ -201,6 +211,24 @@ _COUNT_CHUNK_FTS_SQL = """
     SELECT count(*)
     FROM ranked
     WHERE topic_rank = 1
+    """
+_COUNT_CHUNK_FTS_ELIGIBLE_SQL = """
+    WITH scored AS (
+        SELECT artifact_id, revision, chunk_ordinal,
+               bm25(pc_topic_memory_chunk_fts) AS score, ({coverage}) AS coverage
+        FROM pc_topic_memory_chunk_fts
+        WHERE pc_topic_memory_chunk_fts MATCH :query AND scope_id = :scope_id
+    ), ranked AS (
+        SELECT scored.*,
+               row_number() OVER (
+                   PARTITION BY artifact_id, revision
+                    ORDER BY coverage DESC, score, chunk_ordinal
+               ) AS topic_rank
+        FROM scored
+    )
+    SELECT count(*)
+    FROM ranked
+    WHERE topic_rank = 1 AND coverage >= :required_matches
     """
 
 _DELETE_TOPIC_VECTOR_SQL = text("DELETE FROM pc_topic_memory_topic_vec WHERE rowid = :vector_id")
@@ -380,10 +408,18 @@ class SQLiteTopicMemoryFTSIndex:
             **{f"coverage_term_{position}": f" {term} " for position, term in enumerate(query_terms)},
         }
         topic_retrieved = await connection.scalar(text(_COUNT_TOPIC_FTS_SQL), parameters)
+        topic_eligible = await connection.scalar(
+            text(_COUNT_TOPIC_FTS_ELIGIBLE_SQL.format(coverage=coverage)),
+            parameters,
+        )
         topic_rows = (
             await connection.execute(text(_SEARCH_TOPIC_FTS_SQL.format(coverage=coverage)), parameters)
         ).mappings()
         detail_retrieved = await connection.scalar(text(_COUNT_CHUNK_FTS_SQL.format(coverage=coverage)), parameters)
+        detail_eligible = await connection.scalar(
+            text(_COUNT_CHUNK_FTS_ELIGIBLE_SQL.format(coverage=coverage)),
+            parameters,
+        )
         chunk_rows = (
             await connection.execute(text(_SEARCH_CHUNK_FTS_SQL.format(coverage=coverage)), parameters)
         ).mappings()
@@ -392,6 +428,8 @@ class SQLiteTopicMemoryFTSIndex:
             detail_fts=tuple(_channel_hit(row, "detail_fts") for row in chunk_rows),
             topic_fts_retrieved=int(topic_retrieved or 0),
             detail_fts_retrieved=int(detail_retrieved or 0),
+            topic_fts_eligible=int(topic_eligible or 0),
+            detail_fts_eligible=int(detail_eligible or 0),
         )
 
     async def vector_complete(

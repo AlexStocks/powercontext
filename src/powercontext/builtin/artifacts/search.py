@@ -54,9 +54,15 @@ class AdmissionCounts:
     """Per-family, per-scope admission accounting for one search.
 
     ``retrieved`` is what the backend returned *before* the admission floor was applied;
-    ``admitted`` is what survived it. Both are plain aggregate integers with no candidate
-    identity, no query text and no per-entry attribution, so the value is safe to carry in a
-    trace and safe to hand to the Runtime without touching HTTP or persistence.
+    ``admitted`` is what survived it. A family may also provide ``rejected`` when those two
+    counts are not measured on a comparable basis, for example when the trace keeps an
+    unbounded pre-admission count but the delivered candidate pool is capped. ``rejected``
+    is the number of same-search candidates rejected by the admission floor, excluding
+    candidate-pool truncation.
+
+    These are plain aggregate integers with no candidate identity, no query text and no
+    per-entry attribution, so the value is safe to carry in a trace and safe to hand to the
+    Runtime without touching HTTP or persistence.
 
     It lives next to :class:`AdmissionFloor` in ``artifacts/search.py`` because that is the
     only module importable by ``artifacts/**``, ``persistence/**`` and ``runtime/**`` at once
@@ -68,6 +74,7 @@ class AdmissionCounts:
     scope_id: str = ""
     retrieved: int = 0
     admitted: int = 0
+    rejected: int | None = None
 
 
 def analyze_text(value: str) -> str:

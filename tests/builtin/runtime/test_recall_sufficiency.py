@@ -700,6 +700,15 @@ def test_recoverable_families_exclude_fully_admitted_round_zero_candidates() -> 
     assert _families_with_recoverable_candidates({"memory", "experience"}, admissions) == 1
 
 
+def test_recoverable_families_use_explicit_admission_rejections_when_counts_are_not_comparable() -> None:
+    admissions = (
+        AdmissionCounts(family="topic-memory", scope_id="scope-a", retrieved=40, admitted=32, rejected=0),
+        AdmissionCounts(family="experience", scope_id="scope-a", retrieved=1, admitted=0, rejected=1),
+    )
+
+    assert _families_with_recoverable_candidates({"topic-memory", "experience"}, admissions) == 1
+
+
 def test_gate_reads_the_budget_view_and_ignores_a_missing_probe() -> None:
     policy = RecallSufficiencyPolicy()
     gate = RecallSufficiencyGate()

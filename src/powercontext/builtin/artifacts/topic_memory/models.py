@@ -165,6 +165,10 @@ class TopicMemorySearchChannels(BaseModel):
     topic_vector_retrieved: StrictInt | None = Field(default=None, ge=0)
     detail_fts_retrieved: StrictInt | None = Field(default=None, ge=0)
     detail_vector_retrieved: StrictInt | None = Field(default=None, ge=0)
+    topic_fts_eligible: StrictInt | None = Field(default=None, ge=0)
+    topic_vector_eligible: StrictInt | None = Field(default=None, ge=0)
+    detail_fts_eligible: StrictInt | None = Field(default=None, ge=0)
+    detail_vector_eligible: StrictInt | None = Field(default=None, ge=0)
 
 
 class TopicMemorySearchHit(BaseModel):
@@ -183,13 +187,15 @@ class TopicMemoryFusionOutcome:
     """Topic Memory hits plus the admission accounting measured around their channels.
 
     ``retrieved`` sums the channel hits for the channels the resolved mode actually enabled;
-    ``admitted`` sums the survivors of ``_admit_fts`` / ``_admit_vector``. Both are aggregates
-    over channels, not per-topic attribution.
+    ``admitted`` sums the survivors of ``_admit_fts`` / ``_admit_vector``. ``rejected`` counts
+    same-search admission-floor rejections separately from channel candidate truncation. These
+    values are aggregates over channels, not per-topic attribution.
     """
 
     hits: tuple[TopicMemorySearchHit, ...] = ()
     retrieved: int = 0
     admitted: int = 0
+    rejected: int = 0
 
 
 class TopicMemorySearchResult(BaseModel):

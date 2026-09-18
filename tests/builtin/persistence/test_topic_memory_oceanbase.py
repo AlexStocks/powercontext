@@ -92,7 +92,7 @@ def test_oceanbase_fts_initializes_and_queries_both_current_projection_channels(
     async def scenario() -> None:
         connection = AsyncMock(spec=AsyncConnection)
         connection.dialect = mysql.dialect()
-        connection.scalar.side_effect = (0, 0, 0, 0)
+        connection.scalar.side_effect = (0, 0, 0, 0, 0, 0)
         connection.execute.return_value.mappings = MagicMock(return_value=())
         index = OceanBaseTopicMemoryFTSIndex()
 
@@ -128,6 +128,8 @@ def test_oceanbase_fts_initializes_and_queries_both_current_projection_channels(
         assert result.detail_fts == ()
         assert result.topic_fts_retrieved == 0
         assert result.detail_fts_retrieved == 0
+        assert result.topic_fts_eligible == 0
+        assert result.detail_fts_eligible == 0
 
     asyncio.run(scenario())
 

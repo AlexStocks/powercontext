@@ -26,7 +26,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -34,6 +34,11 @@ from powercontext.artifacts import ArtifactRef
 from powercontext.builtin.artifacts.experience import ExperienceSearchOutcome
 from powercontext.builtin.artifacts.memory import MemoryEntryInput
 from powercontext.builtin.artifacts.search import AdmissionCounts
+from powercontext.builtin.artifacts.topic_memory import (
+    TopicMemoryContent,
+    TopicMemoryDraft,
+    prepare_topic_memory_projection,
+)
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime import (
     BuiltinConfig,
@@ -64,6 +69,7 @@ from powercontext.builtin.scope import ScopeDraft
 # query to a single required match).
 _QUERY = "alpha beta gamma"
 _MEMORY_ONLY = {"sections": [{"family": "memory", "limit": 8}]}
+_TOPIC_MEMORY_ONLY = {"sections": [{"family": "topic-memory", "limit": 8}]}
 
 
 class _RecallRoundLog:
@@ -141,6 +147,24 @@ async def _seed(runtime: BuiltinRuntime, scope_id: str, texts: list[str]) -> Non
     await runtime.memory.for_scope(scope_id).remember(
         RememberMemoryRequest(entries=tuple(_entry(text) for text in texts))
     )
+
+
+async def _seed_topic_memories(runtime: BuiltinRuntime, scope_id: str, count: int) -> None:
+    provider = cast(Any, runtime._provider)
+    async with provider.database.transaction() as connection:
+        for position in range(count):
+            content = TopicMemoryContent(
+                title=f"alpha beta topic {position:02d}",
+                summary=f"Useful evidence {position}",
+                detail="unrelated detail",
+            )
+            await provider.repositories.topic_memories.publish_create(
+                connection,
+                scope_id,
+                f"topic-over-cap-{position:02d}",
+                TopicMemoryDraft(content=content),
+                prepare_topic_memory_projection(content),
+            )
 
 
 async def _create_scope(runtime: BuiltinRuntime, key: str) -> str:
@@ -674,6 +698,38 @@ def test_prepare_delivers_final_recall_effort_to_the_optional_sink(tmp_path) -> 
         assert observed[0].truncated_items == 1
         assert observed[0].dropped_items == 0
         assert not hasattr(prepared, "recall_effort")
+
+    asyncio.run(scenario())
+
+
+def test_topic_memory_candidate_cap_does_not_look_recoverable_when_all_candidates_are_eligible(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    log = _RecallRoundLog()
+    log.install(monkeypatch)
+
+    async def scenario() -> None:
+        database = tmp_path / "topic-over-cap.db"
+        config = RuntimeConfig(
+            recall_gate_enabled=True,
+            recall_gate_min_candidates=2,
+            recall_gate_min_lexical_overlap=0.9,
+        )
+        async with _runtime(database, config) as runtime:
+            scope_id = await _create_scope(runtime, "topic-over-cap")
+            await _seed_topic_memories(runtime, scope_id, 40)
+            request = PrepareContextRequest.model_validate({
+                "query": "alpha beta gamma delta epsilon",
+                "max_bytes": 8000,
+                "assembly": _TOPIC_MEMORY_ONLY,
+            })
+            _build, effort = await _prepare_build(runtime, scope_id, request)
+
+        assert effort is not None
+        assert effort.rounds == 1
+        assert effort.candidates_by_round == (8,)
+        assert len(log.calls) == 1
 
     asyncio.run(scenario())
 

@@ -1528,7 +1528,8 @@ def _families_with_recoverable_candidates(
     return len({
         admission.family
         for admission in admissions
-        if admission.family in families and admission.retrieved > admission.admitted
+        if admission.family in families
+        and (admission.rejected if admission.rejected is not None else admission.retrieved - admission.admitted) > 0
     })
 
 
