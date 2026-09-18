@@ -346,18 +346,26 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "creates no target Artifact or "
                 "publication record; other "
                 "supported families retain their "
-                "existing behavior. Deliver a "
-                "user-selected exact Artifact "
-                "revision to an explicitly "
-                "selected target Scope. Never "
-                "infer latest, publish unrelated "
-                "history, or treat a handoff "
-                "preview as publication "
-                "authority. The returned target "
-                "artifact is independent; "
-                "publication does not move "
-                "Sources or authorize its "
-                "execution.",
+                "existing behavior. Topic Memory "
+                "publication requires scope.admin "
+                "in both Scopes and atomically "
+                "copies the exact revision with "
+                "its retrieval indexes into a new "
+                "target identity. Tags and direct "
+                "Sources are not copied. "
+                "Completed idempotent retries do "
+                "not require embedding inference. "
+                "Deliver a user-selected exact "
+                "Artifact revision to an "
+                "explicitly selected target "
+                "Scope. Never infer latest, "
+                "publish unrelated history, or "
+                "treat a handoff preview as "
+                "publication authority. The "
+                "returned target artifact is "
+                "independent; publication does "
+                "not move Sources or authorize "
+                "its execution.",
                 "operationId": "publish_artifact",
                 "requestBody": {
                     "content": {
@@ -3302,7 +3310,15 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "because its configuration "
                 "affects the whole Scope; "
                 "other families require "
-                "scope.contribute.",
+                "scope.contribute. Topic "
+                "Memory accepts complete "
+                "title, summary, and detail "
+                "text without semantic "
+                "generation; its active "
+                "head, chunks, and "
+                "configured retrieval "
+                "indexes are committed "
+                "atomically.",
                 "operationId": "create_artifact",
                 "x-powercontext-access": {"resolver": "create_artifact_access"},
                 "parameters": [
@@ -3503,7 +3519,30 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                 "after "
                 "Scope "
                 "role "
-                "revocation.",
+                "revocation. "
+                "Topic "
+                "Memory "
+                "replacement "
+                "also "
+                "requires "
+                "scope.admin "
+                "and "
+                "preserves "
+                "independently "
+                "versioned "
+                "tags. "
+                "Complete "
+                "title, "
+                "summary, "
+                "and "
+                "detail "
+                "text "
+                "replaces "
+                "the "
+                "head "
+                "without "
+                "semantic "
+                "generation.",
                 "operationId": "replace_artifact",
                 "x-powercontext-access": {"resolver": "path_artifact_write_access"},
                 "parameters": [
@@ -3517,7 +3556,10 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "name": "family",
                         "in": "path",
                         "required": True,
-                        "schema": {"type": "string", "enum": ["memory", "experience", "skill", "handoff", "prompt"]},
+                        "schema": {
+                            "type": "string",
+                            "enum": ["memory", "experience", "skill", "handoff", "prompt", "topic-memory"],
+                        },
                     },
                     {
                         "name": "artifact_id",
@@ -5574,10 +5616,11 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "inventory": {"$ref": "#/components/schemas/InventoryStatistics"},
                     "usage": {"$ref": "#/components/schemas/UsageStatistics"},
                     "recall": {"$ref": "#/components/schemas/RecallTokenStatistics"},
+                    "recurrence": {"$ref": "#/components/schemas/RecurrenceStatistics"},
                 },
                 "additionalProperties": False,
                 "type": "object",
-                "required": ["scope_id", "inventory", "usage", "recall"],
+                "required": ["scope_id", "inventory", "usage", "recall", "recurrence"],
             },
             "ScopedStats": {
                 "properties": {
@@ -6421,10 +6464,85 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "action": {"type": "string", "maxLength": 8000, "minLength": 1, "pattern": ".*\\S.*"},
                     "outcome": {"type": "string", "maxLength": 8000, "minLength": 1, "pattern": ".*\\S.*"},
                     "lesson": {"type": "string", "maxLength": 8000, "minLength": 1, "pattern": ".*\\S.*"},
+                    "failure": {"$ref": "#/components/schemas/FailureRecord", "nullable": True},
                 },
                 "additionalProperties": False,
                 "type": "object",
                 "required": ["situation", "action", "outcome", "lesson"],
+            },
+            "RepairSurface": {
+                "type": "string",
+                "enum": ["experience_content", "working_state", "recall_policy", "acceptance_check"],
+            },
+            "FailureSignature": {
+                "properties": {
+                    "recall_cue": {"type": "string", "maxLength": 512, "minLength": 1, "pattern": ".*\\S.*"},
+                    "symptom": {
+                        "type": "string",
+                        "maxLength": 8000,
+                        "minLength": 1,
+                        "pattern": ".*\\S.*",
+                        "nullable": True,
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["recall_cue"],
+            },
+            "FailureVerification": {
+                "properties": {
+                    "condition": {"type": "string", "maxLength": 8000, "minLength": 1, "pattern": ".*\\S.*"},
+                    "check_subject": {"type": "string", "maxLength": 512, "minLength": 1, "pattern": ".*\\S.*"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["condition", "check_subject"],
+            },
+            "FailureRecord": {
+                "properties": {
+                    "signature": {"$ref": "#/components/schemas/FailureSignature"},
+                    "repair_surface": {"$ref": "#/components/schemas/RepairSurface"},
+                    "verification": {"$ref": "#/components/schemas/FailureVerification"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["signature", "repair_surface", "verification"],
+            },
+            "RecurrenceStreak": {
+                "properties": {
+                    "artifact_ref": {"$ref": "#/components/schemas/ArtifactReference"},
+                    "signature_key": {"type": "string"},
+                    "terminal_recurred_streak": {"type": "integer", "minimum": 0.0},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["artifact_ref", "signature_key", "terminal_recurred_streak"],
+            },
+            "RecurrenceStatistics": {
+                "properties": {
+                    "selected": {"type": "integer", "minimum": 0.0},
+                    "recurred": {"type": "integer", "minimum": 0.0},
+                    "avoided": {"type": "integer", "minimum": 0.0},
+                    "unknown": {"type": "integer", "minimum": 0.0},
+                    "unlinked_handoff_citations": {"type": "integer", "minimum": 0.0},
+                    "needing_review": {"type": "integer", "minimum": 0.0},
+                    "top_revisions": {
+                        "items": {"$ref": "#/components/schemas/RecurrenceStreak"},
+                        "type": "array",
+                        "maxItems": 20,
+                    },
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": [
+                    "selected",
+                    "recurred",
+                    "avoided",
+                    "unknown",
+                    "unlinked_handoff_citations",
+                    "needing_review",
+                    "top_revisions",
+                ],
             },
             "SkillArtifact": {
                 "properties": {
@@ -8050,6 +8168,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             },
             "CreateArtifactRequest": {
                 "oneOf": [
+                    {"$ref": "#/components/schemas/CreateTopicMemoryArtifactRequest"},
                     {"$ref": "#/components/schemas/CreateMemoryArtifactRequest"},
                     {"$ref": "#/components/schemas/CreateExperienceArtifactRequest"},
                     {"$ref": "#/components/schemas/CreateSkillArtifactRequest"},
@@ -8061,6 +8180,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "propertyName": "family",
                     "mapping": {
                         "memory": "#/components/schemas/CreateMemoryArtifactRequest",
+                        "topic-memory": "#/components/schemas/CreateTopicMemoryArtifactRequest",
                         "experience": "#/components/schemas/CreateExperienceArtifactRequest",
                         "skill": "#/components/schemas/CreateSkillArtifactRequest",
                         "handoff": "#/components/schemas/CreateHandoffArtifactRequest",
@@ -8068,6 +8188,31 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                         "profile": "#/components/schemas/CreateProfileArtifactRequest",
                     },
                 },
+            },
+            "TopicMemoryWriteContent": {
+                "properties": {
+                    "title": {"type": "string", "maxLength": 512, "minLength": 1, "pattern": ".*\\S.*"},
+                    "summary": {"type": "string", "maxLength": 8000, "minLength": 1, "pattern": ".*\\S.*"},
+                    "detail": {"type": "string", "maxLength": 125000, "minLength": 1, "pattern": ".*\\S.*"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["title", "summary", "detail"],
+            },
+            "CreateTopicMemoryArtifactRequest": {
+                "properties": {
+                    "family": {"type": "string", "enum": ["topic-memory"]},
+                    "content": {"$ref": "#/components/schemas/TopicMemoryWriteContent"},
+                },
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["family", "content"],
+            },
+            "ReplaceTopicMemoryArtifactRequest": {
+                "properties": {"content": {"$ref": "#/components/schemas/TopicMemoryWriteContent"}},
+                "additionalProperties": False,
+                "type": "object",
+                "required": ["content"],
             },
             "CreatePromptArtifactRequest": {
                 "properties": {
@@ -8225,7 +8370,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             },
             "TaggableArtifactFamily": {
                 "type": "string",
-                "enum": ["memory", "experience", "skill", "handoff"],
+                "enum": ["memory", "experience", "skill", "handoff", "topic-memory"],
                 "description": "Artifact families supporting logical tags; Prompt configurations are excluded.",
             },
             "TagMatch": {"type": "string", "enum": ["all", "any"]},
@@ -8314,7 +8459,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "families": {
                         "items": {"$ref": "#/components/schemas/TaggableArtifactFamily"},
                         "type": "array",
-                        "maxItems": 4,
+                        "maxItems": 5,
                         "minItems": 1,
                         "uniqueItems": True,
                     },
@@ -8421,6 +8566,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             },
             "ReplaceArtifactRequest": {
                 "oneOf": [
+                    {"$ref": "#/components/schemas/ReplaceTopicMemoryArtifactRequest"},
                     {"$ref": "#/components/schemas/ReplaceMemoryArtifactRequest"},
                     {"$ref": "#/components/schemas/ReplaceExperienceArtifactRequest"},
                     {"$ref": "#/components/schemas/ReplaceSkillArtifactRequest"},
@@ -8774,7 +8920,7 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
             "CaptureStatus": {"type": "string", "enum": ["accepted"]},
             "BaseArtifactFamily": {
                 "type": "string",
-                "enum": ["memory", "experience", "skill", "handoff", "profile", "prompt"],
+                "enum": ["memory", "experience", "skill", "handoff", "profile", "prompt", "topic-memory"],
             },
             "ArtifactReadFamily": {
                 "type": "string",

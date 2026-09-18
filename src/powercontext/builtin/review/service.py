@@ -20,10 +20,21 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
 from typing import Any, TypeAlias, cast
 
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from powercontext.artifacts import Artifact, ArtifactRef, MemoryCitation
 from powercontext.builtin.artifacts.experience import Experience, ExperienceContent, ExperienceDraft
+from powercontext.builtin.artifacts.experience.recurrence import (
+    failure_item_text,
+    failure_refs,
+    normalize_match_text,
+)
+from powercontext.builtin.artifacts.handoff.models import (
+    HandoffArtifactCitation,
+    HandoffMemoryCitation,
+    HandoffSourceCitation,
+)
 from powercontext.builtin.artifacts.profile.models import ProfileCandidateProposal, ProfileWriteContent
 from powercontext.builtin.artifacts.profile.review import decide_profile, revise_profile
 from powercontext.builtin.artifacts.skill import Skill, SkillContent, SkillDraft, build_instruction_skill_package
@@ -36,6 +47,7 @@ from powercontext.builtin.persistence.errors import RepositoryNotFoundError
 from powercontext.builtin.persistence.experience_index import ExperienceIndex
 from powercontext.builtin.persistence.generation_sources import GenerationSourceAccess
 from powercontext.builtin.persistence.skill_packages import SkillPackageRepository
+from powercontext.builtin.persistence.sources import StoredSource
 from powercontext.builtin.review.errors import (
     ArtifactTargetConflictError,
     CandidateConflictError,
@@ -49,6 +61,8 @@ from powercontext.builtin.review.models import (
     CandidateEvidenceView,
     CandidateStatus,
 )
+from powercontext.builtin.sources.content import ContentSource
+from powercontext.builtin.work.models import TaskOutcome
 from powercontext.errors import ArtifactNotFoundError, RevisionConflictError
 from powercontext.sources import SourceRef
 
@@ -200,7 +214,7 @@ class ReviewService:
         candidate_id: str | None = None,
         memory_citations: tuple[MemoryCitation, ...] = (),
     ) -> ReviewedCandidate:
-        sources = await self._validate_evidence(connection, sources, artifacts, memory_citations)
+        sources = await self._validate_evidence(connection, sources, artifacts, memory_citations, proposal=proposal)
         await self._validate_target(connection, family, target, artifacts)
         candidate = await self._candidates.create(
             connection,
@@ -305,6 +319,7 @@ class ReviewService:
                 canonical_sources,
                 canonical_artifacts,
                 citations,
+                proposal=proposal if isinstance(proposal, (ExperienceContent, SkillContent)) else None,
             )
             if reviewed.family != "profile":
                 await self._validate_target(connection, reviewed.family, target, canonical_artifacts)
@@ -377,6 +392,7 @@ class ReviewService:
                 candidate.sources,
                 candidate.artifacts,
                 candidate.memory_citations,
+                proposal=candidate.proposal if isinstance(candidate.proposal, ExperienceContent) else None,
             )
             if isinstance(candidate.proposal, SkillContent) and candidate.proposal.package is not None:
                 await self._canonical_skill_proposal(connection, candidate.proposal)
@@ -440,13 +456,15 @@ class ReviewService:
         sources: tuple[SourceRef, ...],
         artifacts: tuple[ArtifactRef, ...],
         memory_citations: tuple[MemoryCitation, ...] = (),
+        *,
+        proposal: ReviewedProposal | None = None,
     ) -> tuple[SourceRef, ...]:
         if not sources and not memory_citations and not any(artifact.family != "prompt" for artifact in artifacts):
             raise InvalidCandidateError("evidence", "at least one exact reference is required")
         if len(sources) + len(artifacts) + len(memory_citations) > MAX_CANDIDATE_EVIDENCE:
             raise InvalidCandidateError("evidence", f"must not exceed {MAX_CANDIDATE_EVIDENCE} exact references")
         try:
-            await self._sources.require_for_generation(connection, self._scope_id, sources)
+            source_rows = await self._sources.require_for_generation(connection, self._scope_id, sources)
             for artifact in artifacts:
                 await self._artifacts.get(connection, self._scope_id, artifact)
         except RepositoryNotFoundError as error:
@@ -463,6 +481,23 @@ class ReviewService:
             raise InvalidCandidateError("memory_citations", "Memory evidence resolution is unavailable")
         if len(sources) + len(artifacts) + len(memory_citations) > MAX_CANDIDATE_EVIDENCE:
             raise InvalidCandidateError("evidence", "resolved evidence exceeds the combined reference bound")
+        if (
+            isinstance(proposal, ExperienceContent)
+            and proposal.failure is not None
+            and not await _has_resolved_failure_evidence(
+                self._sources,
+                self._artifacts,
+                self._evidence,
+                connection,
+                self._scope_id,
+                source_rows,
+                proposal.failure.signature.recall_cue,
+            )
+        ):
+            raise InvalidCandidateError(
+                "evidence",
+                "failure records require a cited failed Task Outcome with verified exact evidence",
+            )
         return sources
 
     async def _validate_target(
@@ -548,6 +583,61 @@ def _validate_proposal_family(family: str, proposal: object) -> None:
     }.get(family)
     if expected is None or type(proposal) is not expected:
         raise InvalidCandidateError("family", family)
+
+
+async def _has_resolved_failure_evidence(  # noqa: C901 - each citation kind has a distinct resolution boundary
+    sources: GenerationSourceAccess,
+    artifacts: ArtifactRepository,
+    evidence: EvidenceResolver | None,
+    connection: AsyncConnection,
+    scope_id: str,
+    rows: tuple[StoredSource, ...],
+    cue: str,
+    /,
+) -> bool:
+    try:
+        cue_key = normalize_match_text(cue)
+    except ValueError:
+        return False
+    for row in rows:
+        if not isinstance(row.value, ContentSource) or row.value.metadata.get("kind") != "task-outcome":
+            continue
+        try:
+            outcome = TaskOutcome.model_validate_json(row.value.content)
+        except ValidationError:
+            continue
+        for ref in failure_refs(outcome, row.ref):
+            items = outcome.checks if ref.item_kind == "check" else outcome.observations
+            item = items[ref.item_index]
+            if normalize_match_text(failure_item_text(item)) != cue_key:
+                continue
+            citations = item.evidence
+            source_refs = tuple(
+                citation.source_ref for citation in citations if isinstance(citation, HandoffSourceCitation)
+            )
+            artifact_refs = tuple(
+                citation.artifact_ref for citation in citations if isinstance(citation, HandoffArtifactCitation)
+            )
+            memory_citations = tuple(
+                citation.memory_citation for citation in citations if isinstance(citation, HandoffMemoryCitation)
+            )
+            try:
+                await sources.require_for_generation(connection, scope_id, source_refs)
+                for artifact_ref in artifact_refs:
+                    await artifacts.get(connection, scope_id, artifact_ref)
+                if memory_citations:
+                    if evidence is None:
+                        continue
+                    await evidence.validate(
+                        connection,
+                        sources=(),
+                        artifacts=(),
+                        memory_citations=memory_citations,
+                    )
+            except (EvidenceResolutionError, RepositoryNotFoundError):
+                continue
+            return True
+    return False
 
 
 def _validate_approval_lineage(candidate: ReviewedCandidate) -> None:

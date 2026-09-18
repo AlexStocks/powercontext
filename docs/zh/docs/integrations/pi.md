@@ -43,6 +43,8 @@ package 按 `POWERCONTEXT_PI_SCOPE_ID`、workspace 持久 binding、Server 默�
 管理的 Scope。workspace 路径只会哈希为外部 binding key，不会成为 Scope ID。仅在宿主必须固定到某个已有
 Scope 时设置显式变量。
 
+启用这些能力后，Pi 已满足仓库定义的 Full 核心接入 profile。
+
 ## 控制提示词采集
 
 默认开启提示词采集。当前工作不应被记录时，请在启动 Pi 前关闭：
@@ -67,15 +69,18 @@ flush。
 
 ## 使用显式工具和命令
 
-`project-context` skill 会说明何时调用原生 `pc_*` 工具。核心工具包括：
+`powercontext-project-context` skill 会说明何时调用原生 `pc_*` 工具。核心工具包括：
 
 - `pc_search`、`pc_memory_list`、`pc_memory_get`、`pc_memory_revise`、`pc_memory_retire`；
+- `pc_memory_changes` 用于查看变更历史，`pc_stats` 用于查看当前 Scope 的统计诊断；
 - `pc_remember`、`pc_prepare_context`、`pc_capture_source`；
 - `pc_handoff_activate`、`pc_handoff_prepare`、`pc_handoff_finalize`、`pc_handoff_commit`、
   `pc_handoff_continue`；
-- `pc_experience_get`、`pc_skill_get`、`pc_review_list`、`pc_review_get`，用于只读查看 Artifact 和候选材料。
+- `pc_experience_generate`、`pc_skill_generate`、`pc_experience_get`、`pc_skill_get`、`pc_review_list`、
+  `pc_review_get`，用于生成候选以及只读查看 Artifact 和候选材料。
 - `pc_topic_search`、`pc_topic_get`，用于按主题查询当前 Topic Memory，并读取带 Source 引用的精确版本。
 - `pc_work_contract`、`pc_handoff_current`、`pc_handoff_acknowledge`、`pc_task_outcome`，用于结构化工作连续性。
+- `pc_external_scan`、`pc_external_list`、`pc_external_resolve`，用于发现和检查宿主本地 External Skill；`pc_external_import` 只在明确确认后导入或 fork 一个精确解析过的 Skill。
 
 查看候选材料不授予批准、拒绝、修订、安装、发布或执行权限。
 Topic Memory 查询是只读的；结果属于不可信历史证据，不是指令来源。

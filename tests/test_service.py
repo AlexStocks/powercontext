@@ -81,13 +81,26 @@ def _definition(tmp_path: Path, **overrides: object) -> ServiceDefinition:
 def _secure_windows_file(path: Path) -> None:
     if os.name != "nt":
         return
-    account = subprocess.run(
-        ["whoami.exe"],  # noqa: S607
+    account = (
+        subprocess
+        .run(
+            ["whoami.exe"],  # noqa: S607
+            capture_output=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            timeout=10,
+            check=True,
+        )
+        .stdout.decode("oem")
+        .strip()
+    )
+    # An elevated shell — what hosted Windows runners use — creates files owned
+    # by Administrators rather than by the account itself, which the loader rejects.
+    subprocess.run(
+        ["icacls.exe", str(path), "/setowner", account],  # noqa: S607
         capture_output=True,
-        text=True,
         timeout=10,
         check=True,
-    ).stdout.strip()
+    )
     subprocess.run(
         [  # noqa: S607
             "icacls.exe",
@@ -99,10 +112,35 @@ def _secure_windows_file(path: Path) -> None:
             "Administrators:(F)",
         ],
         capture_output=True,
-        text=True,
         timeout=10,
         check=True,
     )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Task Scheduler command decoding")
+def test_windows_support_preserves_native_command_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    message = "Access denied: café"
+    try:
+        output = message.encode("oem")
+    except UnicodeEncodeError:
+        pytest.skip("The system OEM code page cannot represent this diagnostic")
+    identity = b'"test\\user","S-1-5-21-1000"\r\n'
+    adapter = WindowsTaskSchedulerAdapter(home=tmp_path, user_account="test\\user", user_sid="S-1-5-21-1000")
+
+    def run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        # ``support`` resolves the current user before it queries the task, so
+        # whoami must succeed for this to exercise the scheduler command.
+        if command[0] == "whoami.exe":
+            return subprocess.CompletedProcess(command, 0, identity, b"")
+        return subprocess.CompletedProcess(command, 5, b"", output)
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    support, detail = adapter.support()
+
+    assert support is SupportState.UNSUPPORTED
+    assert "Task Scheduler is unavailable" in detail
+    assert message in detail
 
 
 class FakeAdapter:
@@ -642,7 +680,6 @@ def test_service_install_rejects_a_group_readable_environment_file(tmp_path: Pat
         subprocess.run(
             ["icacls.exe", str(environment), "/grant", "*S-1-5-32-545:(R)"],  # noqa: S607
             capture_output=True,
-            text=True,
             timeout=10,
             check=True,
         )
@@ -1552,6 +1589,8 @@ def test_service_install_cli_expands_the_environment_file_home_directory(
     controller.install.return_value = status
     monkeypatch.setattr(service_cli, "_controller", lambda: controller)
     monkeypatch.setenv("HOME", str(tmp_path))
+    # Windows expanduser reads USERPROFILE rather than HOME.
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     environment = tmp_path / "powercontext.env"
     environment.write_text("POWERCONTEXT_SERVER_ACCESS_MODE=disabled\n", encoding="utf-8")
 

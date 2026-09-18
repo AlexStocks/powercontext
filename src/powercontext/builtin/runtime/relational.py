@@ -18,10 +18,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import secrets
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
@@ -34,6 +36,7 @@ from referencing.exceptions import Unresolvable
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from powercontext._logging import log_safely
 from powercontext.artifacts import Artifact, ArtifactRef, MemoryCitation
 from powercontext.builtin.artifacts.experience import (
     EXPERIENCE_INCUBATION_CURSOR_NAME,
@@ -108,7 +111,7 @@ from powercontext.builtin.dream.generation import DreamGenerator
 from powercontext.builtin.dream.models import DreamBudget, DreamOperation
 from powercontext.builtin.dream.service import CandidateAttester, DreamAuthorizer, DreamService
 from powercontext.builtin.evidence.resolver import AuthorizationContext, EvidenceAuthorizer, EvidenceResolver
-from powercontext.builtin.inference import EmbeddingModel, InvalidInferenceOutputError, TokenEstimator
+from powercontext.builtin.inference import EmbeddingModel, InferenceUsage, InvalidInferenceOutputError, TokenEstimator
 from powercontext.builtin.persistence.agent_skill_targets import RemoteAgentSkillTargetRepository
 from powercontext.builtin.persistence.artifact_governance import (
     ArtifactGovernance,
@@ -142,6 +145,7 @@ from powercontext.builtin.persistence.memory_index import MemoryIndex, NoMemoryI
 from powercontext.builtin.persistence.processing import ArtifactProcessingPendingRepository
 from powercontext.builtin.persistence.processing_intents import ArtifactProcessingIntentRepository
 from powercontext.builtin.persistence.records import RelationalRecordService
+from powercontext.builtin.persistence.recurrence import RecurrenceRepository
 from powercontext.builtin.persistence.skill_packages import SkillPackageRepository
 from powercontext.builtin.persistence.skill_publications import SkillPublicationRepository
 from powercontext.builtin.persistence.source_definitions import SourceDefinitionManifestRepository
@@ -154,6 +158,7 @@ from powercontext.builtin.persistence.supervision import (
 from powercontext.builtin.persistence.tables import ARTIFACT_HEADS_TABLE, SOURCE_JOURNAL_HEADS_TABLE
 from powercontext.builtin.persistence.topic_memory import TopicMemoryRepository
 from powercontext.builtin.persistence.topic_memory_index import NoTopicMemoryIndex, TopicMemoryIndex
+from powercontext.builtin.persistence.topic_memory_management import TopicMemoryManagementWriter
 from powercontext.builtin.publication import ArtifactPublicationApplication
 from powercontext.builtin.review.generation import (
     GeneratedCandidateResult,
@@ -179,6 +184,7 @@ from powercontext.builtin.runtime.protocols import (
     TraceAttribute,
 )
 from powercontext.builtin.runtime.recall import RelationalRecallTokenEstimator
+from powercontext.builtin.runtime.recurrence import RelationalRecurrenceLedger
 from powercontext.builtin.runtime.statistics import RelationalScopedStatistics
 from powercontext.builtin.scope import ScopeApplication
 from powercontext.builtin.scope.subject_sources import SubjectSourceService
@@ -197,7 +203,7 @@ from powercontext.builtin.sources import (
     SourceJournalEntry,
     validate_scope_id,
 )
-from powercontext.builtin.statistics import RecallTokenMeasurement
+from powercontext.builtin.statistics import ModelUsageOperation, ModelUsagePurpose, RecallTokenMeasurement
 from powercontext.builtin.triggers import (
     HANDOFF_BOUNDARY_TRIGGER_NAME,
     SOURCE_WINDOW_TRIGGER_NAME,
@@ -230,6 +236,7 @@ from powercontext.sources import (
 )
 
 IdFactory = Callable[[str], str]
+logger = logging.getLogger(__name__)
 
 
 if TYPE_CHECKING:
@@ -266,6 +273,7 @@ class _Repositories:
     agent_skill_targets: RemoteAgentSkillTargetRepository
     skill_publications: SkillPublicationRepository
     statistics: StatisticsRepository
+    recurrence: RecurrenceRepository
     processing_pending: ArtifactProcessingPendingRepository
     processing_leases: ArtifactProcessingLeaseRepository
     processing_binding_states: ArtifactProcessingBindingStateRepository
@@ -383,6 +391,18 @@ class _ScopedServices:
             connection=connection,
         )
 
+    def recurrence_ledger(self) -> RelationalRecurrenceLedger:
+        """Return the only writer of the recurrence ledger."""
+
+        return RelationalRecurrenceLedger(
+            database=self.database,
+            scope_id=self.scope_id,
+            sources=self.repositories.sources,
+            artifacts=self.repositories.artifacts,
+            recurrence=self.repositories.recurrence,
+            evidence=self.evidence(),
+        )
+
     def generation(self) -> ReviewedGenerationService:
         return ReviewedGenerationService(
             prompt_context=ScopedPrompts(self.prompts, self.scope_id),
@@ -447,6 +467,8 @@ class _ScopedServices:
             memory_service=memory_service,
             cursors=self.repositories.cursors,
             repository=self.repositories.statistics,
+            recurrence=self.repositories.recurrence,
+            artifacts=self.repositories.artifacts,
             token_estimator=None if self.token_estimator is None else self.token_estimator.profile,
         )
 
@@ -498,6 +520,8 @@ class RelationalContexts:
         prompt_registry: PromptRegistry | None = None,
         prompt_demonstrators: dict[str, DemonstrationGenerator] | None = None,
         handoff_verification_keys: tuple[bytes, ...] = (),
+        topic_memory_write_timeout_seconds: float = 30.0,
+        topic_memory_write_concurrency: int = 4,
     ) -> None:
         self.database = database
         self.scopes = ScopeApplication(database, cursor_secret=cursor_secret)
@@ -528,6 +552,7 @@ class RelationalContexts:
             agent_skill_targets=RemoteAgentSkillTargetRepository(),
             skill_publications=SkillPublicationRepository(),
             statistics=StatisticsRepository(),
+            recurrence=RecurrenceRepository(),
             processing_pending=ArtifactProcessingPendingRepository(),
             processing_leases=ArtifactProcessingLeaseRepository(),
             processing_binding_states=ArtifactProcessingBindingStateRepository(),
@@ -554,7 +579,15 @@ class RelationalContexts:
             cursor_secret if cursor_secret is not None else secrets.token_bytes(32),
             verification_keys=handoff_verification_keys,
         )
+        topic_memory_writer = TopicMemoryManagementWriter(
+            topic_memory_repository,
+            embedding_model,
+            timeout_seconds=topic_memory_write_timeout_seconds,
+            max_concurrency=topic_memory_write_concurrency,
+            usage_reporter=self.model_usage_reporter,
+        )
         family_writers = FamilyManagementWriterRegistry((
+            topic_memory_writer,
             PromptManagementWriter(self.repositories.artifacts, self.prompt_registry),
             ProfileManagementWriter(self.repositories.artifacts),
             MemoryManagementWriter(
@@ -609,6 +642,7 @@ class RelationalContexts:
             self.repositories.artifacts,
             self.scopes,
             experience_index=self.experience_index,
+            topic_memory_writer=topic_memory_writer,
         )
         self._candidate_pipeline = candidate_pipeline
         self.memory_extraction = candidate_pipeline is not None
@@ -696,6 +730,43 @@ class RelationalContexts:
         """Return product statistics bound to one scope."""
 
         return self._services_for(scope_id).statistics()
+
+    def model_usage_reporter(
+        self, scope_id: str, /
+    ) -> Callable[[ModelUsagePurpose, ModelUsageOperation, InferenceUsage], Awaitable[None]]:
+        """Return a best-effort usage callback for one operational Scope."""
+
+        async def report(
+            purpose: ModelUsagePurpose,
+            operation: ModelUsageOperation,
+            usage: InferenceUsage,
+        ) -> None:
+            try:
+                await self.statistics(scope_id).record(
+                    purpose,
+                    operation,
+                    usage,
+                    datetime.now(UTC).date(),
+                )
+            except Exception as error:
+                # Usage is an operational side effect; a statistics outage
+                # must not turn a successful Artifact write into a failure.
+                log_safely(
+                    logger,
+                    logging.ERROR,
+                    "Model usage recording failed",
+                    exc_info=error,
+                    extra={
+                        "event": "statistics.model_usage.failed",
+                        "scope_id": scope_id,
+                        "purpose": purpose.value,
+                        "operation": operation.value,
+                        "outcome": "failure",
+                        "unit": "statistics",
+                    },
+                )
+
+        return report
 
     async def register_source_definition(
         self,
@@ -1763,6 +1834,21 @@ class _RelationalExperienceIncubator:
                     )
                     candidate_ids.append(candidate.candidate_id)
                     candidates.append(candidate)
+                for proposal in await self._services.recurrence_ledger().record_window(connection, eligible_rows):
+                    target_content = await self._services.repositories.artifacts.get(
+                        connection,
+                        self._services.scope_id,
+                        proposal.target,
+                    )
+                    candidate = await review.propose_experience(
+                        proposal.proposal,
+                        sources=proposal.sources,
+                        artifacts=(target_content.as_ref(),),
+                        target=proposal.target,
+                        reason=proposal.reason,
+                    )
+                    candidate_ids.append(candidate.candidate_id)
+                    candidates.append(candidate)
                 await self._services.repositories.cursors.save(
                     connection,
                     self._services.scope_id,
@@ -1779,7 +1865,7 @@ class _RelationalExperienceIncubator:
                 high_watermark=high_watermark,
                 current_cursor=action.through,
                 source_count=len(eligible_rows),
-                candidate_count=len(plans),
+                candidate_count=len(candidate_ids),
                 candidate_ids=tuple(candidate_ids),
             )
 

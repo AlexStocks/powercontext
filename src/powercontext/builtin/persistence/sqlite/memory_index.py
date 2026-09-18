@@ -163,6 +163,41 @@ _DELETE_ORPHAN_VECTORS_SQL = (
 )
 _INSERT_VECTOR_SQL = text("INSERT INTO pc_memory_entry_vec (rowid, embedding) VALUES (:vector_id, :embedding)")
 _SELECT_VECTOR_SQL = text("SELECT embedding FROM pc_memory_entry_vec WHERE rowid = :vector_id")
+_VECTOR_COMPLETENESS_SQL = text(
+    """
+    WITH requested AS (
+        SELECT CAST(json_extract(value, '$.artifact_id') AS TEXT) AS memory_artifact_id,
+               CAST(json_extract(value, '$.revision') AS INTEGER) AS head_revision
+        FROM json_each(:memory_refs)
+    )
+    SELECT 'head' AS row_kind, h.memory_artifact_id, h.head_revision,
+           h.entry_id, h.entry_version_id, h.entry_content_hash,
+           NULL AS embedding_content_hash, NULL AS vector_present
+    FROM pc_memory_entry_heads AS h
+    JOIN requested AS r
+      ON r.memory_artifact_id = h.memory_artifact_id
+     AND r.head_revision = h.head_revision
+    WHERE h.scope_id = :scope_id
+    UNION ALL
+    SELECT 'artifact_head' AS row_kind, h.artifact_id, h.revision,
+           NULL AS entry_id, NULL AS entry_version_id, NULL AS entry_content_hash,
+           NULL AS embedding_content_hash, NULL AS vector_present
+    FROM pc_artifact_heads AS h
+    JOIN requested AS r ON r.memory_artifact_id = h.artifact_id
+    WHERE h.scope_id = :scope_id
+      AND h.family = 'memory'
+    UNION ALL
+    SELECT 'vector' AS row_kind, m.memory_artifact_id, m.head_revision,
+           m.entry_id, m.entry_version_id, m.entry_content_hash,
+           m.embedding_content_hash,
+           CASE WHEN v.rowid IS NULL THEN 0 ELSE 1 END AS vector_present
+    FROM pc_memory_vector_entries AS m
+    JOIN requested AS r
+      ON r.memory_artifact_id = m.memory_artifact_id
+    LEFT JOIN pc_memory_entry_vec AS v ON v.rowid = m.vector_id
+    WHERE m.scope_id = :scope_id
+    """
+)
 _VECTOR_SEARCH_SQL = text(
     """
     WITH nearest AS (
@@ -473,44 +508,36 @@ class SQLiteMemoryVectorIndex:
     ) -> bool:
         if profile != self.profile:
             return False
-        for memory in memories:
-            heads = (
-                await connection.execute(
-                    select(
-                        MEMORY_ENTRY_HEADS_TABLE.c.entry_id,
-                        MEMORY_ENTRY_HEADS_TABLE.c.entry_version_id,
-                        MEMORY_ENTRY_HEADS_TABLE.c.entry_content_hash,
-                    ).where(
-                        MEMORY_ENTRY_HEADS_TABLE.c.scope_id == scope_id,
-                        MEMORY_ENTRY_HEADS_TABLE.c.memory_artifact_id == memory.artifact_id,
-                        MEMORY_ENTRY_HEADS_TABLE.c.head_revision == memory.revision,
-                    )
-                )
-            ).all()
-            metadata = (
-                await connection.execute(
-                    select(
-                        SQLITE_MEMORY_VECTOR_ENTRIES_TABLE.c.vector_id,
-                        SQLITE_MEMORY_VECTOR_ENTRIES_TABLE.c.entry_id,
-                        SQLITE_MEMORY_VECTOR_ENTRIES_TABLE.c.entry_version_id,
-                        SQLITE_MEMORY_VECTOR_ENTRIES_TABLE.c.entry_content_hash,
-                        SQLITE_MEMORY_VECTOR_ENTRIES_TABLE.c.embedding_content_hash,
-                    ).where(
-                        SQLITE_MEMORY_VECTOR_ENTRIES_TABLE.c.scope_id == scope_id,
-                        SQLITE_MEMORY_VECTOR_ENTRIES_TABLE.c.memory_artifact_id == memory.artifact_id,
-                        SQLITE_MEMORY_VECTOR_ENTRIES_TABLE.c.head_revision == memory.revision,
-                    )
-                )
-            ).all()
-            expected = {(str(row[0]), str(row[1]), str(row[2])) for row in heads}
-            actual = {(str(row[1]), str(row[2]), str(row[3])) for row in metadata}
-            if actual != expected:
+        rows = (
+            await connection.execute(
+                _VECTOR_COMPLETENESS_SQL,
+                {
+                    "scope_id": scope_id,
+                    "memory_refs": json.dumps(
+                        tuple({"artifact_id": memory.artifact_id, "revision": memory.revision} for memory in memories),
+                        separators=(",", ":"),
+                    ),
+                },
+            )
+        ).all()
+        current_revisions = {str(row[1]): int(row[2]) for row in rows if str(row[0]) == "artifact_head"}
+        if any(current_revisions.get(memory.artifact_id) != memory.revision for memory in memories):
+            # The caller validated this head before the search. If it moved while
+            # this query ran, report a stale head so the runtime can retry with it.
+            raise CapabilityNotSupportedError("head")
+        expected = {
+            (str(row[1]), int(row[2]), str(row[3]), str(row[4]), str(row[5])) for row in rows if str(row[0]) == "head"
+        }
+        actual = {
+            (str(row[1]), int(row[2]), str(row[3]), str(row[4]), str(row[5])) for row in rows if str(row[0]) == "vector"
+        }
+        if actual != expected:
+            return False
+        for row in rows:
+            if str(row[0]) != "vector":
+                continue
+            if str(row[6]) != _embedding_hash(self.profile, str(row[5])) or not bool(row[7]):
                 return False
-            for row in metadata:
-                if str(row[4]) != _embedding_hash(self.profile, str(row[3])):
-                    return False
-                if (await connection.execute(_SELECT_VECTOR_SQL, {"vector_id": int(row[0])})).one_or_none() is None:
-                    return False
         return True
 
     async def hydrate(
