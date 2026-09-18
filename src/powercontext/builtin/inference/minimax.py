@@ -41,13 +41,8 @@ from powercontext.builtin.inference.errors import (
 )
 from powercontext.builtin.inference.models import EmbeddingResult, InferenceUsage
 
-# MiniMax keeps a single embedding space and asks callers to tag stored documents
-# with ``type="db"`` and retrieval queries with ``type="query"``. PowerContext's
-# ``EmbeddingModel`` port does not distinguish the two, so we embed everything as
-# a stored document vector. Retrieval queries therefore share the document space
-# and remain comparable; only retrieval recall may be suboptimal versus tagging
-# queries with ``type="query"``.
-_MINIMAX_EMBEDDING_TYPE = "db"
+_MINIMAX_DOCUMENT_TYPE = "db"
+_MINIMAX_QUERY_TYPE = "query"
 
 
 class MiniMaxEmbeddingModel:
@@ -91,11 +86,23 @@ class MiniMaxEmbeddingModel:
     async def embed(self, texts: tuple[str, ...], /) -> EmbeddingResult:
         """Embed documents, validating order, count, dimension, and finite values."""
 
+        return await self._embed(texts, embedding_type=_MINIMAX_DOCUMENT_TYPE)
+
+    async def embed_query(self, texts: tuple[str, ...], /) -> EmbeddingResult:
+        """Embed retrieval queries, validating order, count, dimension, and finite values."""
+
+        return await self._embed(texts, embedding_type=_MINIMAX_QUERY_TYPE)
+
+    async def _embed(self, texts: tuple[str, ...], *, embedding_type: str) -> EmbeddingResult:
+        """Embed one MiniMax document or query batch."""
+
         if not texts:
             return EmbeddingResult(vectors=())
 
         try:
-            result = await asyncio.wait_for(self._embed_batches(texts), timeout=self._timeout)
+            result = await asyncio.wait_for(
+                self._embed_batches(texts, embedding_type=embedding_type), timeout=self._timeout
+            )
         except asyncio.CancelledError:
             raise
         except (InvalidInferenceOutputError, InferenceConfigurationError):
@@ -108,13 +115,13 @@ class MiniMaxEmbeddingModel:
             raise InferenceUnavailableError("embed") from error
         return result
 
-    async def _embed_batches(self, texts: tuple[str, ...]) -> EmbeddingResult:
+    async def _embed_batches(self, texts: tuple[str, ...], *, embedding_type: str) -> EmbeddingResult:
         vectors: list[tuple[float, ...]] = []
         requests = 0
         input_tokens = 0
         for start in range(0, len(texts), self._batch_size):
             batch = texts[start : start + self._batch_size]
-            rows, tokens = await self._embed_one(batch)
+            rows, tokens = await self._embed_one(batch, embedding_type=embedding_type)
             vectors.extend(self._validated_vectors(batch, rows))
             requests += 1
             input_tokens += tokens
@@ -123,8 +130,8 @@ class MiniMaxEmbeddingModel:
             usage=InferenceUsage(requests=requests, input_tokens=input_tokens, output_tokens=None),
         )
 
-    async def _embed_one(self, batch: Sequence[str]) -> tuple[list[list[float]], int]:
-        payload = {"model": self._model, "texts": list(batch), "type": _MINIMAX_EMBEDDING_TYPE}
+    async def _embed_one(self, batch: Sequence[str], *, embedding_type: str) -> tuple[list[list[float]], int]:
+        payload = {"model": self._model, "texts": list(batch), "type": embedding_type}
         response = await self._client.post(self._endpoint, json=payload, headers=self._headers)
         # MiniMax returns HTTP 200 with a non-zero base_resp.status_code on error;
         # only a real transport/HTTP failure reaches raise_for_status first.

@@ -90,6 +90,23 @@ def test_embed_returns_validated_vectors_and_sends_native_shape() -> None:
     assert captured[0] == {"model": "embo-01", "texts": ["alpha", "beta"], "type": "db"}
 
 
+def test_embed_query_sends_query_type() -> None:
+    captured: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return _ok_response([[0.1, 0.2, 0.3]])
+
+    async def scenario() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            model = _model(http_client=client)
+            result = await model.embed_query(("alpha",))
+            assert result.vectors == ((0.1, 0.2, 0.3),)
+
+    asyncio.run(scenario())
+    assert captured[0] == {"model": "embo-01", "texts": ["alpha"], "type": "query"}
+
+
 def test_embed_batches_requests_without_split_size_mismatch() -> None:
     calls: list[dict[str, Any]] = []
 

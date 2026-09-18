@@ -234,8 +234,14 @@ def test_embedding_models_use_minimax_adapter_for_minimax_host(monkeypatch) -> N
             result = await operational.embed(("hello",))
             assert len(result.vectors) == 1
             assert len(result.vectors[0]) == 1536
+            query_result = await operational.embed_query(("hello",))
+            assert len(query_result.vectors) == 1
+            assert len(query_result.vectors[0]) == 1536
 
     asyncio.run(scenario())
     assert captured[0]["texts"] == ["hello"]
     assert captured[0]["type"] == "db"
     assert captured[0]["model"] == "embo-01"
+    assert captured[1]["texts"] == ["hello"]
+    assert captured[1]["type"] == "query"
+    assert captured[1]["model"] == "embo-01"
