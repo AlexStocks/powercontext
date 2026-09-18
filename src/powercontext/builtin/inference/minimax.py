@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping, Sequence
+from urllib.parse import urlparse
 
 import httpx
 
@@ -144,7 +145,11 @@ class MiniMaxEmbeddingModel:
         if isinstance(base_resp, Mapping):
             status_code = base_resp.get("status_code")
             if status_code is not None and status_code != 0:
-                raise InferenceUnavailableError("embed")
+                status_msg = base_resp.get("status_msg")
+                detail = f"provider returned MiniMax status_code {status_code}"
+                if isinstance(status_msg, str) and status_msg.strip():
+                    detail = f"{detail}: {status_msg}"
+                raise InferenceUnavailableError("embed", detail)
         vectors = data.get("vectors")
         if not isinstance(vectors, list) or len(vectors) != len(batch):
             raise InvalidInferenceOutputError("embed", "provider returned no vectors or the wrong vector count")
@@ -181,10 +186,11 @@ def _embedding_model_name(model: str | None) -> str:
 def is_minimax_embedding(base_url: str | None, model: str | None) -> bool:
     """Detect a MiniMax embedding endpoint by host or explicit model prefix."""
 
-    base = base_url or ""
-    if any(fragment in base.lower() for fragment in ("minimaxi.com", "minimax.io")):
+    host = (urlparse(base_url or "").hostname or "").lower()
+    if any(host == domain or host.endswith(f".{domain}") for domain in ("minimaxi.com", "minimax.io")):
         return True
-    return "minimax" in (model or "").lower()
+    provider_prefix, separator, _model_name = (model or "").partition(":")
+    return bool(separator) and provider_prefix.lower() == "minimax"
 
 
 __all__ = ["MiniMaxEmbeddingModel", "is_minimax_embedding"]

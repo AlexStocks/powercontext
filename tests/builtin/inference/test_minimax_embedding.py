@@ -135,8 +135,10 @@ def test_embed_raises_unavailable_on_business_error() -> None:
     async def scenario() -> None:
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             model = _model(http_client=client)
-            with pytest.raises(InferenceUnavailableError):
+            with pytest.raises(InferenceUnavailableError) as error:
                 await model.embed(("alpha",))
+            assert "MiniMax status_code 2013" in str(error.value)
+            assert "missing texts" in str(error.value)
 
     asyncio.run(scenario())
 
@@ -252,6 +254,9 @@ def test_is_minimax_embedding_detects_host_and_model() -> None:
     assert is_minimax_embedding("https://api.minimaxi.com/v1", "openai:embo-01") is True
     assert is_minimax_embedding("https://api.minimax.io/v1", None) is True
     assert is_minimax_embedding(None, "minimax:embo-01") is True
+    assert is_minimax_embedding("https://proxy.example/v1?upstream=api.minimaxi.com", "openai:embo-01") is False
+    assert is_minimax_embedding("https://api.openai.com/v1/minimax.io", "openai:embo-01") is False
+    assert is_minimax_embedding("https://api.openai.com/v1", "openai:my-minimax-proxy") is False
     assert is_minimax_embedding("https://api.openai.com/v1", "openai:text-embedding-3-small") is False
     assert is_minimax_embedding(None, "openai:embo-01") is False
 
