@@ -94,7 +94,7 @@ command string cannot expand environment variables.
           {
             "type": "command",
             "command": "\"<POWERCONTEXT_PYTHON>\" \"<WORKBUDDY_HOOKS_DIR>/workbuddy_powercontext_hook.py\"",
-            "timeout": 10,
+            "timeout": 30,
             "statusMessage": "Syncing PowerContext"
           }
         ]
@@ -286,7 +286,7 @@ blocking the WorkBuddy session.
 | Empty prepared context | No context is injected; the hook emits an `empty` diagnostic |
 | Version mismatch | Hook fails open and emits a `version_mismatch` diagnostic |
 | Invalid or oversized response | Hook fails open and emits an `invalid_response` diagnostic; nothing is injected |
-| Hook timeout (10 s) | WorkBuddy continues; the hook process is stopped by the outer hook timeout |
+| Hook timeout (30 s) | WorkBuddy continues; the hook process is stopped by the outer hook timeout |
 
 Recall, capture, and flush fail independently. An unavailable Server never
 blocks normal WorkBuddy work.
