@@ -107,7 +107,7 @@ environment variables, so literal paths are required here.
           {
             "type": "command",
             "command": "\"<POWERCONTEXT_PYTHON>\" \"<WORKBUDDY_HOOKS_DIR>/workbuddy_powercontext_hook.py\"",
-            "timeout": 10,
+            "timeout": 30,
             "statusMessage": "Syncing PowerContext"
           }
         ]

@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import plistlib
+import re
 import socket
 import subprocess
 import sys
@@ -498,6 +499,17 @@ def _capture_native_failure(adapter: NativeServiceAdapter, tmp_path: Path) -> No
         report = f"exit_code={result.returncode}\n{result.stdout}\n{result.stderr}"
         (log_dir / "launchd-before-cleanup.log").write_text(report, encoding="utf-8")
         print(f"LaunchAgent state before cleanup:\n{report}")
+        pid = re.search(r"^\s*pid = (\d+)\s*$", result.stdout, re.MULTILINE)
+        if result.returncode == 0 and pid is not None:
+            # A running process with empty logs may still be blocked before
+            # Server initialization. Sample only this test's launchd job.
+            subprocess.run(
+                ["/usr/bin/sample", pid.group(1), "1", "-file", str(log_dir / "launchd-process-sample.log")],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
 
 
 def _cleanup(adapter: NativeServiceAdapter) -> None:

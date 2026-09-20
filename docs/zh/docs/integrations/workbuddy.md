@@ -86,7 +86,7 @@ PowerContext 的 Python executable，把 `<WORKBUDDY_HOOKS_DIR>` 替换为 hooks
           {
             "type": "command",
             "command": "\"<POWERCONTEXT_PYTHON>\" \"<WORKBUDDY_HOOKS_DIR>/workbuddy_powercontext_hook.py\"",
-            "timeout": 10,
+            "timeout": 30,
             "statusMessage": "Syncing PowerContext"
           }
         ]
@@ -250,7 +250,7 @@ export POWERCONTEXT_WORKBUDDY_AUTHORIZATION="Bearer $POWERCONTEXT_LOCAL_TOKEN"
 | 空 prepared context | 不注入任何上下文；Hook 写出 `empty` 诊断 |
 | 版本不匹配 | Hook 正常降级并写出 `version_mismatch` 诊断 |
 | 无效或超限响应 | Hook 正常降级并写出 `invalid_response` 诊断；不注入任何内容 |
-| Hook 超时（10 秒） | WorkBuddy 继续执行；hook 进程被外层 hook 超时机制终止 |
+| Hook 超时（30 秒） | WorkBuddy 继续执行；hook 进程被外层 hook 超时机制终止 |
 
 恢复、采集和 flush 各自独立降级。Server 不可用永远不会阻塞 WorkBuddy 的正常工作。
 

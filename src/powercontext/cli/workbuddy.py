@@ -69,7 +69,7 @@ WORKBUDDY_MCP_AUTHORIZATION = f"${{{WORKBUDDY_AUTHORIZATION_ENV}:-}}"
 WORKBUDDY_LEGACY_MCP_URL = "http://127.0.0.1:8000/mcp"
 WORKBUDDY_MCP_DESCRIPTION = "PowerContext agent memory & handoff MCP server (local service on port 8000)"
 WORKBUDDY_HOOK_STATUS_MESSAGE = "Syncing PowerContext"
-WORKBUDDY_HOOK_TIMEOUT = 10
+WORKBUDDY_HOOK_TIMEOUT = 30
 
 
 @dataclass(frozen=True, slots=True)

@@ -161,7 +161,7 @@ Hook 的 Server 地址从已安装插件 `.mcp.json` 派生，MCP 也读取同�
   "mcpServers": {
     "powercontext": {
       "type": "http",
-      "url": "http://127.0.0.1:8000/mcp",
+      "url": "http://127.0.0.1:8000/mcp/",
       "required": false,
       "env_http_headers": {
         "Authorization": "POWERCONTEXT_CODEX_AUTHORIZATION"
