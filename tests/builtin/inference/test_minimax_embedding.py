@@ -26,6 +26,7 @@ import pytest
 from powercontext.builtin.artifacts.memory.models import EmbeddingProfile
 from powercontext.builtin.inference.errors import (
     InferenceConfigurationError,
+    InferenceTimeoutError,
     InferenceUnavailableError,
     InvalidInferenceOutputError,
 )
@@ -49,6 +50,7 @@ def _model(
     batch_size: int = 10,
     headers=None,
     http_client=None,
+    timeout_seconds: float = 30.0,
 ) -> MiniMaxEmbeddingModel:
     return MiniMaxEmbeddingModel(
         base_url="https://api.minimaxi.com/v1",
@@ -56,6 +58,7 @@ def _model(
         headers=headers,
         profile=profile,
         batch_size=batch_size,
+        timeout_seconds=timeout_seconds,
         http_client=http_client,
     )
 
@@ -152,6 +155,30 @@ def test_embed_raises_unavailable_on_http_error() -> None:
             model = _model(http_client=client)
             with pytest.raises(InferenceUnavailableError):
                 await model.embed(("alpha",))
+
+    asyncio.run(scenario())
+
+
+def test_embed_maps_http_timeout_to_inference_timeout() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("provider did not respond", request=request)  # noqa: TRY003
+
+    async def scenario() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            model = _model(http_client=client)
+            with pytest.raises(InferenceTimeoutError):
+                await model.embed(("alpha",))
+
+    asyncio.run(scenario())
+
+
+def test_default_http_client_uses_configured_timeout() -> None:
+    async def scenario() -> None:
+        model = _model(timeout_seconds=7.0)
+        try:
+            assert model._client.timeout.read == 7.0
+        finally:
+            await model.aclose()
 
     asyncio.run(scenario())
 

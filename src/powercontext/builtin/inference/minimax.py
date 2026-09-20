@@ -77,7 +77,7 @@ class MiniMaxEmbeddingModel:
         if headers:
             request_headers.update(headers)
         self._headers = request_headers
-        self._client = http_client or httpx.AsyncClient()
+        self._client = http_client or httpx.AsyncClient(timeout=timeout_seconds)
 
     async def aclose(self) -> None:
         """Close the underlying HTTP client (registered with the runtime stack)."""
@@ -109,6 +109,8 @@ class MiniMaxEmbeddingModel:
         except (InvalidInferenceOutputError, InferenceConfigurationError):
             raise
         except TimeoutError as error:
+            raise InferenceTimeoutError("embed", self._timeout) from error
+        except httpx.TimeoutException as error:
             raise InferenceTimeoutError("embed", self._timeout) from error
         except httpx.HTTPError as error:
             raise InferenceUnavailableError("embed") from error

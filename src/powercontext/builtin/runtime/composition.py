@@ -183,7 +183,7 @@ class BuiltinConfigurationError(RuntimeError):
                 "Topic Memory processing requires child-reconstructible inference resources"
             ),
             "topic-memory-generation-budget": "Topic Memory generation budget is not executable",
-            "topic-memory-provider-budget": "Topic Memory workers require OpenAI/Anthropic SDK providers with transport retries disabled and bounded stateless model settings",
+            "topic-memory-provider-budget": "Topic Memory workers require supported providers with transport retries disabled and bounded stateless model settings",
             "topic-memory-generation": "Topic Memory processing requires a configured generation model",
             "topic-memory-database": "Topic Memory workers require file-backed SQLite; an in-memory database cannot be shared with spawned workers",
             "artifact-processing-worker-authorization-provider": (

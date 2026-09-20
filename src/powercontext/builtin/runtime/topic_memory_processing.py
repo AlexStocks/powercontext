@@ -1481,12 +1481,18 @@ def validate_topic_memory_provider_settings(inference: InferenceConfig) -> None:
         "deepseek",
         "openrouter",
     }
-    for name, settings, allowed in (
-        (inference.generation_model, inference.generation_model_settings, generation),
-        (inference.embedding_model, inference.embedding_model_settings, {"dimensions", "truncate"}),
+    embedding_providers = providers | {"minimax"}
+    for name, settings, allowed, provider_names in (
+        (inference.generation_model, inference.generation_model_settings, generation, providers),
+        (
+            inference.embedding_model,
+            inference.embedding_model_settings,
+            {"dimensions", "truncate"},
+            embedding_providers,
+        ),
     ):
         # The built-in test model has no external I/O; retain hermetic workers.
-        if name is not None and name != "test" and name.split(":", 1)[0] not in providers:
+        if name is not None and name != "test" and name.split(":", 1)[0] not in provider_names:
             raise BuiltinConfigurationError("topic-memory-provider-budget")
         if set(settings) - allowed or any(
             value is not None
