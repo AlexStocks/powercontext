@@ -54,7 +54,7 @@ from powercontext.service.probe import probe_server
 from powercontext.transport import is_loopback_host
 
 _PERSISTED_ENVIRONMENT_PREFIX = "POWERCONTEXT_SERVER_"
-_START_TIMEOUT_SECONDS = 30.0
+_START_TIMEOUT_SECONDS = 60.0
 
 
 class ServiceController:

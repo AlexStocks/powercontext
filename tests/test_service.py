@@ -372,6 +372,30 @@ def test_service_controller_installs_and_starts_one_native_registration(tmp_path
     assert adapter.events == ["write", "reload", "enable", "start:True"]
 
 
+def test_service_controller_allows_slow_native_startup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = FakeAdapter(tmp_path)
+    clock = 0.0
+
+    def monotonic() -> float:
+        return clock
+
+    def sleep(delay: float) -> None:
+        nonlocal clock
+        clock += delay
+
+    def probe(endpoint: str) -> ProbeResult:
+        if clock >= 45.0:
+            return ProbeResult(ProbeState.LIVE, f"{endpoint} status=ok")
+        return ProbeResult(ProbeState.UNREACHABLE, f"cannot reach {endpoint}")
+
+    monkeypatch.setattr("powercontext.service.controller.time.monotonic", monotonic)
+
+    status = ServiceController(adapter, probe=probe, sleep=sleep).install()
+
+    assert status.ok
+    assert clock >= 45.0
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="login auto-start opt-out is Windows-specific")
 def test_service_controller_can_install_without_login_autostart(tmp_path: Path) -> None:
     adapter = FakeAdapter(tmp_path)
