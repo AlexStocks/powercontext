@@ -123,8 +123,8 @@ class CodexPluginSettings(BaseSettings):
     context_assembly: dict[str, Any] | None = None
     capture_prompts: bool = True
     flush_on_capture: bool = False
-    request_timeout_seconds: float = Field(default=1.0, gt=0)
-    http_budget_seconds: float = Field(default=4.0, gt=0)
+    request_timeout_seconds: float = Field(default=3.0, gt=0)
+    http_budget_seconds: float = Field(default=6.0, gt=0)
     flush_max_calls: int = Field(default=4, ge=1, le=16)
 
     @field_validator("allow_insecure_http", mode="before")
