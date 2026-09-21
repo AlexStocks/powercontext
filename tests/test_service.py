@@ -396,6 +396,88 @@ def test_service_controller_allows_slow_native_startup(tmp_path: Path, monkeypat
     assert clock >= 45.0
 
 
+def test_service_controller_keeps_waiting_while_the_native_job_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    adapter = FakeAdapter(tmp_path)
+    clock = 0.0
+
+    def monotonic() -> float:
+        return clock
+
+    def sleep(delay: float) -> None:
+        nonlocal clock
+        clock += delay
+
+    def probe(endpoint: str) -> ProbeResult:
+        # A first start with a cold bytecode cache: the port opens well after the
+        # wall-clock budget, but the native job never stopped making progress.
+        if clock >= 90.0:
+            return ProbeResult(ProbeState.LIVE, f"{endpoint} status=ok")
+        return ProbeResult(ProbeState.UNREACHABLE, f"cannot reach {endpoint}")
+
+    monkeypatch.setattr("powercontext.service.controller.time.monotonic", monotonic)
+
+    status = ServiceController(adapter, probe=probe, sleep=sleep).install()
+
+    assert status.ok
+    assert clock >= 90.0
+
+
+def test_service_controller_stops_waiting_once_the_native_job_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    adapter = FakeAdapter(tmp_path)
+    clock = 0.0
+
+    def monotonic() -> float:
+        return clock
+
+    def sleep(delay: float) -> None:
+        nonlocal clock
+        clock += delay
+
+    def probe(endpoint: str) -> ProbeResult:
+        return ProbeResult(ProbeState.UNREACHABLE, f"cannot reach {endpoint}")
+
+    def start(*, reload_definition: bool) -> None:
+        adapter.events.append(f"start:{reload_definition}")
+        adapter.manager = ManagerState.FAILED
+
+    monkeypatch.setattr("powercontext.service.controller.time.monotonic", monotonic)
+    monkeypatch.setattr(adapter, "start", start)
+
+    with pytest.raises(ServiceError, match="did not become live"):
+        ServiceController(adapter, probe=probe, sleep=sleep).install()
+
+    # The job is gone, so the grace period must not be entered at all.
+    assert 60.0 <= clock < 62.0
+
+
+def test_service_controller_gives_up_after_the_grace_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = FakeAdapter(tmp_path)
+    clock = 0.0
+
+    def monotonic() -> float:
+        return clock
+
+    def sleep(delay: float) -> None:
+        nonlocal clock
+        clock += delay
+
+    def probe(endpoint: str) -> ProbeResult:
+        return ProbeResult(ProbeState.UNREACHABLE, f"cannot reach {endpoint}")
+
+    monkeypatch.setattr("powercontext.service.controller.time.monotonic", monotonic)
+
+    # FakeAdapter.start() leaves the manager ACTIVE, so the port is the only thing missing.
+    with pytest.raises(ServiceError, match="did not become live"):
+        ServiceController(adapter, probe=probe, sleep=sleep).install()
+
+    # A running job earns a bounded extension, never an unbounded wait.
+    assert 180.0 <= clock < 182.0
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="login auto-start opt-out is Windows-specific")
 def test_service_controller_can_install_without_login_autostart(tmp_path: Path) -> None:
     adapter = FakeAdapter(tmp_path)
