@@ -32,6 +32,7 @@ from powercontext.builtin.artifacts.memory.canonical import (
     entry_content_hash,
     memory_content_hash,
     normalize_kind,
+    normalize_query,
     normalize_reason,
     normalize_text,
     validate_identifier,
@@ -137,6 +138,7 @@ class _InvalidMemoryOperationError(ValueError):
             "search-memories": "memory search requires at least one explicit Memory ref",
             "search-limit": "memory search limit must be positive",
             "search-mode": "unsupported memory search mode",
+            "search-query": "memory search query must be non-empty text",
         }
         super().__init__(messages[code])
 
@@ -453,7 +455,10 @@ class MemoryService:
             memories=selected_memories,
             capabilities=capabilities,
         )
-        normalized_query = normalize_text(query)
+        try:
+            normalized_query = normalize_query(query)
+        except (TypeError, ValueError) as error:
+            raise _InvalidMemoryOperationError("search-query") from error
         query_vector = None
         profile = None
         embedding_calls = 0

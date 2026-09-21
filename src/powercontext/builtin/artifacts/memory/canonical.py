@@ -77,6 +77,18 @@ def normalize_text(value: str) -> str:
     return normalized
 
 
+def normalize_query(value: str) -> str:
+    """Normalize one transient retrieval query.
+
+    A query is never persisted, so the durable entry body's UTF-8 byte bound does not
+    apply to it. Callers that expose a query length limit enforce it on their own terms:
+    the HTTP contract states its bound in characters, and applying the storage-layer byte
+    bound here would reject queries the contract accepts.
+    """
+
+    return _normalize_non_empty_string(value, "memory search query")
+
+
 def normalize_kind(value: str) -> str:
     """Normalize an open Memory entry kind without closing its value set."""
 
