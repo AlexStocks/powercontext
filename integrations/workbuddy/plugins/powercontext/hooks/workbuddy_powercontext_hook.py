@@ -61,6 +61,13 @@ _validate_prepared_context = _prepared_context.validate_prepared_context
 _MAX_RESPONSE_BYTES = 1_048_576
 _MAX_SOURCE_LENGTH = 200_000
 _READ_CHUNK_BYTES = 65_536
+_USER_QUERY_OPEN = "<user_query>"
+_USER_QUERY_CLOSE = "</user_query>"
+# The request contract bounds a query in characters. The byte bound is the hook's own
+# margin, so a query stays acceptable to a server that still measures the storage layer's
+# limit as well.
+_MAX_QUERY_CHARACTERS = 8192
+_MAX_QUERY_BYTES = 8192
 _REQUEST_HEADERS = {
     "Accept": "application/json",
     "Content-Type": "application/json",
@@ -120,6 +127,7 @@ def main(settings: WorkBuddyPluginSettings | None = None) -> int:
         cwd = payload.get("cwd")
         context = None
         if prompt is not None and prompt.strip() and isinstance(cwd, str):
+            query = _recall_query(prompt)
             http_deadline = monotonic() + settings.http_budget_seconds
             try:
                 scope_id = resolve_scope_id(
@@ -130,10 +138,10 @@ def main(settings: WorkBuddyPluginSettings | None = None) -> int:
                 )
             except Exception:
                 scope_id = None
-            if scope_id:
+            if scope_id and query:
                 with suppress(Exception):
                     context = _recall_context(
-                        prompt,
+                        query,
                         scope_id,
                         settings=settings,
                         deadline=http_deadline,
@@ -186,6 +194,70 @@ def _prompt(payload: Mapping[str, object]) -> str | None:
         return prompt
     fallback = payload.get("user_prompt")
     return fallback if isinstance(fallback, str) else None
+
+
+def _recall_query(prompt: str) -> str:
+    """Reduce a host prompt to the question PowerContext should retrieve for.
+
+    WorkBuddy joins every user message of the session into one prompt, and each of those
+    messages carries its injected context block, so the joined text describes the whole
+    conversation rather than the turn being submitted. Retrieving with it both exceeds the
+    request's query bound and dilutes the query with earlier turns, so the trailing
+    ``<user_query>`` element is preferred: that element is the turn in hand.
+
+    A prompt that element cannot be read from falls back to the joined text, trimmed to the
+    bounds above so the request stays acceptable to any server version.
+    """
+
+    extracted = _last_user_query(prompt)
+    query = prompt if extracted is None else extracted
+    bounded, truncated = _query_within_bounds(query.strip())
+    if extracted is not None or truncated:
+        _emit_query_event(
+            source="user_query" if extracted is not None else "joined_prompt",
+            truncated=truncated,
+            characters=len(bounded),
+            utf8_bytes=len(bounded.encode("utf-8")),
+        )
+    return bounded
+
+
+def _last_user_query(prompt: str) -> str | None:
+    """Read the trailing ``<user_query>`` element, which holds the submitted turn."""
+
+    close = prompt.rfind(_USER_QUERY_CLOSE)
+    if close < 0:
+        return None
+    opened = prompt.rfind(_USER_QUERY_OPEN, 0, close)
+    if opened < 0:
+        return None
+    return prompt[opened + len(_USER_QUERY_OPEN) : close]
+
+
+def _query_within_bounds(query: str) -> tuple[str, bool]:
+    """Trim a query to the request bounds, keeping the most recent text."""
+
+    if len(query) <= _MAX_QUERY_CHARACTERS and len(query.encode("utf-8")) <= _MAX_QUERY_BYTES:
+        return query, False
+    retained = query[-_MAX_QUERY_CHARACTERS:]
+    encoded = retained.encode("utf-8")
+    if len(encoded) > _MAX_QUERY_BYTES:
+        retained = encoded[-_MAX_QUERY_BYTES:].decode("utf-8", errors="ignore")
+    return retained, True
+
+
+def _emit_query_event(*, source: str, truncated: bool, characters: int, utf8_bytes: int) -> None:
+    """Report a query the hook had to reduce, since the recall itself stays silent."""
+
+    event: dict[str, object] = {
+        "component": "powercontext.workbuddy.recall",
+        "event": "query_reduction",
+        "source": source,
+        "truncated": truncated,
+        "characters": characters,
+        "utf8_bytes": utf8_bytes,
+    }
+    sys.stderr.write(json.dumps(event, separators=(",", ":")) + "\n")
 
 
 def _prepare_context(
