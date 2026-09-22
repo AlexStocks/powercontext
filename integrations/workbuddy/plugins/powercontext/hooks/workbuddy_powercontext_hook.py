@@ -63,6 +63,7 @@ _MAX_SOURCE_LENGTH = 200_000
 _READ_CHUNK_BYTES = 65_536
 _USER_QUERY_OPEN = "<user_query>"
 _USER_QUERY_CLOSE = "</user_query>"
+_CLOSING_TAG_PREFIX = "</"
 # The request contract bounds a query in characters. The byte bound is the hook's own
 # margin, so a query stays acceptable to a server that still measures the storage layer's
 # limit as well.
@@ -139,8 +140,9 @@ def main(settings: WorkBuddyPluginSettings | None = None) -> int:
             except Exception:
                 scope_id = None
             if scope_id:
-                # Only the recall depends on a usable query. A turn that reduces to nothing
-                # asks nothing of memory, while the Source still records what the host
+                # Only the recall depends on a usable query. The request contract requires a
+                # query of at least one non-whitespace character, so a turn that reduces to
+                # nothing has nothing to retrieve. The Source still records what the host
                 # submitted, so capture keeps its own guard.
                 if query:
                     with suppress(Exception):
@@ -206,8 +208,8 @@ def _recall_query(prompt: str) -> str:
     WorkBuddy joins every user message of the session into one prompt, and each of those
     messages carries its injected context block, so the joined text describes the whole
     conversation rather than the turn being submitted. Retrieving with it both exceeds the
-    request's query bound and dilutes the query with earlier turns, so the trailing
-    ``<user_query>`` element is preferred: that element is the turn in hand.
+    request's query bound and dilutes the query with earlier turns, so the most recent
+    ``<user_query>`` element the host wrapped is preferred: that element is the turn in hand.
 
     The element is only trusted where its boundaries match the host's wrapper, because the
     same tags appear verbatim wherever a user or a host-written summary quotes this code. A
@@ -229,11 +231,11 @@ def _recall_query(prompt: str) -> str:
 
 
 def _last_user_query(prompt: str) -> str | None:
-    """Read the trailing ``<user_query>`` element, which holds the submitted turn.
+    """Read the most recent ``<user_query>`` element that carries the host's wrapper.
 
-    Candidates are tried from the end of the prompt backwards, because the last one is the
-    turn in hand. An earlier turn reaches the same shape whenever the host appends messages
-    that carry no turn of their own, such as task notifications.
+    Candidates are tried from the end of the prompt backwards. The last one holds the turn in
+    hand, and where the host appends messages that carry no turn of their own, such as task
+    notifications, the turn before them is the most recent one the user submitted.
     """
 
     closed = prompt.rfind(_USER_QUERY_CLOSE)
@@ -249,14 +251,24 @@ def _is_host_wrapper(prompt: str, opened: int, closed: int) -> bool:
     """Report whether the element at these offsets carries the host's wrapper boundaries.
 
     The host gives the element a line of its own and closes it where the message ends, so what
-    follows is either the end of the prompt or the start of the next host block. A quoted tag
-    is embedded in a sentence instead, which leaves prose on one side of the pair.
+    follows its closing tag is the start of the next host block or the end of the prompt. A
+    pair quoted in prose sits inside a sentence or inside another element instead, which leaves
+    the sentence's own text or an enclosing closing tag on one side of it.
     """
 
-    starts_line = opened == 0 or prompt[opened - 1] == "\n"
-    remainder = prompt[closed + len(_USER_QUERY_CLOSE) :]
-    ends_message = not remainder.strip() or remainder.lstrip().startswith("<")
-    return starts_line and ends_message
+    if opened != 0 and prompt[opened - 1] != "\n":
+        return False
+
+    index = closed + len(_USER_QUERY_CLOSE)
+    while index < len(prompt) and prompt[index].isspace():
+        index += 1
+    if index == len(prompt):
+        return True
+    if prompt[index] != "<":
+        return False
+    # A closing tag here means the element is nested in another one. That is where a block
+    # quoting this markup keeps a turn it quotes, not where the host closes the submitted one.
+    return not prompt.startswith(_CLOSING_TAG_PREFIX, index)
 
 
 def _query_within_bounds(query: str) -> tuple[str, bool]:

@@ -267,6 +267,35 @@ def test_recall_query_keeps_a_wrapped_turn_that_quotes_the_tags(
     assert turn in query
 
 
+def test_recall_query_ignores_a_line_isolated_pair_inside_a_host_summary(
+    hook_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A summary quoting an earlier turn keeps that pair inside the element that quotes it.
+
+    Such a pair takes a line of its own, so only the enclosing closing tag tells it apart from
+    the host's wrapper. Reading it retrieves for the turn the summary quotes, which is exactly
+    the turn the prompt is no longer asking about.
+    """
+
+    transcript = _host_message("你现在用哪个后端存储")
+    summary = (
+        "<conversation_history_summary>\n"
+        "<previous_user_message>\n"
+        "<user_query>\n"
+        "旧问题 SQLite 怎么备份\n"
+        "</user_query>\n"
+        "</previous_user_message>\n"
+        "</conversation_history_summary>"
+    )
+    queries: list[str] = []
+    _stub_recall(hook_module, monkeypatch, queries)
+
+    _run_main(hook_module, monkeypatch, _payload(f"{transcript}\n{summary}"))
+
+    assert queries == ["你现在用哪个后端存储"]
+
+
 def test_capture_still_records_the_prompt_when_the_turn_reduces_to_nothing(
     hook_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
