@@ -221,14 +221,20 @@ HTTPS certificate verification remains enabled.
 - Recall calls `POST /v1/context/prepare` once per prompt, requests an
   8000-byte total budget, strictly validates `powercontext.prepared-context.v1`,
   and injects the returned content unchanged as untrusted history.
+- The query is a reduction of the joined prompt. WorkBuddy submits every user
+  message of the session joined into one prompt, so Recall reads the most recent
+  `<user_query>` element the host wrapped and falls back to the bounded prompt
+  when no element carries the host's wrapper boundaries. A reduction is reported
+  on stderr as a `query_reduction` event.
 - Capture independently posts the prompt to `POST /v1/sources/content` with
   stable, content-addressed `source_id` values.
 - Recall, capture, and flush fail independently. An unavailable Server never
   blocks normal WorkBuddy work.
 - For an empty result, authentication failure, version mismatch, unavailable
   Server, or invalid response, the hook writes one diagnostic JSON line to
-  stderr. Diagnostics contain status and byte counts only—never the query,
-  scope, content, citation, response body, or authorization value.
+  stderr. Diagnostics carry status codes, byte and character counts, and which
+  query source produced them—never the query, scope, content, citation, response
+  body, or authorization value.
 
 ## Authentication
 
