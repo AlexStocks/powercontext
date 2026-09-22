@@ -68,10 +68,16 @@ def _stub_recall(
     queries: list[str],
     *,
     content: str | None = "prepared context",
+    captures: list[str] | None = None,
 ) -> None:
     def prepare(query: str, _scope: str, *, settings: object, deadline: float) -> dict[str, object]:
         queries.append(query)
         return _prepared(content)
+
+    def capture(_payload: object, *, prompt: str, **_kwargs: object) -> dict[str, object]:
+        if captures is not None:
+            captures.append(prompt)
+        return {"position": 1}
 
     monkeypatch.setattr(hook_module, "_prepare_context", prepare)
     monkeypatch.setattr(
@@ -79,7 +85,7 @@ def _stub_recall(
         "resolve_scope_id",
         lambda _cwd, **_kwargs: "git:github.com/oceanbase/powercontext",
     )
-    monkeypatch.setattr(hook_module, "_capture_prompt", lambda _payload, **_kwargs: {"position": 1})
+    monkeypatch.setattr(hook_module, "_capture_prompt", capture)
 
 
 def test_recall_query_prefers_the_submitted_turn_over_the_joined_transcript(
@@ -178,3 +184,105 @@ def test_a_reduced_query_is_reported_on_stderr(
     assert reduction[0]["component"] == "powercontext.workbuddy.recall"
     assert reduction[0]["source"] == "user_query"
     assert reduction[0]["truncated"] is False
+
+
+def test_recall_query_ignores_a_user_query_pair_quoted_in_prose(
+    hook_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A prompt that mentions the tags is prose, not a host wrapper.
+
+    Users and host-written summaries reach the prompt quoting this markup verbatim. Reading
+    such a pair sent a fragment of the quoting sentence as the query, while the question the
+    prompt actually asks went unretrieved.
+    """
+
+    prompt = "The release note says <user_query>example</user_query> verbatim, keep it."
+    queries: list[str] = []
+    _stub_recall(hook_module, monkeypatch, queries)
+
+    _, errors = _run_main(hook_module, monkeypatch, _payload(prompt))
+
+    assert queries == [prompt]
+    assert errors == ""
+
+
+def test_recall_query_keeps_the_current_question_when_a_turn_precedes_it(
+    hook_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unmarked turn followed by the current question must not read as the wrapped turn.
+
+    The pair closes before the question begins, so the question sits outside the wrapper and
+    the element is not the one holding the submitted turn.
+    """
+
+    prompt = "<user_query>Explain SQLite backups</user_query>\nHow do I configure OceanBase?"
+    queries: list[str] = []
+    _stub_recall(hook_module, monkeypatch, queries)
+
+    _run_main(hook_module, monkeypatch, _payload(prompt))
+
+    (query,) = queries
+    assert query.endswith("How do I configure OceanBase?")
+
+
+def test_recall_query_falls_back_to_the_last_verified_turn_when_a_later_block_quotes_the_tags(
+    hook_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The host appends blocks that carry no turn of their own, and they can quote the tags.
+
+    Task notifications and summaries arrive in the join after the submitted turn. A pair
+    quoted there is not the turn, so the turn before it is the one to retrieve against.
+    """
+
+    transcript = _host_message("缺陷 1 的 hook 侧防御也顺手做")
+    summary = "<conversation_history_summary>\nThe hook reads `<user_query>` and `</user_query>`.\n"
+    summary += "</conversation_history_summary>"
+    queries: list[str] = []
+    _stub_recall(hook_module, monkeypatch, queries)
+
+    _run_main(hook_module, monkeypatch, _payload(f"{transcript}\n{summary}"))
+
+    assert queries == ["缺陷 1 的 hook 侧防御也顺手做"]
+
+
+def test_recall_query_keeps_a_wrapped_turn_that_quotes_the_tags(
+    hook_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A literal pair inside the wrapped turn is the turn's own text, not its boundary.
+
+    Reading the inner pair would drop everything the user wrote before it.
+    """
+
+    turn = "Rewrite this line: <user_query>example</user_query> stays as is."
+    queries: list[str] = []
+    _stub_recall(hook_module, monkeypatch, queries)
+
+    _run_main(hook_module, monkeypatch, _payload(_host_message(turn)))
+
+    (query,) = queries
+    assert turn in query
+
+
+def test_capture_still_records_the_prompt_when_the_turn_reduces_to_nothing(
+    hook_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Source records what the host submitted, independent of the recall a turn can ask.
+
+    A turn that reduces to nothing has nothing to retrieve, and gating the capture on the
+    query would silently drop the Source write for it.
+    """
+
+    prompt = "earlier context\n<user_query> </user_query>"
+    queries: list[str] = []
+    captures: list[str] = []
+    _stub_recall(hook_module, monkeypatch, queries, captures=captures)
+
+    _run_main(hook_module, monkeypatch, _payload(prompt))
+
+    assert queries == []
+    assert captures == [prompt]

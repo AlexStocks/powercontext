@@ -138,14 +138,18 @@ def main(settings: WorkBuddyPluginSettings | None = None) -> int:
                 )
             except Exception:
                 scope_id = None
-            if scope_id and query:
-                with suppress(Exception):
-                    context = _recall_context(
-                        query,
-                        scope_id,
-                        settings=settings,
-                        deadline=http_deadline,
-                    )
+            if scope_id:
+                # Only the recall depends on a usable query. A turn that reduces to nothing
+                # asks nothing of memory, while the Source still records what the host
+                # submitted, so capture keeps its own guard.
+                if query:
+                    with suppress(Exception):
+                        context = _recall_context(
+                            query,
+                            scope_id,
+                            settings=settings,
+                            deadline=http_deadline,
+                        )
 
                 if settings.capture_prompts and len(prompt) <= _MAX_SOURCE_LENGTH:
                     with suppress(Exception):
@@ -205,7 +209,9 @@ def _recall_query(prompt: str) -> str:
     request's query bound and dilutes the query with earlier turns, so the trailing
     ``<user_query>`` element is preferred: that element is the turn in hand.
 
-    A prompt that element cannot be read from falls back to the joined text, trimmed to the
+    The element is only trusted where its boundaries match the host's wrapper, because the
+    same tags appear verbatim wherever a user or a host-written summary quotes this code. A
+    prompt no verified element can be read from falls back to the joined text, trimmed to the
     bounds above so the request stays acceptable to any server version.
     """
 
@@ -223,15 +229,34 @@ def _recall_query(prompt: str) -> str:
 
 
 def _last_user_query(prompt: str) -> str | None:
-    """Read the trailing ``<user_query>`` element, which holds the submitted turn."""
+    """Read the trailing ``<user_query>`` element, which holds the submitted turn.
 
-    close = prompt.rfind(_USER_QUERY_CLOSE)
-    if close < 0:
-        return None
-    opened = prompt.rfind(_USER_QUERY_OPEN, 0, close)
-    if opened < 0:
-        return None
-    return prompt[opened + len(_USER_QUERY_OPEN) : close]
+    Candidates are tried from the end of the prompt backwards, because the last one is the
+    turn in hand. An earlier turn reaches the same shape whenever the host appends messages
+    that carry no turn of their own, such as task notifications.
+    """
+
+    closed = prompt.rfind(_USER_QUERY_CLOSE)
+    while closed >= 0:
+        opened = prompt.rfind(_USER_QUERY_OPEN, 0, closed)
+        if opened >= 0 and _is_host_wrapper(prompt, opened, closed):
+            return prompt[opened + len(_USER_QUERY_OPEN) : closed]
+        closed = prompt.rfind(_USER_QUERY_CLOSE, 0, closed)
+    return None
+
+
+def _is_host_wrapper(prompt: str, opened: int, closed: int) -> bool:
+    """Report whether the element at these offsets carries the host's wrapper boundaries.
+
+    The host gives the element a line of its own and closes it where the message ends, so what
+    follows is either the end of the prompt or the start of the next host block. A quoted tag
+    is embedded in a sentence instead, which leaves prose on one side of the pair.
+    """
+
+    starts_line = opened == 0 or prompt[opened - 1] == "\n"
+    remainder = prompt[closed + len(_USER_QUERY_CLOSE) :]
+    ends_message = not remainder.strip() or remainder.lstrip().startswith("<")
+    return starts_line and ends_message
 
 
 def _query_within_bounds(query: str) -> tuple[str, bool]:
