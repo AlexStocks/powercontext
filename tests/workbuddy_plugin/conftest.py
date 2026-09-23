@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
+from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 
@@ -23,18 +25,54 @@ import pytest
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 WORKBUDDY_ROOT = REPOSITORY_ROOT / "integrations" / "workbuddy"
 PLUGIN_ROOT = WORKBUDDY_ROOT / "plugins" / "powercontext"
+_PLUGIN_MODULE_NAMES = (
+    "powercontext_client_config",
+    "powercontext_scope_binding",
+    "prepared_context",
+    "workbuddy_settings",
+    "workspace_scope",
+)
 
 
 def _load_module(name: str, path: Path) -> ModuleType:
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(name, None)
+        raise
     return module
 
 
 @pytest.fixture
-def scope_module(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
-    monkeypatch.syspath_prepend(str(PLUGIN_ROOT / "hooks"))
-    monkeypatch.syspath_prepend(str(PLUGIN_ROOT))
+def plugin_imports() -> Iterator[None]:
+    previous_path = list(sys.path)
+    previous_modules = {name: sys.modules.get(name) for name in _PLUGIN_MODULE_NAMES}
+    for name in _PLUGIN_MODULE_NAMES:
+        sys.modules.pop(name, None)
+    sys.path.insert(0, str(PLUGIN_ROOT))
+    try:
+        yield
+    finally:
+        sys.path[:] = previous_path
+        for name in _PLUGIN_MODULE_NAMES:
+            sys.modules.pop(name, None)
+        for name, module in previous_modules.items():
+            if module is not None:
+                sys.modules[name] = module
+
+
+@pytest.fixture
+def scope_module(plugin_imports: None) -> ModuleType:
     return _load_module("powercontext_workbuddy_scope", PLUGIN_ROOT / "scripts" / "workspace_scope.py")
+
+
+@pytest.fixture
+def hook_module(plugin_imports: None) -> ModuleType:
+    return _load_module(
+        "powercontext_workbuddy_hook",
+        PLUGIN_ROOT / "hooks" / "workbuddy_powercontext_hook.py",
+    )
