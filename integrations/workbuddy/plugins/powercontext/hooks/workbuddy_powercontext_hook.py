@@ -64,6 +64,11 @@ _READ_CHUNK_BYTES = 65_536
 _USER_QUERY_OPEN = "<user_query>"
 _USER_QUERY_CLOSE = "</user_query>"
 _CLOSING_TAG_PREFIX = "</"
+_HOST_BLOCK_OPEN_PREFIXES = (
+    "<conversation_history_summary",
+    "<system-reminder",
+    "<task-notification",
+)
 # The request contract bounds a query in characters. The byte bound is the hook's own
 # margin, so a query stays acceptable to a server that still measures the storage layer's
 # limit as well.
@@ -233,22 +238,23 @@ def _recall_query(prompt: str) -> str:
 def _last_user_query(prompt: str) -> str | None:
     """Read the most recent ``<user_query>`` element that carries the host's wrapper.
 
-    Candidates are tried from the end of the prompt backwards. The last one holds the turn in
-    hand, and where the host appends messages that carry no turn of their own, such as task
-    notifications, the turn before them is the most recent one the user submitted.
+    Opening tags are tried from the end of the prompt backwards. The most recent host-wrapped
+    opener holds the turn in hand, and where the host appends messages that carry no turn of
+    their own, such as task notifications, the turn before them is the most recent one the user
+    submitted.
     """
 
-    closed = prompt.rfind(_USER_QUERY_CLOSE)
-    while closed >= 0:
-        opened = prompt.rfind(_USER_QUERY_OPEN, 0, closed)
-        if opened >= 0 and _is_host_wrapper(prompt, opened, closed):
+    opened = prompt.rfind(_USER_QUERY_OPEN)
+    while opened >= 0:
+        closed = _host_wrapper_close(prompt, opened)
+        if closed is not None:
             return prompt[opened + len(_USER_QUERY_OPEN) : closed]
-        closed = prompt.rfind(_USER_QUERY_CLOSE, 0, closed)
+        opened = prompt.rfind(_USER_QUERY_OPEN, 0, opened)
     return None
 
 
-def _is_host_wrapper(prompt: str, opened: int, closed: int) -> bool:
-    """Report whether the element at these offsets carries the host's wrapper boundaries.
+def _host_wrapper_close(prompt: str, opened: int) -> int | None:
+    """Return the closing offset when the opener carries the host's wrapper boundaries.
 
     The host gives the element a line of its own and closes it where the message ends, so what
     follows its closing tag is the start of the next host block or the end of the prompt. A
@@ -257,8 +263,17 @@ def _is_host_wrapper(prompt: str, opened: int, closed: int) -> bool:
     """
 
     if opened != 0 and prompt[opened - 1] != "\n":
-        return False
+        return None
 
+    closed = prompt.find(_USER_QUERY_CLOSE, opened + len(_USER_QUERY_OPEN))
+    while closed >= 0:
+        if _ends_at_host_boundary(prompt, closed):
+            return closed
+        closed = prompt.find(_USER_QUERY_CLOSE, closed + len(_USER_QUERY_CLOSE))
+    return None
+
+
+def _ends_at_host_boundary(prompt: str, closed: int) -> bool:
     index = closed + len(_USER_QUERY_CLOSE)
     while index < len(prompt) and prompt[index].isspace():
         index += 1
@@ -268,7 +283,9 @@ def _is_host_wrapper(prompt: str, opened: int, closed: int) -> bool:
         return False
     # A closing tag here means the element is nested in another one. That is where a block
     # quoting this markup keeps a turn it quotes, not where the host closes the submitted one.
-    return not prompt.startswith(_CLOSING_TAG_PREFIX, index)
+    if prompt.startswith(_CLOSING_TAG_PREFIX, index):
+        return False
+    return any(prompt.startswith(prefix, index) for prefix in _HOST_BLOCK_OPEN_PREFIXES)
 
 
 def _query_within_bounds(query: str) -> tuple[str, bool]:

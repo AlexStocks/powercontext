@@ -267,6 +267,25 @@ def test_recall_query_keeps_a_wrapped_turn_that_quotes_the_tags(
     assert turn in query
 
 
+def test_recall_query_keeps_the_latest_wrapped_turn_when_it_quotes_the_tags_after_history(
+    hook_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A literal pair inside the latest turn must not send recall back into history."""
+
+    current_turn = "Which service chain should WorkBuddy use? Keep <user_query>example</user_query> verbatim."
+    prompt = "\n".join([
+        _host_message("Explain SQLite backups"),
+        _host_message(current_turn),
+    ])
+    queries: list[str] = []
+    _stub_recall(hook_module, monkeypatch, queries)
+
+    _run_main(hook_module, monkeypatch, _payload(prompt))
+
+    assert queries == [current_turn]
+
+
 def test_recall_query_ignores_a_line_isolated_pair_inside_a_host_summary(
     hook_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
@@ -294,6 +313,31 @@ def test_recall_query_ignores_a_line_isolated_pair_inside_a_host_summary(
     _run_main(hook_module, monkeypatch, _payload(f"{transcript}\n{summary}"))
 
     assert queries == ["你现在用哪个后端存储"]
+
+
+def test_recall_query_rejects_a_summary_pair_followed_by_an_inner_sibling_element(
+    hook_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sibling tag inside a summary is not the next host message boundary."""
+
+    transcript = _host_message("现在 OceanBase 怎么配置")
+    summary = (
+        "<conversation_history_summary>\n"
+        "<previous_user_message>\n"
+        "<user_query>\n"
+        "旧问题 SQLite 怎么备份\n"
+        "</user_query>\n"
+        "<details>quoted metadata</details>\n"
+        "</previous_user_message>\n"
+        "</conversation_history_summary>"
+    )
+    queries: list[str] = []
+    _stub_recall(hook_module, monkeypatch, queries)
+
+    _run_main(hook_module, monkeypatch, _payload(f"{transcript}\n{summary}"))
+
+    assert queries == ["现在 OceanBase 怎么配置"]
 
 
 def test_capture_still_records_the_prompt_when_the_turn_reduces_to_nothing(
