@@ -63,6 +63,7 @@ class ScopeBindingSettings(Protocol):
 
 
 class _Response(Protocol):
+    fp: object
     status: int
 
     def __enter__(self) -> _Response: ...
@@ -203,10 +204,12 @@ def _request_json(
         method=method,
     )
     try:
-        with _URL_OPENER.open(request, timeout=min(settings.request_timeout_seconds, remaining)) as response:
+        request_timeout = min(settings.request_timeout_seconds, remaining)
+        request_deadline = min(deadline, monotonic() + request_timeout)
+        with _URL_OPENER.open(request, timeout=request_timeout) as response:
             if response.status < 200 or response.status >= 300:
                 raise ScopeBindingError
-            raw = _read_bounded(response)
+            raw = _read_bounded(response, deadline=request_deadline)
     except (HTTPError, OSError, TimeoutError) as error:
         raise ScopeBindingError from error
     try:
@@ -218,15 +221,33 @@ def _request_json(
     return value
 
 
-def _read_bounded(response: _Response) -> bytes:
+def _read_bounded(response: _Response, *, deadline: float) -> bytes:
     chunks: list[bytes] = []
     size = 0
-    while chunk := response.read(_READ_CHUNK_BYTES):
+    while True:
+        _set_response_timeout(response, _remaining_time(deadline))
+        chunk = response.read(_READ_CHUNK_BYTES)
+        if not chunk:
+            return b"".join(chunks)
         size += len(chunk)
         if size > _MAX_RESPONSE_BYTES:
             raise ScopeBindingError
         chunks.append(chunk)
-    return b"".join(chunks)
+
+
+def _remaining_time(deadline: float) -> float:
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise TimeoutError
+    return remaining
+
+
+def _set_response_timeout(response: _Response, timeout: float) -> None:
+    raw = getattr(response.fp, "raw", None)
+    sock = getattr(raw, "_sock", None)
+    settimeout = getattr(sock, "settimeout", None)
+    if settimeout is not None:
+        settimeout(timeout)
 
 
 def _git_value(cwd: str, *arguments: str) -> str | None:
