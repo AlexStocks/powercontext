@@ -126,6 +126,39 @@ def test_quoted_operator_queries_preserve_identifiers_in_search_and_prepared_con
     asyncio.run(scenario())
 
 
+def test_multibyte_query_stays_within_the_contract_bound_for_search_and_prepared_context(tmp_path):
+    """A query inside the contract's character bound must not meet the storage byte bound.
+
+    Both ``/v1/memory/search`` and ``/v1/context/prepare`` accept a query of up to 8192
+    characters. The retrieval path once normalized that query through the durable entry
+    body normalizer, whose 8192-byte limit rejected 2731 non-ASCII characters -- 8193
+    UTF-8 bytes, still inside the character bound -- as an internal Server failure.
+    """
+
+    async def scenario():
+        async with _server(tmp_path) as (_, _, client):
+            scope = await client.create_scope(
+                CreateScopeRequest(title="Multibyte query", summary="Character bound", idempotency_key="query-bound")
+            )
+            await client.remember_memory(
+                RememberMemoryRequest(scope_id=scope.scope_id, kind="fact", text="Budget review is on Thursday.")
+            )
+
+            query = "界" * 2731
+            assert len(query) < 8192
+            assert len(query.encode("utf-8")) > 8192
+
+            found = await client.search_memory(
+                SearchMemoryRequest(scope_id=scope.scope_id, query=query, mode=MemorySearchMode.FTS)
+            )
+            prepared = await client.prepare_context(PrepareContextRequest(scope_id=scope.scope_id, query=query))
+
+            assert found.hits == []
+            assert prepared.content is None
+
+    asyncio.run(scenario())
+
+
 def test_client_assembles_approved_evidence_and_preserves_exact_memory_versions(tmp_path, monkeypatch):
     async def scenario():
         async with _server(tmp_path) as (_, transport, client):

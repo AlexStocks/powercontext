@@ -24,11 +24,13 @@ from types import ModuleType
 import pytest
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-PLUGIN_ROOT = REPOSITORY_ROOT / "integrations" / "workbuddy" / "plugins" / "powercontext"
+WORKBUDDY_ROOT = REPOSITORY_ROOT / "integrations" / "workbuddy"
+PLUGIN_ROOT = WORKBUDDY_ROOT / "plugins" / "powercontext"
 _PLUGIN_MODULE_NAMES = (
+    "powercontext_client_config",
+    "powercontext_scope_binding",
     "prepared_context",
     "workbuddy_settings",
-    "powercontext_scope_binding",
     "workspace_scope",
 )
 
@@ -62,6 +64,11 @@ def plugin_imports() -> Iterator[None]:
         for name, module in previous_modules.items():
             if module is not None:
                 sys.modules[name] = module
+
+
+@pytest.fixture
+def scope_module(plugin_imports: None) -> ModuleType:
+    return _load_module("powercontext_workbuddy_scope", PLUGIN_ROOT / "scripts" / "workspace_scope.py")
 
 
 @pytest.fixture
