@@ -224,8 +224,11 @@ HTTPS certificate verification remains enabled.
 - The query is a reduction of the joined prompt. WorkBuddy submits every user
   message of the session joined into one prompt, so Recall reads the most recent
   `<user_query>` element the host wrapped and falls back to the bounded prompt
-  when no element carries the host's wrapper boundaries. A reduction is reported
-  on stderr as a `query_reduction` event.
+  when no element carries the host's wrapper boundaries. An opening tag is a
+  candidate only where it starts a line and its own closing tag ends at a message
+  boundary; a pair the turn quotes itself is enclosed by the turn, which is then
+  the element read. A reduction is reported on stderr as a `query_reduction`
+  event.
 - Capture independently posts the prompt to `POST /v1/sources/content` with
   stable, content-addressed `source_id` values.
 - Recall, capture, and flush fail independently. An unavailable Server never

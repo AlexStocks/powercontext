@@ -335,6 +335,67 @@ def test_recall_query_keeps_the_latest_wrapped_turn_when_a_fenced_example_quotes
     assert queries == [current_turn]
 
 
+def test_recall_query_keeps_the_turn_when_a_literal_opener_inside_it_is_never_closed(
+    hook_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unclosed literal opener leaves the turn's own element unbalanced.
+
+    The turn is still the wrapper the host closed at the message boundary, so the text the user
+    wrote survives instead of the reduction giving the turn up to the bounded fallback.
+    """
+
+    turn = "Explain how <user_query> is closed"
+    queries: list[str] = []
+    _stub_recall(hook_module, monkeypatch, queries)
+
+    _run_main(hook_module, monkeypatch, _payload(_host_message(turn)))
+
+    assert queries == [turn]
+
+
+def test_recall_query_keeps_the_turn_when_a_fenced_example_leaves_its_pair_open(
+    hook_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fenced example with no closing tag leaves the example's opener unbalanced too.
+
+    The example is still inside the turn, so the turn is the element to read rather than the
+    fragment between the example's opener and the host's closing tag.
+    """
+
+    current_turn = "Q? Keep this example:\n```xml\n<user_query>example\n```"
+    prompt = "\n".join([
+        _host_message("Explain SQLite backups"),
+        _host_message(current_turn),
+    ])
+    queries: list[str] = []
+    _stub_recall(hook_module, monkeypatch, queries)
+
+    _run_main(hook_module, monkeypatch, _payload(prompt))
+
+    assert queries == [current_turn]
+
+
+def test_recall_query_keeps_the_turn_when_a_literal_pair_is_followed_by_a_host_block(
+    hook_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pair the turn quotes can end where a host block opens, which no boundary check separates.
+
+    Only the enclosing element tells the quoted pair apart from the wrapper, so the turn is read
+    whole rather than from the quoted pair onwards.
+    """
+
+    current_turn = "Which service chain?\n<user_query>x</user_query>\n<system-reminder>block</system-reminder>"
+    queries: list[str] = []
+    _stub_recall(hook_module, monkeypatch, queries)
+
+    _run_main(hook_module, monkeypatch, _payload(_host_message(current_turn)))
+
+    assert queries == [current_turn]
+
+
 def test_recall_query_ignores_a_line_isolated_pair_inside_a_host_summary(
     hook_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,

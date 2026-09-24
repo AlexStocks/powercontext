@@ -209,50 +209,68 @@ def _recall_query(prompt: str) -> str:
 def _last_user_query(prompt: str) -> str | None:
     """Read the most recent ``<user_query>`` element that carries the host's wrapper.
 
-    Opening tags are tried from the end of the prompt backwards. The most recent host-wrapped
+    Candidates are tried from the end of the prompt backwards. The most recent host-wrapped
     opener holds the turn in hand, and where the host appends messages that carry no turn of
     their own, such as task notifications, the turn before them is the most recent one the user
     submitted.
     """
 
-    opened = prompt.rfind(_USER_QUERY_OPEN)
-    while opened >= 0:
-        closed = _host_wrapper_close(prompt, opened)
-        if closed is not None:
-            return prompt[opened + len(_USER_QUERY_OPEN) : closed]
-        opened = prompt.rfind(_USER_QUERY_OPEN, 0, opened)
+    spans = _wrapper_spans(prompt)
+    for index in range(len(spans) - 1, -1, -1):
+        opened, closed = spans[index]
+        # A literal pair inside the turn — one a fenced example puts at the start of a line —
+        # can carry the wrapper boundaries too. The element that encloses it holds the turn, so
+        # a candidate enclosed by an earlier one gives way to its container. The nearest
+        # candidate is tested first, which keeps the scan linear for the shapes the host sends.
+        if any(
+            outer_opened < opened and outer_closed >= closed for outer_opened, outer_closed in reversed(spans[:index])
+        ):
+            continue
+        return prompt[opened + len(_USER_QUERY_OPEN) : closed]
     return None
+
+
+def _wrapper_spans(prompt: str) -> list[tuple[int, int]]:
+    """Return every element that could be the host's wrapper, in the order it opens."""
+
+    spans: list[tuple[int, int]] = []
+    opened = prompt.find(_USER_QUERY_OPEN)
+    while opened >= 0:
+        # The host gives the element a line of its own. A pair written inside a sentence does
+        # not start one, so it is never a candidate however it closes.
+        if opened == 0 or prompt[opened - 1] == "\n":
+            closed = _host_wrapper_close(prompt, opened)
+            if closed is not None:
+                spans.append((opened, closed))
+        opened = prompt.find(_USER_QUERY_OPEN, opened + len(_USER_QUERY_OPEN))
+    return spans
 
 
 def _host_wrapper_close(prompt: str, opened: int) -> int | None:
     """Return the closing offset when the opener carries the host's wrapper boundaries.
 
-    The host gives the element a line of its own and closes it where the message ends, so what
-    follows its closing tag is the start of the next host block or the end of the prompt. A
-    pair quoted in prose sits inside a sentence or inside another element instead, which leaves
-    the sentence's own text or an enclosing closing tag on one side of it.
+    The host closes the element where the message ends, so what follows its closing tag is the
+    start of the next host block or the end of the prompt. A pair quoted in prose or inside
+    another element leaves that element's own closing tag, or nothing, on that side instead.
 
-    The opener's own close decides. A literal pair inside the turn — one a fenced example puts
-    at the start of a line, say — closes before the turn does, so accepting any close that
-    merely ends at a boundary would pair the literal opener with the host's closing tag and
-    send the fragment between them as the query. An element no close balances is not a wrapper
-    either, and the walk continues past it.
+    The opener's own close decides, because a literal pair the turn contains closes before the
+    turn does. Accepting any close that merely ends at a boundary would pair a literal opener
+    with the host's closing tag and send the fragment between them as the query.
     """
 
-    if opened != 0 and prompt[opened - 1] != "\n":
-        return None
-
     closed = _matched_user_query_close(prompt, opened)
+    if closed is None:
+        # An unclosed literal opener leaves the element unbalanced, and then no close belongs to
+        # it. The host still closes the wrapper, so the first close that reaches a host boundary
+        # is the boundary of the turn, and the text before it is what the user wrote.
+        closed = _first_host_boundary_close(prompt, opened)
     if closed is None or not _ends_at_host_boundary(prompt, closed):
         return None
     return closed
 
 
 def _matched_user_query_close(prompt: str, opened: int) -> int | None:
-    """Return the close that balances the opener, counting nested pairs as turn content.
-
-    An unclosed literal opener leaves the element unbalanced, and then no close belongs to it.
-    """
+    """Return the close that balances the opener, counting nested pairs as turn content."""
 
     depth = 1
     index = opened + len(_USER_QUERY_OPEN)
@@ -269,6 +287,17 @@ def _matched_user_query_close(prompt: str, opened: int) -> int | None:
         if depth == 0:
             return next_close
         index = next_close + len(_USER_QUERY_CLOSE)
+    return None
+
+
+def _first_host_boundary_close(prompt: str, opened: int) -> int | None:
+    """Return the first close after the opener that reaches a host boundary."""
+
+    closed = prompt.find(_USER_QUERY_CLOSE, opened + len(_USER_QUERY_OPEN))
+    while closed >= 0:
+        if _ends_at_host_boundary(prompt, closed):
+            return closed
+        closed = prompt.find(_USER_QUERY_CLOSE, closed + len(_USER_QUERY_CLOSE))
     return None
 
 
