@@ -56,6 +56,7 @@ _USER_QUERY_OPEN = "<user_query>"
 _USER_QUERY_CLOSE = "</user_query>"
 _CLOSING_TAG_PREFIX = "</"
 _HOST_BLOCK_OPEN_PREFIXES = (
+    "<cb_summary",
     "<conversation_history_summary",
     "<system-reminder",
     "<task-notification",

@@ -271,6 +271,22 @@ def test_recall_query_falls_back_to_the_last_verified_turn_when_a_later_block_qu
     assert queries == ["缺陷 1 的 hook 侧防御也顺手做"]
 
 
+def test_recall_query_keeps_the_current_turn_when_cb_summary_follows_it(
+    hook_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WorkBuddy can append compacted summaries after the submitted turn."""
+
+    current_turn = "current OceanBase question"
+    summary = "<cb_summary>" + ("old summary " * 1_000) + "</cb_summary>"
+    queries: list[str] = []
+    _stub_recall(hook_module, monkeypatch, queries)
+
+    _run_main(hook_module, monkeypatch, _payload(f"{_host_message(current_turn)}\n{summary}"))
+
+    assert queries == [current_turn]
+
+
 def test_recall_query_keeps_a_wrapped_turn_that_quotes_the_tags(
     hook_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
