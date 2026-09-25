@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 
 import pytest
@@ -28,12 +29,14 @@ from powercontext.builtin.artifacts.memory import (
     MemoryWriteVerdict,
 )
 from powercontext.builtin.artifacts.memory.errors import MemoryWriteRejectedError
+from powercontext.builtin.inference import InferenceUsage
 from powercontext.builtin.persistence.sqlite import SQLiteConfig
 from powercontext.builtin.runtime import (
     BuiltinConfig,
     BuiltinRuntime,
     CaptureSource,
     RememberMemoryRequest,
+    RuntimeConfig,
     open_builtin_contexts,
     open_builtin_runtime,
 )
@@ -71,6 +74,15 @@ class _FailingDecisionModel:
         raise ValueError("backend unavailable")  # noqa: TRY003
 
 
+class _InsufficientDecisionModel:
+    """A backend that always answers "evidence is insufficient" (the hold direction)."""
+
+    policy_id = "test.decision.insufficient.v1"
+
+    async def evaluate(self, request: DecisionRequest, /) -> DecisionResult:
+        return DecisionResult(DecisionOutcome.YES, self.policy_id, InferenceUsage(requests=1))
+
+
 class _ContentCandidatePipeline:
     async def extract(self, request: MemoryCandidateRequest, /) -> tuple[MemoryEntryInput, ...]:
         return tuple(
@@ -89,8 +101,11 @@ def _assessment(
     return MemoryWriteAssessment(verdict=verdict, policy_id=_SCRIPTED_POLICY_ID, code=code, reason=reason)
 
 
-def _config(tmp_path: Path) -> BuiltinConfig:
-    return BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'gate.db'}"))
+def _config(tmp_path: Path, runtime: RuntimeConfig | None = None, database: str = "gate.db") -> BuiltinConfig:
+    return BuiltinConfig(
+        database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / database}"),
+        runtime=RuntimeConfig() if runtime is None else runtime,
+    )
 
 
 async def _create_scope(runtime: BuiltinRuntime, idempotency_key: str) -> str:
@@ -138,6 +153,59 @@ def test_a_flagged_write_is_annotated_and_still_committed(tmp_path: Path) -> Non
             assert [change.reason for change in stored.content.changes] == ["evidence is thin"]
 
     asyncio.run(scenario())
+
+
+def test_a_flagged_write_preserves_an_existing_candidate_reason(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        gate = _ScriptedGate(_assessment(MemoryWriteVerdict.FLAG, reason="evidence is thin"))
+        async with open_builtin_contexts(_config(tmp_path), memory_write_gate=gate) as contexts:
+            service = (await contexts.get("project")).artifacts.memory
+
+            stored = await service.remember(
+                memory=None,
+                entries=(MemoryEntryInput(kind="note", text="Annotated.", reason="an explicit reason"),),
+                mode="append",
+            )
+
+            assert stored is not None
+            assert [change.reason for change in stored.content.changes] == ["an explicit reason"]
+
+    asyncio.run(scenario())
+
+
+def test_config_enables_the_gate_over_the_decision_backend(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        config = _config(tmp_path, RuntimeConfig(memory_write_gate_enabled=True), database="enabled.db")
+        async with open_builtin_runtime(config, decision_model=_InsufficientDecisionModel()) as runtime:
+            scope_id = await _create_scope(runtime, "gate-config-enabled")
+            with pytest.raises(MemoryWriteRejectedError) as error:
+                await runtime.memory.for_scope(scope_id).remember(
+                    RememberMemoryRequest(entries=(MemoryEntryInput(kind="note", text="Held by config."),))
+                )
+
+            # The config-built gate is active, and the explicit write cites no evidence.
+            assert error.value.code == "needs_evidence"
+
+    asyncio.run(scenario())
+
+
+def test_enabling_the_gate_without_a_backend_warns_and_passes_writes_through(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def scenario() -> None:
+        config = _config(tmp_path, RuntimeConfig(memory_write_gate_enabled=True), database="unavailable.db")
+        async with open_builtin_runtime(config) as runtime:
+            scope_id = await _create_scope(runtime, "gate-config-unavailable")
+            written = await runtime.memory.for_scope(scope_id).remember(
+                RememberMemoryRequest(entries=(MemoryEntryInput(kind="note", text="Written anyway."),))
+            )
+
+            assert written.memory_ref is not None
+
+    with caplog.at_level(logging.WARNING, logger="powercontext.builtin.runtime.composition"):
+        asyncio.run(scenario())
+
+    assert any("no decision backend is available" in message for message in caplog.messages)
 
 
 def test_a_held_write_is_not_committed_and_stays_visible(tmp_path: Path) -> None:

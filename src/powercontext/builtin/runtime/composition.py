@@ -136,6 +136,7 @@ from powercontext.builtin.runtime.decision_model import (
     LLMDecisionModel,
 )
 from powercontext.builtin.runtime.family_processing import FAMILY_BINDINGS, FamilyWorkerSpec, run_family_worker
+from powercontext.builtin.runtime.memory_write_gate import build_memory_write_gate
 from powercontext.builtin.runtime.models import MemorySearchMode, RuntimeCapabilities
 from powercontext.builtin.runtime.processing_discovery import SourceProcessingPendingProvider, enabled_profile_scopes
 from powercontext.builtin.runtime.processing_registry import (
@@ -316,6 +317,38 @@ def _require_decision_backend(runtime: RuntimeConfig, configured: DecisionModel 
         raise BuiltinConfigurationError("decision-model")
 
 
+def _configured_memory_write_gate(
+    injected: MemoryWriteGate | None,
+    decision_model: DecisionModel | None,
+    runtime: RuntimeConfig,
+) -> MemoryWriteGate | None:
+    """Resolve the Memory write gate: an explicit injection wins, then configuration builds one.
+
+    The gate is auxiliary and fail-open by contract, which is the opposite of the decision role:
+    an enabled gate whose decision backend is unavailable logs a warning and passes writes through
+    instead of failing startup, so a misconfigured gate can never block Memory writes.
+    """
+
+    if injected is not None:
+        return injected
+    if not runtime.memory_write_gate_enabled:
+        return None
+    gate = build_memory_write_gate(
+        decision_model,
+        enabled=True,
+        hold_on=runtime.memory_write_gate_hold_on,
+        threshold=runtime.memory_write_gate_threshold,
+    )
+    if gate is None:
+        log_safely(
+            logger,
+            logging.WARNING,
+            "Memory write gate is enabled but no decision backend is available; writes pass through",
+            extra={"event": "memory.write-gate.unavailable", "decision_kind": "memory.write-gate"},
+        )
+    return gate
+
+
 @asynccontextmanager
 async def open_builtin_runtime(
     config: BuiltinConfig,
@@ -416,6 +449,7 @@ async def open_builtin_runtime(
         # The decision role is always exposed fail-open wrapped; tracing, when enabled, is outermost
         # so its span records the final verdict including any degradation.
         configured_decision = _fail_open_decision_model(decision_model, generated_decision, tracing)
+        configured_gate = _configured_memory_write_gate(memory_write_gate, configured_decision, config.runtime)
         if embedding_model is None:
             configured_embedding_source, readiness_embedding = await _embedding_models(
                 config.inference,
@@ -450,7 +484,7 @@ async def open_builtin_runtime(
                 token_estimator=token_estimator,
                 memory_reranker=configured_reranker,
                 decision_model=configured_decision,
-                memory_write_gate=memory_write_gate,
+                memory_write_gate=configured_gate,
                 source_registry=configured_source_registry,
                 cursor_secret=cursor_secret,
                 tracing=tracing,
