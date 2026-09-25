@@ -602,6 +602,63 @@ def test_pre_compress_filters_roles_and_redacts_secrets(provider_and_client):
     assert "deployment" in content
 
 
+@pytest.fixture
+def make_provider(tmp_path, hermes_modules):
+    """Build an initialized provider for a specific agent context; shut it down after the test."""
+    provider_module, _cli_module = hermes_modules
+    initialized = []
+
+    def _make(config=None, **kwargs):
+        client = FakeClient()
+        provider = provider_module.PowerContextMemoryProvider(config or {}, client_factory=lambda _config: client)
+        provider.initialize(
+            kwargs.pop("session_id", "session-1"),
+            hermes_home=str(tmp_path),
+            agent_identity="coder",
+            **kwargs,
+        )
+        initialized.append(provider)
+        return provider, client
+
+    yield _make
+    for provider in initialized:
+        provider.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("agent_context", "platform"),
+    [("cron", "cli"), ("flush", "cli"), ("subagent", "cli"), ("", "cron"), ("", "subagent")],
+)
+def test_non_primary_agent_context_skips_automatic_writes(make_provider, agent_context, platform):
+    provider, client = make_provider(agent_context=agent_context, platform=platform)
+
+    provider.sync_turn("Scheduled check.", "Everything is green.", session_id="session-1")
+    provider.on_memory_write("add", "user", "The scheduled run prefers uv.")
+    provider._wait_for_background()
+
+    assert [call[0] for call in client.calls] == []
+
+
+@pytest.mark.parametrize(("agent_context", "platform"), [("", ""), ("primary", "cli"), ("primary", "telegram")])
+def test_primary_agent_context_still_writes_turns_and_memories(make_provider, agent_context, platform):
+    provider, client = make_provider(agent_context=agent_context, platform=platform)
+
+    provider.sync_turn("Use uv for the integration.", "I will add a uv check.", session_id="session-1")
+    provider.on_memory_write("add", "user", "The user prefers uv.")
+    provider._wait_for_background()
+
+    assert [call[0] for call in client.calls] == ["capture_content", "remember_memory"]
+
+
+def test_non_primary_agent_context_keeps_recall_available(make_provider):
+    provider, client = make_provider(agent_context="cron", platform="cron")
+
+    recalled = provider.prefetch("What did we decide about the deployment?")
+
+    assert "remembered project context" in recalled
+    assert client.calls[0][0] == "prepare_context"
+
+
 def test_pre_compress_captures_only_new_overlapping_windows(provider_and_client):
     provider, client = provider_and_client
     provider._config["capture_pre_compress"] = True

@@ -109,6 +109,10 @@ logger = logging.getLogger(__name__)
 _MAX_MEMORY_WRITE_QUEUE = 128
 _MEMORY_WRITE_DRAIN_TIMEOUT = 5.0
 _DIAGNOSTIC_COOLDOWN_SECONDS = 60.0
+# Automatic writes stay off in non-primary agent contexts: scheduler runs and delegated children are
+# marked as such, and their transcripts must not be captured as the user's own memory.
+_NON_PRIMARY_AGENT_CONTEXTS = frozenset({"cron", "flush", "subagent"})
+_NON_PRIMARY_PLATFORMS = frozenset({"cron", "subagent"})
 _COMPATIBILITY_OR_AVAILABILITY_PATHS = frozenset({
     "/health/live",
     "/health/ready",
@@ -199,6 +203,7 @@ class PowerContextMemoryProvider(MemoryProvider):
         self._hermes_home = ""
         self._profile = ""
         self._parent_session_id = ""
+        self._automatic_writes_enabled = True
         self._trace_dir: Path | None = None
         self._trace_enabled = False
         self._trace_turn = 0
@@ -339,6 +344,11 @@ class PowerContextMemoryProvider(MemoryProvider):
         self._hermes_home = hermes_home
         self._session_id = session_id
         self._parent_session_id = str(kwargs.get("parent_session_id") or "")
+        agent_context = str(kwargs.get("agent_context") or "").strip().lower()
+        platform = str(kwargs.get("platform") or "").strip().lower()
+        self._automatic_writes_enabled = (
+            agent_context not in _NON_PRIMARY_AGENT_CONTEXTS and platform not in _NON_PRIMARY_PLATFORMS
+        )
         self._memory_extraction_supported = None
         self._precompress_stream_id = session_id
         self._precompress_snapshot = []
@@ -831,6 +841,12 @@ class PowerContextMemoryProvider(MemoryProvider):
         self._last_recall_scope_id = ""
         return status
 
+    def _automatic_writes_suppressed(self, event: str) -> bool:
+        if self._automatic_writes_enabled:
+            return False
+        logger.debug("Skipping PowerContext %s outside a primary agent context", event)
+        return True
+
     def sync_turn(
         self,
         user_content: str,
@@ -839,6 +855,8 @@ class PowerContextMemoryProvider(MemoryProvider):
         session_id: str = "",
         messages: list[dict[str, Any]] | None = None,
     ) -> None:
+        if self._automatic_writes_suppressed("turn capture"):
+            return
         if not self._client or not _as_bool(
             _config_value(self._config, "capture_turns", "POWERCONTEXT_HERMES_CAPTURE_TURNS", True), True
         ):
@@ -995,6 +1013,8 @@ class PowerContextMemoryProvider(MemoryProvider):
         content: str,
         metadata: dict[str, Any] | None = None,
     ) -> None:
+        if self._automatic_writes_suppressed("memory mirror"):
+            return
         action = action.strip().lower()
         if not self._client or action not in {"add", "replace", "remove"}:
             return

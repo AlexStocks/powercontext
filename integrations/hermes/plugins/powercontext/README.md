@@ -49,6 +49,12 @@ provider configuration, or set
 assistant turns are captured; system/tool messages are excluded and detected
 secrets are redacted before sending them to PowerContext.
 
+Automatic writes are skipped outside a primary agent context. When the host
+reports an `agent_context` of `cron`, `flush` or `subagent`, or a `cron` or
+`subagent` session platform, the provider stops capturing turns and mirroring
+built-in memory writes, so scheduled runs and delegated children cannot write
+into the user's own memory. Recall keeps working in those contexts.
+
 Evaluation tracing is also opt-in. Set `evaluation_trace: true` or
 `POWERCONTEXT_HERMES_EVALUATION_TRACE=1` to record context injections in
 per-session JSONL files under `$HERMES_HOME/powercontext/evaluation-trace/`.

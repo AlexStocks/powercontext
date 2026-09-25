@@ -157,6 +157,10 @@ profiles, users, repositories, or directories.
   default and uses stable source IDs for overlapping compression windows.
 - `on_memory_write()` mirrors built-in Hermes memory additions as explicit
   entries and retires the mapped PowerContext entry for replacements/removals.
+- Automatic writes stay off outside a primary agent context: an `agent_context` of
+  `cron`, `flush` or `subagent`, or a `cron`/`subagent` session platform, disables
+  turn capture and memory mirroring so scheduled runs and delegated children do
+  not write into the user's own memory. Recall is unaffected.
 - Agent tools expose the complete PowerContext operation groups: Memory
   search/list/read/write/change tracking, Work Contract and Handoff flows,
   Experience/Skill proposal and generation, External Skills discovery/import,
