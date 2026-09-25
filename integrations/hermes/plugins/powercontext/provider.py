@@ -162,8 +162,20 @@ class InvalidScopeBindingError(PowerContextError):
         super().__init__("PowerContext returned an invalid Scope binding")
 
 
+class PreCompressCheckpointError(PowerContextError):
+    """Raised when a required pre-compress checkpoint cannot be committed."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"PowerContext did not commit the required pre-compress checkpoint: {reason}")
+
+
 class PowerContextMemoryProvider(MemoryProvider):
     """Hermes provider backed by a running PowerContext server."""
+
+    # Hermes' PRE_COMPRESS_CHECKPOINT_API_VERSION. Declaring v2 promises that a normal
+    # on_pre_compress() return means the captured transcript is stored, and that a
+    # checkpoint this provider cannot commit raises instead of reporting success.
+    pre_compress_checkpoint_api_version = 2
 
     _tool_names: ClassVar[set[str]] = {
         "powercontext_search_memory",
@@ -929,26 +941,44 @@ class PowerContextMemoryProvider(MemoryProvider):
             self._precompress_stream_id = new_session_id
             self._precompress_snapshot = []
 
-    def on_pre_compress(self, messages: list[dict[str, Any]]) -> str:
+    def on_pre_compress(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        evidence_messages: list[dict[str, Any]] | None = None,
+        require_checkpoint: bool = False,
+    ) -> str:
+        """Persist new user/assistant turns before Hermes discards the transcript.
+
+        ``evidence_messages`` is the host-normalized transcript that Hermes hands only to
+        checkpoint API v2 providers. It is preferred over ``messages`` because the host also
+        removes earlier compression summaries, which this provider cannot recognize on its own.
+        With ``require_checkpoint`` set, a checkpoint that cannot be committed raises so the
+        caller keeps the uncompressed transcript.
+        """
         scope_id = self._scope_id
         client = self._client
-        if (
-            not client
-            or not scope_id
-            or not messages
-            or not _as_bool(
-                _config_value(
-                    self._config,
-                    "capture_pre_compress",
-                    "POWERCONTEXT_HERMES_CAPTURE_PRE_COMPRESS",
-                    False,
-                ),
+        if not _as_bool(
+            _config_value(
+                self._config,
+                "capture_pre_compress",
+                "POWERCONTEXT_HERMES_CAPTURE_PRE_COMPRESS",
                 False,
-            )
+            ),
+            False,
         ):
+            self._fail_required_checkpoint(
+                require_checkpoint, "capture_pre_compress is disabled, so no transcript was stored"
+            )
+            return ""
+        if not client or not scope_id:
+            self._fail_required_checkpoint(
+                require_checkpoint, "the provider has no client or active Scope to store the transcript in"
+            )
             return ""
 
-        entries = _precompress_entries(messages)
+        evidence = evidence_messages if evidence_messages is not None else messages
+        entries = _precompress_entries(evidence)
         new_entries = _new_precompress_entries(self._precompress_snapshot, entries)
         if not new_entries:
             self._precompress_snapshot = [fingerprint for fingerprint, _message in entries]
@@ -959,6 +989,9 @@ class PowerContextMemoryProvider(MemoryProvider):
             return ""
         self._wait_for_background()
         if scope_id != self._scope_id:
+            self._fail_required_checkpoint(
+                require_checkpoint, "the active Scope changed while the transcript was being captured"
+            )
             return ""
         anchor = self._precompress_snapshot[-1] if self._precompress_snapshot else ""
         idempotency_payload = {
@@ -981,12 +1014,20 @@ class PowerContextMemoryProvider(MemoryProvider):
                     "message_count": len(new_entries),
                 },
             )
-            self._flush_memory_if_supported(scope_id=scope_id)
         except PowerContextError as error:
             self._emit_failure_diagnostic("pre_compression_capture", error)
+            self._fail_required_checkpoint(require_checkpoint, f"storing the transcript failed: {error}")
             return ""
+        # The transcript is durable once capture_content returns, so a later memory
+        # extraction failure must not turn a committed checkpoint into a failed one.
+        self._flush_memory_if_supported(scope_id=scope_id)
         self._precompress_snapshot = [fingerprint for fingerprint, _message in entries]
         return ""
+
+    @staticmethod
+    def _fail_required_checkpoint(required: bool, reason: str) -> None:
+        if required:
+            raise PreCompressCheckpointError(reason)
 
     def on_memory_write(
         self,
