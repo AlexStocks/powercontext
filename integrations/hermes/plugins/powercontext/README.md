@@ -56,6 +56,12 @@ Each event includes the current session ID, optional parent session ID, scope,
 turn number, and event ID. The trace contains prompts and recalled context and
 must be treated as sensitive local data.
 
+Pre-compression checkpoints survive a restart. The provider records which turns a
+checkpoint already stored and restores that record when the same session and
+Scope are initialized again, so a session that is resumed after a restart does
+not store a window it had already stored. The record is written when the session
+ends and when the provider shuts down.
+
 The provider also supports the complete PowerContext operation surface through
 Hermes tools: Memory listing/revision/change tracking, Work Contract and
 Handoff flows, Experience/Skill proposal and generation, External Skills

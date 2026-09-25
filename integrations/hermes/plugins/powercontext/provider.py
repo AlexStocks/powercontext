@@ -196,6 +196,7 @@ class PowerContextMemoryProvider(MemoryProvider):
         self._precompress_snapshot: list[str] = []
         self._memory_map_path: Path | None = None
         self._memory_map: dict[str, dict[str, Any]] = {}
+        self._precompress_snapshot_path: Path | None = None
         self._hermes_home = ""
         self._profile = ""
         self._parent_session_id = ""
@@ -344,6 +345,7 @@ class PowerContextMemoryProvider(MemoryProvider):
         self._precompress_snapshot = []
         self._memory_map_path = Path(hermes_home) / "powercontext-memory-map.json"
         self._memory_map = self._load_memory_map()
+        self._precompress_snapshot_path = Path(hermes_home) / "powercontext-precompress-snapshot.json"
         self._scope_binding_cwd = str(
             kwargs.get("cwd") or kwargs.get("working_directory") or kwargs.get("project_root") or os.getcwd()
         )
@@ -363,6 +365,9 @@ class PowerContextMemoryProvider(MemoryProvider):
             raise InvalidScopeBindingError
         self._default_scope_id = scope_id
         self._scope_id = scope_id
+        # A resumed session re-sends its whole transcript, so restore the fingerprints a previous
+        # process checkpointed. Without them the window that was already stored would be stored again.
+        self._precompress_snapshot = self._load_precompress_snapshot(session_id=session_id, scope_id=scope_id)
         trace_path = _config_value(
             merged_config,
             "evaluation_trace_path",
@@ -601,6 +606,41 @@ class PowerContextMemoryProvider(MemoryProvider):
             )
         except OSError:
             logger.debug("Could not persist PowerContext Hermes memory map", exc_info=True)
+
+    def _load_precompress_snapshot(self, *, session_id: str, scope_id: str) -> list[str]:
+        """Fingerprints a previous process checkpointed for the same session and Scope, if any."""
+        if self._precompress_snapshot_path is None:
+            return []
+        try:
+            value = json.loads(self._precompress_snapshot_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return []
+        if not isinstance(value, dict) or value.get("session_id") != session_id:
+            return []
+        if value.get("scope_id") != scope_id:
+            return []
+        fingerprints = value.get("fingerprints")
+        if not isinstance(fingerprints, list):
+            return []
+        return [str(item) for item in fingerprints if isinstance(item, str)]
+
+    def _save_precompress_snapshot(self) -> None:
+        """Record which turns a pre-compression checkpoint already stored, for a resumed session."""
+        if self._precompress_snapshot_path is None or not self._precompress_snapshot:
+            return
+        record = {
+            "session_id": self._session_id,
+            "scope_id": self._scope_id,
+            "fingerprints": list(self._precompress_snapshot),
+        }
+        try:
+            self._precompress_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            self._precompress_snapshot_path.write_text(
+                json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            logger.debug("Could not persist the PowerContext pre-compression checkpoint", exc_info=True)
 
     @staticmethod
     def _server_url(config: dict[str, Any]) -> str:
@@ -869,6 +909,7 @@ class PowerContextMemoryProvider(MemoryProvider):
             self._emit_failure_diagnostic("capture_source", error)
 
     def on_session_end(self, messages: list[dict[str, Any]]) -> None:
+        self._save_precompress_snapshot()
         if not self._client or not self._scope_id:
             return
         if not _as_bool(
@@ -1193,5 +1234,6 @@ class PowerContextMemoryProvider(MemoryProvider):
             logger.warning("PowerContext memory writes did not drain before the operation deadline")
 
     def shutdown(self) -> None:
+        self._save_precompress_snapshot()
         self._shutdown_memory_write_worker()
         self._client = None

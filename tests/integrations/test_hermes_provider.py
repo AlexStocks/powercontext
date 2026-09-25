@@ -1487,3 +1487,89 @@ def test_registered_handoff_schema_explains_valid_work_arguments(hermes_modules,
     validate({"source_id": "aurora-boundary", "handoff": handoff}, schema)
     with pytest.raises(ValidationError):
         validate({"source_id": "aurora-boundary", "handoff": {**handoff, **invalid}}, schema)
+
+
+TRANSCRIPT_WINDOW = [
+    {"role": "user", "content": "First user turn."},
+    {"role": "assistant", "content": "First assistant turn."},
+]
+
+
+def build_precompress_provider(provider_module, hermes_home, session_id):
+    """A provider with pre-compression capture enabled, as a restarted process would build it."""
+    client = FakeClient()
+    provider = provider_module.PowerContextMemoryProvider(
+        {"capture_pre_compress": True},
+        client_factory=lambda _config: client,
+    )
+    provider.initialize(session_id, hermes_home=str(hermes_home), agent_identity="coder")
+    return provider, client
+
+
+def capture_contents(client) -> list[str]:
+    return [call[1][2] for call in client.calls if call[0] == "capture_content"]
+
+
+def test_pre_compress_checkpoint_survives_a_restart(tmp_path, hermes_modules):
+    provider_module, _cli_module = hermes_modules
+
+    first, first_client = build_precompress_provider(provider_module, tmp_path, "session-1")
+    first.on_pre_compress(TRANSCRIPT_WINDOW)
+    first.on_session_end([])
+    first.shutdown()
+    assert len(capture_contents(first_client)) == 1
+
+    resumed, resumed_client = build_precompress_provider(provider_module, tmp_path, "session-1")
+    try:
+        # A resumed session re-sends the whole transcript, not only the turns the host added.
+        resumed.on_pre_compress([*TRANSCRIPT_WINDOW, {"role": "user", "content": "Second user turn."}])
+    finally:
+        resumed.shutdown()
+
+    contents = capture_contents(resumed_client)
+    assert len(contents) == 1
+    assert "First user turn" not in contents[0]
+    assert "Second user turn" in contents[0]
+
+
+def test_pre_compress_checkpoint_is_not_reused_by_another_session(tmp_path, hermes_modules):
+    provider_module, _cli_module = hermes_modules
+
+    first, _first_client = build_precompress_provider(provider_module, tmp_path, "session-1")
+    first.on_pre_compress(TRANSCRIPT_WINDOW)
+    first.on_session_end([])
+    first.shutdown()
+
+    other, other_client = build_precompress_provider(provider_module, tmp_path, "session-2")
+    try:
+        other.on_pre_compress(TRANSCRIPT_WINDOW)
+    finally:
+        other.shutdown()
+
+    contents = capture_contents(other_client)
+    assert len(contents) == 1
+    assert "First user turn" in contents[0]
+
+
+def test_pre_compress_checkpoint_is_not_reused_for_another_scope(tmp_path, hermes_modules):
+    provider_module, _cli_module = hermes_modules
+
+    first, _first_client = build_precompress_provider(provider_module, tmp_path, "session-1")
+    first.on_pre_compress(TRANSCRIPT_WINDOW)
+    first.on_session_end([])
+    first.shutdown()
+
+    snapshot_path = tmp_path / "powercontext-precompress-snapshot.json"
+    record = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    record["scope_id"] = "scp_00000000000000000000000001"
+    snapshot_path.write_text(json.dumps(record), encoding="utf-8")
+
+    rebound, rebound_client = build_precompress_provider(provider_module, tmp_path, "session-1")
+    try:
+        rebound.on_pre_compress(TRANSCRIPT_WINDOW)
+    finally:
+        rebound.shutdown()
+
+    contents = capture_contents(rebound_client)
+    assert len(contents) == 1
+    assert "First user turn" in contents[0]
