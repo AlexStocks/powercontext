@@ -65,6 +65,17 @@ class DecisionOutcome(StrEnum):
     ABSTAIN = "abstain"
 
 
+class DecisionKind(StrEnum):
+    """Stable, low-cardinality consumer labels for one decision request.
+
+    A single naming source keeps call sites, telemetry, and tracing from drifting into
+    ad-hoc strings; the direction of a positive answer is never encoded here.
+    """
+
+    MEMORY_WRITE_GATE = "memory.write-gate"
+    HANDOFF_ESCALATION = "handoff.escalation"
+
+
 @dataclass(frozen=True, slots=True)
 class DecisionRequest:
     """One bounded question and the material a decision backend may judge.
@@ -197,6 +208,7 @@ __all__ = [
     "DECISION_INSTRUCTIONS",
     "DECISION_INSTRUCTIONS_VERSION",
     "DecisionInput",
+    "DecisionKind",
     "DecisionModel",
     "DecisionOutcome",
     "DecisionOutput",

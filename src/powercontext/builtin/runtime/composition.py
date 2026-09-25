@@ -42,6 +42,7 @@ from powercontext.builtin.artifacts.memory import (
     MemoryHit,
     MemoryRerankDecision,
     MemoryReranker,
+    MemoryWriteGate,
 )
 from powercontext.builtin.artifacts.profile.generation import PROFILE_INSTRUCTIONS, LLMProfileGenerator
 from powercontext.builtin.artifacts.profile.service import (
@@ -335,6 +336,7 @@ async def open_builtin_runtime(
     token_estimator: TokenEstimator | None = None,
     memory_reranker: MemoryReranker | None = None,
     decision_model: DecisionModel | None = None,
+    memory_write_gate: MemoryWriteGate | None = None,
     instrumentation: InstrumentationSettings | None = None,
     scope_cache_observer: ScopeCacheObserver | None = None,
     topic_memory_search_observer: Callable[[str, bool], None] | None = None,
@@ -448,6 +450,7 @@ async def open_builtin_runtime(
                 token_estimator=token_estimator,
                 memory_reranker=configured_reranker,
                 decision_model=configured_decision,
+                memory_write_gate=memory_write_gate,
                 source_registry=configured_source_registry,
                 cursor_secret=cursor_secret,
                 tracing=tracing,
@@ -809,6 +812,7 @@ async def open_builtin_contexts(
     token_estimator: TokenEstimator | None = None,
     memory_reranker: MemoryReranker | None = None,
     decision_model: DecisionModel | None = None,
+    memory_write_gate: MemoryWriteGate | None = None,
     source_registry: SourceDefinitionRegistry | None = None,
     cursor_secret: bytes | None = None,
     tracing: RuntimeTracing | None = None,
@@ -868,6 +872,7 @@ async def open_builtin_contexts(
                 token_estimator=configured_token_estimator,
                 memory_reranker=memory_reranker,
                 decision_model=decision_model,
+                memory_write_gate=memory_write_gate,
                 memory_rerank_candidate_limit=config.runtime.memory_rerank_candidate_limit,
                 prompt_registry=prompt_registry,
                 prompt_demonstrators=prompt_demonstrators,
@@ -926,6 +931,7 @@ async def open_builtin_contexts(
             token_estimator=configured_token_estimator,
             memory_reranker=memory_reranker,
             decision_model=decision_model,
+            memory_write_gate=memory_write_gate,
             memory_rerank_candidate_limit=config.runtime.memory_rerank_candidate_limit,
             prompt_registry=prompt_registry,
             prompt_demonstrators=prompt_demonstrators,

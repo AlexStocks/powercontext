@@ -78,7 +78,11 @@ from powercontext.builtin.artifacts.memory.protocols import (
     MemoryCommit,
     MemoryProjection,
     MemorySearchRequest,
+    MemoryWriteAssessment,
+    MemoryWriteGate,
+    MemoryWriteGateRequest,
     MemoryWritePlan,
+    MemoryWriteVerdict,
 )
 from powercontext.builtin.artifacts.memory.reranking import MemoryReranker
 from powercontext.builtin.artifacts.prompt.service import ScopedPrompts, current_prompt, prompt_operation
@@ -154,6 +158,15 @@ def _require_tag_filter(capabilities: MemoryCapabilities, tag_filter: TagFilter 
         raise CapabilityNotSupportedError("tag-filter")
 
 
+def _annotate_reason(reason: str | None, flagged_reason: str | None) -> str | None:
+    """Fill a missing audit reason from a flagged gate verdict without overwriting a caller's."""
+
+    normalized = normalize_reason(reason)
+    if normalized is not None or flagged_reason is None:
+        return normalized
+    return normalize_reason(flagged_reason)
+
+
 class MemoryService:
     """Validate and orchestrate Memory operations without exposing storage details."""
 
@@ -169,10 +182,12 @@ class MemoryService:
         artifact_resolver: _ArtifactResolver | None = None,
         id_factory: IdFactory | None = None,
         prompt_context: ScopedPrompts | None = None,
+        write_gate: MemoryWriteGate | None = None,
     ) -> None:
         self._backend = backend
         self._prompt_context = prompt_context
         self._candidate_pipeline = candidate_pipeline
+        self._write_gate = write_gate
         self._embedding_model = embedding_model
         if rerank_candidate_limit < 1:
             raise _InvalidMemoryOperationError("search-limit")
@@ -299,15 +314,25 @@ class MemoryService:
             if not candidates:
                 return MemoryWritePlan(result=base, commit=None)
 
+            assessment = await self._assess_write(base, candidates, evidence)
+            if assessment is not None and assessment.verdict is MemoryWriteVerdict.HOLD:
+                # A refused write stays visible: the caller reads the structured code and reason
+                # from the plan. The plan carries no commit, so nothing is written.
+                return MemoryWritePlan(result=base, commit=None, decision=assessment)
+
+            flagged_reason = (
+                assessment.reason if assessment is not None and assessment.verdict is MemoryWriteVerdict.FLAG else None
+            )
             commit = await self._prepare_commit(
                 base=base,
                 candidates=candidates,
                 evidence=evidence,
                 current_entries=current_entries,
+                flagged_reason=flagged_reason,
             )
             if commit is None:
-                return MemoryWritePlan(result=base, commit=None)
-            return MemoryWritePlan(result=commit.memory, commit=commit)
+                return MemoryWritePlan(result=base, commit=None, decision=assessment)
+            return MemoryWritePlan(result=commit.memory, commit=commit, decision=assessment)
 
     async def apply(self, plan: MemoryWritePlan, /) -> Memory | None:
         """Apply one prepared write through this service's transaction boundary."""
@@ -1111,6 +1136,31 @@ class MemoryService:
             )
         )
 
+    async def _assess_write(
+        self,
+        base: Memory | None,
+        candidates: tuple[MemoryEntryInput, ...],
+        evidence: _OperationEvidence,
+    ) -> MemoryWriteAssessment | None:
+        """Ask the configured gate about one candidate set; ``None`` means no gate is active."""
+
+        if self._write_gate is None:
+            return None
+        return await self._write_gate.assess(
+            MemoryWriteGateRequest(
+                candidates=tuple(candidate.text for candidate in candidates),
+                evidence=self._gate_evidence(evidence),
+                expected_revision=None if base is None else base.revision,
+            )
+        )
+
+    def _gate_evidence(self, evidence: _OperationEvidence) -> tuple[str, ...]:
+        entries = [f"{ref.source_type}:{ref.source_id}" for ref in self._source_refs(evidence.sources)]
+        entries.extend(
+            f"{artifact.family}:{artifact.artifact_id}@{artifact.revision}" for artifact in evidence.artifacts
+        )
+        return tuple(entries)
+
     async def _prepare_commit(
         self,
         *,
@@ -1118,6 +1168,7 @@ class MemoryService:
         candidates: tuple[MemoryEntryInput, ...],
         evidence: _OperationEvidence,
         current_entries: tuple[MemoryEntryVersion, ...] | None,
+        flagged_reason: str | None = None,
     ) -> MemoryCommit | None:
         memory_id = base.artifact_id if base is not None else self._new_id("memory")
         next_revision = 1 if base is None else base.revision + 1
@@ -1156,7 +1207,7 @@ class MemoryService:
                         entry_id=entry_id,
                         from_entry_version_id=None,
                         to_entry_version_id=version.entry_version_id,
-                        reason=normalize_reason(candidate.reason),
+                        reason=_annotate_reason(candidate.reason, flagged_reason),
                     )
                 )
                 continue
@@ -1195,7 +1246,7 @@ class MemoryService:
                     entry_id=entry_id,
                     from_entry_version_id=previous.entry_version_id,
                     to_entry_version_id=version.entry_version_id,
-                    reason=normalize_reason(candidate.reason),
+                    reason=_annotate_reason(candidate.reason, flagged_reason),
                 )
             )
 

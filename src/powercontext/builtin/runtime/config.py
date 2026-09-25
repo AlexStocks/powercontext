@@ -142,6 +142,13 @@ class RuntimeConfig(BaseModel):
     memory_rerank_enabled: bool = False
     memory_rerank_candidate_limit: int = Field(default=30, ge=1, le=100)
     decision_assistance_enabled: bool = False
+    memory_write_gate_enabled: bool = False
+    # Direction only: which verdict means "evidence is insufficient". The strength threshold
+    # stays unset until a calibration probe establishes it, so a hold never depends on a made-up
+    # number.
+    memory_write_gate_hold_on: Literal["yes", "no"] = "yes"
+    memory_write_gate_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    handoff_escalation_enabled: bool = False
     recall_gate_enabled: bool = False
     recall_gate_max_rounds: int = Field(default=2, ge=0, le=2)
     recall_gate_min_candidates: int = Field(default=2, ge=1)

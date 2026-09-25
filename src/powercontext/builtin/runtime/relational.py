@@ -65,7 +65,9 @@ from powercontext.builtin.artifacts.memory import (
     MemoryQueryEmbedding,
     MemoryReranker,
     MemoryService,
+    MemoryWriteGate,
     MemoryWritePlan,
+    MemoryWriteVerdict,
 )
 from powercontext.builtin.artifacts.profile import Profile
 from powercontext.builtin.artifacts.profile.management import ProfileManagementWriter
@@ -299,6 +301,7 @@ class _ScopedServices:
     memory_reranker: MemoryReranker | None
     memory_rerank_candidate_limit: int
     decision_model: DecisionModel | None
+    memory_write_gate: MemoryWriteGate | None
     id_factory: IdFactory
     handoff_artifact_id: str
     memory_artifact_id: str
@@ -358,6 +361,7 @@ class _ScopedServices:
                 connection=connection,
             ),
             id_factory=self.id_factory,
+            write_gate=self.memory_write_gate,
         )
 
     def evidence(self, authorize: EvidenceAuthorizer | None = None) -> EvidenceResolver:
@@ -513,6 +517,7 @@ class RelationalContexts:
         token_estimator: TokenEstimator | None = None,
         memory_reranker: MemoryReranker | None = None,
         decision_model: DecisionModel | None = None,
+        memory_write_gate: MemoryWriteGate | None = None,
         memory_rerank_candidate_limit: int = 30,
         id_factory: IdFactory | None = None,
         handoff_artifact_id: str = "handoff",
@@ -663,6 +668,7 @@ class RelationalContexts:
         self._token_estimator = token_estimator
         self._memory_reranker = memory_reranker
         self._decision_model = decision_model
+        self._memory_write_gate = memory_write_gate
         self._memory_rerank_candidate_limit = memory_rerank_candidate_limit
         self._handoff_artifact_id = handoff_artifact_id
         self._memory_artifact_id = memory_artifact_id
@@ -1401,6 +1407,7 @@ class RelationalContexts:
             memory_reranker=self._memory_reranker,
             memory_rerank_candidate_limit=self._memory_rerank_candidate_limit,
             decision_model=self._decision_model,
+            memory_write_gate=self._memory_write_gate,
             id_factory=self._id_factory,
             handoff_artifact_id=self._handoff_artifact_id,
             memory_artifact_id=self._memory_artifact_id,
@@ -1666,6 +1673,7 @@ class _RelationalTriggers:
             prepared = (
                 None if not sources else await self._prepare_memory(sources, authorize_snapshot=authorize_snapshot)
             )
+            held = _is_held_write(prepared)
             commit = None if prepared is None else prepared.commit
             with self._stage(
                 _MEMORY_COMMIT_STAGE,
@@ -1699,6 +1707,8 @@ class _RelationalTriggers:
                 current_cursor=action.through,
                 source_count=len(sources),
                 memory_ref=None if updated is None else updated.as_ref(),
+                held_count=1 if held else 0,
+                hold_codes=_hold_codes(prepared),
             )
 
     async def _sources(
@@ -1961,6 +1971,26 @@ def _validate_schema_value(name: str, schema: Mapping[str, Any], value: object) 
         _json_schema_validator(name, schema).validate(value)
     except (JsonSchemaValidationError, Unresolvable) as error:
         raise InvalidSourceObservationError("schema", f"value does not match {name!r}") from error
+
+
+def _is_held_write(plan: MemoryWritePlan | None) -> bool:
+    """Report whether the gate refused this prepared write."""
+
+    if plan is None:
+        return False
+    decision = plan.decision
+    return decision is not None and decision.verdict is MemoryWriteVerdict.HOLD
+
+
+def _hold_codes(plan: MemoryWritePlan | None) -> tuple[str, ...]:
+    """Expose the structured refusal code of a held write to the window caller."""
+
+    if not _is_held_write(plan) or plan is None:
+        return ()
+    decision = plan.decision
+    if decision is None or decision.code is None:
+        return ()
+    return (decision.code.value,)
 
 
 def _scoped_id_factory(memory_artifact_id: str, delegate: IdFactory | None) -> IdFactory:

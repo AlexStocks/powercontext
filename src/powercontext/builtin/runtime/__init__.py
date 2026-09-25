@@ -99,12 +99,22 @@ from powercontext.builtin.runtime.config import (
     RuntimeConfig,
 )
 from powercontext.builtin.runtime.decision_model import (
+    DecisionKind,
     DecisionModel,
     DecisionOutcome,
     DecisionRequest,
     DecisionResult,
 )
 from powercontext.builtin.runtime.errors import InvalidRuntimeRequestError, TopicMemoryProcessingUnavailableError
+from powercontext.builtin.runtime.memory_write_gate import (
+    DecisionMemoryWriteGate,
+    MemoryWriteAssessment,
+    MemoryWriteGate,
+    MemoryWriteGateRequest,
+    MemoryWriteRejectionCode,
+    MemoryWriteVerdict,
+    build_memory_write_gate,
+)
 from powercontext.builtin.runtime.models import (
     ApproveArtifactCandidateRequest,
     CaptureSource,
@@ -219,6 +229,8 @@ __all__ = [
     "ContextAssemblySection",
     "CreateDreamRunRequest",
     "DatabaseConfig",
+    "DecisionKind",
+    "DecisionMemoryWriteGate",
     "DecisionModel",
     "DecisionOutcome",
     "DecisionRequest",
@@ -284,6 +296,11 @@ __all__ = [
     "MemoryMutationResult",
     "MemoryRevisionChanges",
     "MemorySearchPage",
+    "MemoryWriteAssessment",
+    "MemoryWriteGate",
+    "MemoryWriteGateRequest",
+    "MemoryWriteRejectionCode",
+    "MemoryWriteVerdict",
     "ModelUsageDay",
     "ModelUsageOperation",
     "ModelUsagePurpose",
@@ -353,6 +370,7 @@ __all__ = [
     "TopicMemoryProcessingUnavailableError",
     "UsageStatistics",
     "WorkApplication",
+    "build_memory_write_gate",
     "dependency_readiness_probe",
     "open_builtin_contexts",
     "open_builtin_runtime",
