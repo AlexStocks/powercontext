@@ -136,7 +136,7 @@ Review Inbox. It never approves an Experience, creates or installs a managed
 Skill, or grants Codex execution authority.
 
 All hook configuration uses the `POWERCONTEXT_CODEX_` prefix. The default
-request timeout is one second, the shared HTTP budget is four seconds, and a
+request timeout is three seconds, the shared HTTP budget is six seconds, and a
 flush performs at most four calls. These can be tuned with
 `POWERCONTEXT_CODEX_REQUEST_TIMEOUT_SECONDS`,
 `POWERCONTEXT_CODEX_HTTP_BUDGET_SECONDS`, and
