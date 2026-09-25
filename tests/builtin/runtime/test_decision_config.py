@@ -14,8 +14,10 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
-from pydantic import SecretStr, ValidationError
+from pydantic import AnyHttpUrl, SecretStr, ValidationError
 
 from powercontext.builtin.runtime import RuntimeConfig
 from powercontext.builtin.runtime.config import InferenceConfig
@@ -48,14 +50,14 @@ def test_decision_inference_defaults_are_unset() -> None:
         {"decision_model_settings": {"extra_headers": {"X-Test": "value"}}},
     ],
 )
-def test_invalid_decision_values_are_rejected(overrides: dict[str, object]) -> None:
+def test_invalid_decision_values_are_rejected(overrides: dict[str, Any]) -> None:
     with pytest.raises(ValidationError):
         InferenceConfig(**overrides)
 
 
 def test_decision_base_url_requires_a_decision_model() -> None:
     with pytest.raises(ValidationError, match="decision_base_url requires decision_model"):
-        InferenceConfig(decision_base_url="http://127.0.0.1:9/v1")
+        InferenceConfig(decision_base_url=AnyHttpUrl("http://127.0.0.1:9/v1"))
 
 
 def test_decision_overrides_require_a_model() -> None:
@@ -73,7 +75,7 @@ def test_decision_overrides_may_reuse_the_generation_model() -> None:
 def test_dedicated_decision_model_accepts_endpoint_overrides() -> None:
     config = InferenceConfig(
         decision_model="openai-chat:decider",
-        decision_base_url="http://127.0.0.1:9/v1",
+        decision_base_url=AnyHttpUrl("http://127.0.0.1:9/v1"),
         decision_timeout_seconds=5,
         decision_max_requests=2,
     )

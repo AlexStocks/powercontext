@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import AsyncExitStack
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -58,7 +59,7 @@ class _FakeDecisionModel:
         return DecisionResult(self._outcome, self.policy_id, InferenceUsage(requests=1))
 
 
-def _config(tmp_path: Path, **runtime: object) -> BuiltinConfig:
+def _config(tmp_path: Path, **runtime: Any) -> BuiltinConfig:
     return BuiltinConfig(
         database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'runtime.db'}"),
         runtime=RuntimeConfig(**runtime),

@@ -134,6 +134,6 @@ def test_decision_values_are_frozen() -> None:
     result = DecisionResult(DecisionOutcome.YES, DECISION_INSTRUCTIONS_VERSION, InferenceUsage(requests=1))
 
     with pytest.raises(dataclasses.FrozenInstanceError):
-        request.subject = "other"  # type: ignore[misc]
+        request.subject = "other"  # ty: ignore[invalid-assignment]
     with pytest.raises(dataclasses.FrozenInstanceError):
-        result.outcome = DecisionOutcome.NO  # type: ignore[misc]
+        result.outcome = DecisionOutcome.NO  # ty: ignore[invalid-assignment]

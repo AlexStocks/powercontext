@@ -72,6 +72,7 @@ def test_disabled_decision_leaves_the_ordinary_memory_path_unchanged(tmp_path: P
                 entries=(MemoryEntryInput(kind="decision", text="Baseline memory."),),
                 mode="append",
             )
+            assert stored is not None
             result = await context.artifacts.memory.search("baseline", memories=(stored,), mode="fts")
 
             assert [hit.text for hit in result.hits] == ["Baseline memory."]
