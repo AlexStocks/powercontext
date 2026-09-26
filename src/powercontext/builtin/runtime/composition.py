@@ -296,13 +296,15 @@ def _fail_open_decision_model(
     injected: DecisionModel | None,
     generated: DecisionModel | None,
     tracing: RuntimeTracing | None,
+    *,
+    timeout_seconds: float | None = None,
 ) -> DecisionModel | None:
     """Resolve the decision backend, always exposing it fail-open wrapped with tracing outermost."""
 
     backend = injected if injected is not None else generated
     if backend is None:
         return None
-    delegate: DecisionModel = FailOpenDecisionModel(backend)
+    delegate: DecisionModel = FailOpenDecisionModel(backend, timeout_seconds=timeout_seconds)
     if tracing is not None:
         delegate = _TracingDecisionModel(delegate, tracing)
     return delegate
@@ -413,7 +415,12 @@ async def open_builtin_runtime(
             configured_reranker = _TracingMemoryReranker(configured_reranker, tracing)
         # The decision role is always exposed fail-open wrapped; tracing, when enabled, is outermost
         # so its span records the final verdict including any degradation.
-        configured_decision = _fail_open_decision_model(decision_model, generated_decision, tracing)
+        configured_decision = _fail_open_decision_model(
+            decision_model,
+            generated_decision,
+            tracing,
+            timeout_seconds=config.inference.decision_timeout_seconds or config.inference.generation_timeout_seconds,
+        )
         if embedding_model is None:
             configured_embedding_source, readiness_embedding = await _embedding_models(
                 config.inference,

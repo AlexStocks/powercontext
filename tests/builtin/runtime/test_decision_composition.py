@@ -59,6 +59,14 @@ class _FakeDecisionModel:
         return DecisionResult(self._outcome, self.policy_id, InferenceUsage(requests=1))
 
 
+class _HangingDecisionModel:
+    policy_id = "powercontext.decision.hanging.v1"
+
+    async def evaluate(self, request: DecisionRequest, /) -> DecisionResult:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
 def _config(tmp_path: Path, **runtime: Any) -> BuiltinConfig:
     return BuiltinConfig(
         database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'runtime.db'}"),
@@ -102,6 +110,29 @@ def test_injected_decision_failure_degrades_on_the_exposed_seam(tmp_path: Path) 
 
             assert result.outcome is DecisionOutcome.ABSTAIN
             assert result.used_fallback is True
+
+    asyncio.run(scenario())
+
+
+def test_injected_decision_model_uses_the_configured_timeout(tmp_path: Path) -> None:
+    config = BuiltinConfig(
+        database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'runtime.db'}"),
+        inference=InferenceConfig(decision_timeout_seconds=0.01),
+    )
+
+    async def scenario() -> None:
+        async with open_builtin_runtime(config, decision_model=_HangingDecisionModel()) as runtime:
+            exposed = runtime.decision_model
+            assert exposed is not None
+
+            result = await asyncio.wait_for(
+                exposed.evaluate(DecisionRequest("memory.write-gate", "Keep this?", "note")),
+                timeout=0.5,
+            )
+
+            assert result.outcome is DecisionOutcome.ABSTAIN
+            assert result.used_fallback is True
+            assert result.policy_id == "powercontext.decision.hanging.v1"
 
     asyncio.run(scenario())
 

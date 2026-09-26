@@ -163,15 +163,19 @@ class FailOpenDecisionModel:
     site. Cancellation is control flow, not failure, and always propagates unchanged.
     """
 
-    def __init__(self, delegate: DecisionModel, /) -> None:
+    def __init__(self, delegate: DecisionModel, /, *, timeout_seconds: float | None = None) -> None:
         self._delegate = delegate
         self.policy_id = delegate.policy_id
+        self._timeout_seconds = timeout_seconds
 
     async def evaluate(self, request: DecisionRequest, /) -> DecisionResult:
         """Delegate one decision, converting any backend failure into an abstention."""
 
         try:
-            return await self._delegate.evaluate(request)
+            if self._timeout_seconds is None:
+                return await self._delegate.evaluate(request)
+            async with asyncio.timeout(self._timeout_seconds):
+                return await self._delegate.evaluate(request)
         except asyncio.CancelledError:
             raise
         except Exception:
