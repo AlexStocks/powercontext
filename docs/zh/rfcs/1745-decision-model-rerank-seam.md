@@ -1,6 +1,6 @@
 - Proposal Name: `decision_model_rerank_seam`
 - Start Date: 2026-09-26
-- RFC PR: [oceanbase/powercontext#0000](https://github.com/oceanbase/powercontext/pull/0000)
+- RFC PR: [oceanbase/powercontext#1745](https://github.com/oceanbase/powercontext/pull/1745)
 - Related RFCs: [RFC 0080](0080_memory_search_reranking.md)、[RFC 0014](0014_memory_layer_design.md)
 
 # Summary
