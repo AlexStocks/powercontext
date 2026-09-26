@@ -102,6 +102,15 @@ class DecisionMemoryWriteGate:
     async def assess(self, request: MemoryWriteGateRequest, /) -> MemoryWriteAssessment:
         """Judge one pending write and return a caller-visible verdict."""
 
+        if _subject_exceeds_limit(request.candidates):
+            assessment = MemoryWriteAssessment(
+                verdict=MemoryWriteVerdict.HOLD,
+                policy_id=self.policy_id,
+                code=_rejection_code(request),
+                reason="the candidate batch exceeds the gate assessment budget",
+            )
+            self._log(assessment)
+            return assessment
         decision = await self._decision_model.evaluate(
             DecisionRequest(
                 decision_kind=DecisionKind.MEMORY_WRITE_GATE.value,
@@ -163,6 +172,10 @@ def _rejection_code(request: MemoryWriteGateRequest) -> MemoryWriteRejectionCode
 
 def _bounded_subject(candidates: tuple[str, ...]) -> str:
     return "\n".join(candidates)[:_MAX_SUBJECT_LENGTH]
+
+
+def _subject_exceeds_limit(candidates: tuple[str, ...]) -> bool:
+    return len("\n".join(candidates)) > _MAX_SUBJECT_LENGTH
 
 
 def _bounded_reason(value: str | None) -> str:

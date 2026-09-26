@@ -54,6 +54,16 @@ class _StaticDecisionModel:
         return self._result
 
 
+class _RecordingDecisionModel(_StaticDecisionModel):
+    def __init__(self, result: DecisionResult) -> None:
+        super().__init__(result)
+        self.requests: list[DecisionRequest] = []
+
+    async def evaluate(self, request: DecisionRequest, /) -> DecisionResult:
+        self.requests.append(request)
+        return await super().evaluate(request)
+
+
 class _FailingDecisionModel:
     """A backend whose every evaluation raises."""
 
@@ -167,6 +177,26 @@ def test_a_hold_beyond_the_evidence_ceiling_reports_limit_exceeded() -> None:
 
         assert assessment.verdict is MemoryWriteVerdict.HOLD
         assert assessment.code is MemoryWriteRejectionCode.EVIDENCE_LIMIT_EXCEEDED
+
+    asyncio.run(scenario())
+
+
+def test_an_oversized_candidate_batch_is_held_before_backend_assessment() -> None:
+    async def scenario() -> None:
+        backend = _RecordingDecisionModel(_verdict(DecisionOutcome.NO))
+        gate = DecisionMemoryWriteGate(backend, hold_on=DecisionOutcome.YES)
+
+        assessment = await gate.assess(
+            _request(
+                candidates=("x" * 4000, "UNASSESSED_TAIL"),
+                evidence=("source:task:1\nsupporting text",),
+            )
+        )
+
+        assert assessment.verdict is MemoryWriteVerdict.HOLD
+        assert assessment.code is MemoryWriteRejectionCode.INSUFFICIENT_COVERAGE
+        assert assessment.reason == "the candidate batch exceeds the gate assessment budget"
+        assert backend.requests == []
 
     asyncio.run(scenario())
 
