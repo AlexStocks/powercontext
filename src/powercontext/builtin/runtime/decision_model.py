@@ -133,7 +133,23 @@ class StructuredDecisionModel:
             result = await self._generator.generate(request)
         except InferenceError as error:
             return DecisionModelResult(used_fallback=True, fallback_reason=type(error).__name__)
-        return result.output.model_copy(update={"usage": result.usage})
+        output = result.output.model_copy(update={"usage": result.usage})
+        option_ids = {option.option_id for option in request.options}
+        if output.used_fallback:
+            return output
+        if output.selected_option_id not in option_ids:
+            return DecisionModelResult(
+                used_fallback=True,
+                fallback_reason="invalid_output",
+                usage=result.usage,
+            )
+        if any(option_id not in option_ids for option_id in output.scores):
+            return DecisionModelResult(
+                used_fallback=True,
+                fallback_reason="invalid_output",
+                usage=result.usage,
+            )
+        return output
 
 
 __all__ = [

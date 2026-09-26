@@ -87,6 +87,43 @@ def test_structured_decision_model_reports_usage_from_generator() -> None:
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(
+    "output",
+    [
+        DecisionModelResult(selected_option_id="missing"),
+        DecisionModelResult(),
+        DecisionModelResult(selected_option_id="write", scores={"missing": 0.9}),
+    ],
+)
+def test_structured_decision_model_rejects_outputs_outside_requested_options(output) -> None:
+    class Generator:
+        async def generate(self, value: DecisionModelRequest, /) -> GenerationResult[DecisionModelResult]:
+            return GenerationResult(
+                output=output,
+                usage=InferenceUsage(requests=1, input_tokens=7, output_tokens=3),
+            )
+
+    async def scenario() -> None:
+        model = StructuredDecisionModel(Generator(), policy_id="test")
+        result = await model.evaluate(
+            DecisionModelRequest(
+                operation="memory.write_gate",
+                question="Should this candidate be written?",
+                options=(
+                    DecisionModelOption(option_id="write", label="Write"),
+                    DecisionModelOption(option_id="defer", label="Defer"),
+                ),
+            )
+        )
+
+        assert result.selected_option_id is None
+        assert result.used_fallback is True
+        assert result.fallback_reason == "invalid_output"
+        assert result.usage.input_tokens == 7
+
+    asyncio.run(scenario())
+
+
 def test_structured_decision_model_fails_open_on_provider_unavailable() -> None:
     class Generator:
         async def generate(self, value: DecisionModelRequest, /) -> GenerationResult[DecisionModelResult]:
