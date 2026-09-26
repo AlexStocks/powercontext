@@ -76,6 +76,9 @@ from powercontext.builtin.artifacts.memory.protocols import (
     MemoryBackend,
     MemoryCandidateRequest,
     MemoryCommit,
+    MemoryConflictAssessment,
+    MemoryConflictGate,
+    MemoryConflictGateRequest,
     MemoryProjection,
     MemorySearchRequest,
     MemoryWriteAssessment,
@@ -167,6 +170,33 @@ def _annotate_reason(reason: str | None, flagged_reason: str | None) -> str | No
     return normalize_reason(flagged_reason)
 
 
+# The existing-entry projection offered to a conflict gate is bounded on both axes: at most
+# ``_MAX_CONFLICT_ENTRIES`` entries, each truncated to ``_MAX_CONFLICT_ENTRY_LENGTH`` characters.
+# The ceilings mirror the write gate's selector/subject bounds so the same comparison size applies,
+# and they are declared here because a ``memory -> runtime`` import would invert the one-way
+# dependency between the two packages.
+_MAX_CONFLICT_ENTRIES = 32
+_MAX_CONFLICT_ENTRY_LENGTH = 4000
+
+
+def _active_entry_texts(
+    base: Memory | None,
+    entries: tuple[MemoryEntryVersion, ...] | None,
+) -> tuple[str, ...]:
+    """Project a bounded set of active entry texts, so a conflict check never compares inactive bodies."""
+
+    if base is None or not entries:
+        return ()
+    active_ids = frozenset(item.entry_version_id for item in base.content.manifest.entries if item.state == "active")
+    texts: list[str] = []
+    for entry in entries:
+        if entry.entry_version_id in active_ids:
+            texts.append(entry.text[:_MAX_CONFLICT_ENTRY_LENGTH])
+            if len(texts) == _MAX_CONFLICT_ENTRIES:
+                break
+    return tuple(texts)
+
+
 class MemoryService:
     """Validate and orchestrate Memory operations without exposing storage details."""
 
@@ -183,11 +213,13 @@ class MemoryService:
         id_factory: IdFactory | None = None,
         prompt_context: ScopedPrompts | None = None,
         write_gate: MemoryWriteGate | None = None,
+        conflict_gate: MemoryConflictGate | None = None,
     ) -> None:
         self._backend = backend
         self._prompt_context = prompt_context
         self._candidate_pipeline = candidate_pipeline
         self._write_gate = write_gate
+        self._conflict_gate = conflict_gate
         self._embedding_model = embedding_model
         if rerank_candidate_limit < 1:
             raise _InvalidMemoryOperationError("search-limit")
@@ -319,6 +351,12 @@ class MemoryService:
                 # A refused write stays visible: the caller reads the structured code and reason
                 # from the plan. The plan carries no commit, so nothing is written.
                 return MemoryWritePlan(result=base, commit=None, decision=assessment)
+
+            # The conflict observation is log-only by design: the gate logs its own structured
+            # event, and the mark is deliberately not carried on the plan because no consumer would
+            # act on it. Existing entries are read lazily and only when a gate is configured, so an
+            # unconfigured write path performs no extra read.
+            await self._assess_conflict(base, candidates, current_entries)
 
             flagged_reason = (
                 assessment.reason if assessment is not None and assessment.verdict is MemoryWriteVerdict.FLAG else None
@@ -1160,6 +1198,31 @@ class MemoryService:
             f"{artifact.family}:{artifact.artifact_id}@{artifact.revision}" for artifact in evidence.artifacts
         )
         return tuple(entries)
+
+    async def _assess_conflict(
+        self,
+        base: Memory | None,
+        candidates: tuple[MemoryEntryInput, ...],
+        current_entries: tuple[MemoryEntryVersion, ...] | None,
+    ) -> MemoryConflictAssessment | None:
+        """Ask the configured conflict gate about one candidate set; ``None`` means no gate is active.
+
+        Existing entries are read only when a gate is configured and only when extraction did not
+        already load them, so an unconfigured write path performs no extra read.
+        """
+
+        if self._conflict_gate is None:
+            return None
+        existing = current_entries
+        if existing is None and base is not None:
+            existing = await self._validated_entries(base)
+        return await self._conflict_gate.assess(
+            MemoryConflictGateRequest(
+                candidates=tuple(candidate.text for candidate in candidates),
+                existing_entries=_active_entry_texts(base, existing),
+                expected_revision=None if base is None else base.revision,
+            )
+        )
 
     async def _prepare_commit(
         self,

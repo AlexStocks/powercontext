@@ -135,6 +135,57 @@ class MemoryWritePlan(BaseModel):
     decision: MemoryWriteAssessment | None = None
 
 
+class MemoryConflictVerdict(StrEnum):
+    """The complete observation vocabulary for a suspected Memory conflict.
+
+    ``POSSIBLE_CONFLICT`` is a write-path observation only. It is not a lifecycle state and it
+    never implies a delete, a supersession, or a merge; nothing downstream acts on it.
+    """
+
+    NONE = "none"
+    POSSIBLE_CONFLICT = "possible_conflict"
+
+
+class MemoryConflictAssessment(BaseModel):
+    """One conflict observation with the bounded reason its caller may read.
+
+    The assessment is a mark: it never carries a mutation and never changes a commit. It is not
+    carried on any plan; the gate that produces it logs it and keeps it out of every result.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    verdict: MemoryConflictVerdict
+    policy_id: str
+    reason: str | None = None
+    used_fallback: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryConflictGateRequest:
+    """A bounded projection of one pending write and the active entries it might contradict."""
+
+    candidates: tuple[str, ...]
+    existing_entries: tuple[str, ...]
+    expected_revision: int | None = None
+
+
+class MemoryConflictGate(Protocol):
+    """Observe whether a pending Memory write conflicts with existing content.
+
+    A gate only observes: it never writes, deletes, deactivates, merges, or supersedes anything,
+    and a missing or failing gate must be treated by callers as "no conflict observed". The
+    returned assessment is the port's own self-description: it is logged, never carried onward.
+    """
+
+    policy_id: str
+
+    async def assess(self, request: MemoryConflictGateRequest, /) -> MemoryConflictAssessment:
+        """Return one conflict mark for a candidate set and its bounded existing-entry projection."""
+
+        ...
+
+
 class MemorySearchRequest(BaseModel):
     """A fully validated backend search request for explicit current heads."""
 

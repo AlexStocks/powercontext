@@ -73,6 +73,7 @@ class DecisionKind(StrEnum):
     """
 
     MEMORY_WRITE_GATE = "memory.write-gate"
+    MEMORY_CONFLICT = "memory.conflict"
 
 
 @dataclass(frozen=True, slots=True)

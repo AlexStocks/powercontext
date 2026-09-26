@@ -106,6 +106,14 @@ from powercontext.builtin.runtime.decision_model import (
     DecisionResult,
 )
 from powercontext.builtin.runtime.errors import InvalidRuntimeRequestError, TopicMemoryProcessingUnavailableError
+from powercontext.builtin.runtime.memory_conflict_gate import (
+    DecisionMemoryConflictGate,
+    MemoryConflictAssessment,
+    MemoryConflictGate,
+    MemoryConflictGateRequest,
+    MemoryConflictVerdict,
+    build_memory_conflict_gate,
+)
 from powercontext.builtin.runtime.memory_write_gate import (
     DecisionMemoryWriteGate,
     MemoryWriteAssessment,
@@ -230,6 +238,7 @@ __all__ = [
     "CreateDreamRunRequest",
     "DatabaseConfig",
     "DecisionKind",
+    "DecisionMemoryConflictGate",
     "DecisionMemoryWriteGate",
     "DecisionModel",
     "DecisionOutcome",
@@ -283,6 +292,10 @@ __all__ = [
     "MemoryChange",
     "MemoryChangesPage",
     "MemoryCitation",
+    "MemoryConflictAssessment",
+    "MemoryConflictGate",
+    "MemoryConflictGateRequest",
+    "MemoryConflictVerdict",
     "MemoryEntriesPage",
     "MemoryEntryInput",
     "MemoryEntryInventoryStatistics",
@@ -370,6 +383,7 @@ __all__ = [
     "TopicMemoryProcessingUnavailableError",
     "UsageStatistics",
     "WorkApplication",
+    "build_memory_conflict_gate",
     "build_memory_write_gate",
     "dependency_readiness_probe",
     "open_builtin_contexts",

@@ -39,6 +39,7 @@ from powercontext.builtin.artifacts.memory import (
     CandidatePipeline,
     DefaultMemoryEvidenceProjector,
     MemoryCapabilities,
+    MemoryConflictGate,
     MemoryHit,
     MemoryRerankDecision,
     MemoryReranker,
@@ -136,6 +137,7 @@ from powercontext.builtin.runtime.decision_model import (
     LLMDecisionModel,
 )
 from powercontext.builtin.runtime.family_processing import FAMILY_BINDINGS, FamilyWorkerSpec, run_family_worker
+from powercontext.builtin.runtime.memory_conflict_gate import build_memory_conflict_gate
 from powercontext.builtin.runtime.memory_write_gate import build_memory_write_gate
 from powercontext.builtin.runtime.models import MemorySearchMode, RuntimeCapabilities
 from powercontext.builtin.runtime.processing_discovery import SourceProcessingPendingProvider, enabled_profile_scopes
@@ -349,6 +351,38 @@ def _configured_memory_write_gate(
     return gate
 
 
+def _configured_memory_conflict_gate(
+    injected: MemoryConflictGate | None,
+    decision_model: DecisionModel | None,
+    runtime: RuntimeConfig,
+) -> MemoryConflictGate | None:
+    """Resolve the Memory conflict gate: an explicit injection wins, then configuration builds one.
+
+    The gate is auxiliary and fail-open by contract, which is the opposite of the decision role:
+    an enabled gate whose decision backend is unavailable logs a warning and passes writes through
+    instead of failing startup, so a misconfigured gate can never mark or block Memory writes.
+    """
+
+    if injected is not None:
+        return injected
+    if not runtime.memory_conflict_enabled:
+        return None
+    gate = build_memory_conflict_gate(
+        decision_model,
+        enabled=True,
+        conflict_on=runtime.memory_conflict_on,
+        threshold=runtime.memory_conflict_threshold,
+    )
+    if gate is None:
+        log_safely(
+            logger,
+            logging.WARNING,
+            "Memory conflict gate is enabled but no decision backend is available; writes pass through",
+            extra={"event": "memory.conflict-gate.unavailable", "decision_kind": "memory.conflict"},
+        )
+    return gate
+
+
 @asynccontextmanager
 async def open_builtin_runtime(
     config: BuiltinConfig,
@@ -370,6 +404,7 @@ async def open_builtin_runtime(
     memory_reranker: MemoryReranker | None = None,
     decision_model: DecisionModel | None = None,
     memory_write_gate: MemoryWriteGate | None = None,
+    memory_conflict_gate: MemoryConflictGate | None = None,
     instrumentation: InstrumentationSettings | None = None,
     scope_cache_observer: ScopeCacheObserver | None = None,
     topic_memory_search_observer: Callable[[str, bool], None] | None = None,
@@ -450,6 +485,9 @@ async def open_builtin_runtime(
         # so its span records the final verdict including any degradation.
         configured_decision = _fail_open_decision_model(decision_model, generated_decision, tracing)
         configured_gate = _configured_memory_write_gate(memory_write_gate, configured_decision, config.runtime)
+        configured_conflict_gate = _configured_memory_conflict_gate(
+            memory_conflict_gate, configured_decision, config.runtime
+        )
         if embedding_model is None:
             configured_embedding_source, readiness_embedding = await _embedding_models(
                 config.inference,
@@ -485,6 +523,7 @@ async def open_builtin_runtime(
                 memory_reranker=configured_reranker,
                 decision_model=configured_decision,
                 memory_write_gate=configured_gate,
+                memory_conflict_gate=configured_conflict_gate,
                 source_registry=configured_source_registry,
                 cursor_secret=cursor_secret,
                 tracing=tracing,
@@ -847,6 +886,7 @@ async def open_builtin_contexts(
     memory_reranker: MemoryReranker | None = None,
     decision_model: DecisionModel | None = None,
     memory_write_gate: MemoryWriteGate | None = None,
+    memory_conflict_gate: MemoryConflictGate | None = None,
     source_registry: SourceDefinitionRegistry | None = None,
     cursor_secret: bytes | None = None,
     tracing: RuntimeTracing | None = None,
@@ -907,6 +947,7 @@ async def open_builtin_contexts(
                 memory_reranker=memory_reranker,
                 decision_model=decision_model,
                 memory_write_gate=memory_write_gate,
+                memory_conflict_gate=memory_conflict_gate,
                 memory_rerank_candidate_limit=config.runtime.memory_rerank_candidate_limit,
                 prompt_registry=prompt_registry,
                 prompt_demonstrators=prompt_demonstrators,
@@ -966,6 +1007,7 @@ async def open_builtin_contexts(
             memory_reranker=memory_reranker,
             decision_model=decision_model,
             memory_write_gate=memory_write_gate,
+            memory_conflict_gate=memory_conflict_gate,
             memory_rerank_candidate_limit=config.runtime.memory_rerank_candidate_limit,
             prompt_registry=prompt_registry,
             prompt_demonstrators=prompt_demonstrators,

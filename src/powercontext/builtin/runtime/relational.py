@@ -62,6 +62,7 @@ from powercontext.builtin.artifacts.memory import (
     CandidatePipeline,
     EmbeddingProfile,
     Memory,
+    MemoryConflictGate,
     MemoryQueryEmbedding,
     MemoryReranker,
     MemoryService,
@@ -302,6 +303,7 @@ class _ScopedServices:
     memory_rerank_candidate_limit: int
     decision_model: DecisionModel | None
     memory_write_gate: MemoryWriteGate | None
+    memory_conflict_gate: MemoryConflictGate | None
     id_factory: IdFactory
     handoff_artifact_id: str
     memory_artifact_id: str
@@ -362,6 +364,7 @@ class _ScopedServices:
             ),
             id_factory=self.id_factory,
             write_gate=self.memory_write_gate,
+            conflict_gate=self.memory_conflict_gate,
         )
 
     def evidence(self, authorize: EvidenceAuthorizer | None = None) -> EvidenceResolver:
@@ -518,6 +521,7 @@ class RelationalContexts:
         memory_reranker: MemoryReranker | None = None,
         decision_model: DecisionModel | None = None,
         memory_write_gate: MemoryWriteGate | None = None,
+        memory_conflict_gate: MemoryConflictGate | None = None,
         memory_rerank_candidate_limit: int = 30,
         id_factory: IdFactory | None = None,
         handoff_artifact_id: str = "handoff",
@@ -669,6 +673,7 @@ class RelationalContexts:
         self._memory_reranker = memory_reranker
         self._decision_model = decision_model
         self._memory_write_gate = memory_write_gate
+        self._memory_conflict_gate = memory_conflict_gate
         self._memory_rerank_candidate_limit = memory_rerank_candidate_limit
         self._handoff_artifact_id = handoff_artifact_id
         self._memory_artifact_id = memory_artifact_id
@@ -1408,6 +1413,7 @@ class RelationalContexts:
             memory_rerank_candidate_limit=self._memory_rerank_candidate_limit,
             decision_model=self._decision_model,
             memory_write_gate=self._memory_write_gate,
+            memory_conflict_gate=self._memory_conflict_gate,
             id_factory=self._id_factory,
             handoff_artifact_id=self._handoff_artifact_id,
             memory_artifact_id=self._memory_artifact_id,

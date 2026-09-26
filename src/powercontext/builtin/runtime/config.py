@@ -148,6 +148,12 @@ class RuntimeConfig(BaseModel):
     # number.
     memory_write_gate_hold_on: Literal["yes", "no"] = "yes"
     memory_write_gate_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    memory_conflict_enabled: bool = False
+    # Direction only: which verdict means "the new content conflicts with an existing entry". The
+    # strength threshold stays unset until a calibration probe establishes it, so a conflict mark
+    # never depends on a made-up number.
+    memory_conflict_on: Literal["yes", "no"] = "yes"
+    memory_conflict_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     recall_gate_enabled: bool = False
     recall_gate_max_rounds: int = Field(default=2, ge=0, le=2)
     recall_gate_min_candidates: int = Field(default=2, ge=1)
