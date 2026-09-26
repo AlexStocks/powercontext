@@ -29,10 +29,6 @@ def test_memory_write_gate_is_disabled_by_default() -> None:
     assert config.memory_write_gate_threshold is None
 
 
-def test_handoff_escalation_is_disabled_by_default() -> None:
-    assert RuntimeConfig().handoff_escalation_enabled is False
-
-
 def test_the_hold_direction_is_configurable() -> None:
     assert RuntimeConfig(memory_write_gate_hold_on="no").memory_write_gate_hold_on == "no"
 
@@ -51,10 +47,8 @@ def test_the_strength_threshold_is_bounded(threshold: float) -> None:
 def test_the_gate_settings_load_from_the_server_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POWERCONTEXT_SERVER_RUNTIME_MEMORY_WRITE_GATE_ENABLED", "true")
     monkeypatch.setenv("POWERCONTEXT_SERVER_RUNTIME_MEMORY_WRITE_GATE_HOLD_ON", "no")
-    monkeypatch.setenv("POWERCONTEXT_SERVER_RUNTIME_HANDOFF_ESCALATION_ENABLED", "true")
 
     runtime = ServerSettings().runtime
 
     assert runtime.memory_write_gate_enabled is True
     assert runtime.memory_write_gate_hold_on == "no"
-    assert runtime.handoff_escalation_enabled is True

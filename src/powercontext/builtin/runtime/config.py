@@ -148,7 +148,6 @@ class RuntimeConfig(BaseModel):
     # number.
     memory_write_gate_hold_on: Literal["yes", "no"] = "yes"
     memory_write_gate_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
-    handoff_escalation_enabled: bool = False
     recall_gate_enabled: bool = False
     recall_gate_max_rounds: int = Field(default=2, ge=0, le=2)
     recall_gate_min_candidates: int = Field(default=2, ge=1)
