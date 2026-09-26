@@ -95,7 +95,6 @@ def _verdict(
 
 def test_decision_kind_values_are_stable() -> None:
     assert DecisionKind.MEMORY_WRITE_GATE.value == "memory.write-gate"
-    assert DecisionKind.HANDOFF_ESCALATION.value == "handoff.escalation"
 
 
 def test_gate_vocabulary_is_complete() -> None:

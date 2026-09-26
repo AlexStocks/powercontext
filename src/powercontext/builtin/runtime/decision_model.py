@@ -73,7 +73,6 @@ class DecisionKind(StrEnum):
     """
 
     MEMORY_WRITE_GATE = "memory.write-gate"
-    HANDOFF_ESCALATION = "handoff.escalation"
 
 
 @dataclass(frozen=True, slots=True)
