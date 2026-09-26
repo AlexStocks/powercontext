@@ -53,9 +53,9 @@ The provider advertises Hermes' pre-compress checkpoint API v2. When Hermes
 supplies its host-normalized evidence list, that list is captured instead of the
 raw transcript, so turns Hermes already replaced with a compression summary are
 not stored as fresh evidence. With `compression.checkpoint_required: true`,
-enable `capture_pre_compress` as well: a checkpoint PowerContext cannot commit
-raises, and Hermes then keeps the uncompressed transcript instead of discarding
-it behind a failed capture.
+enable `capture_pre_compress` as well: if PowerContext cannot commit the
+checkpoint, the provider raises and Hermes keeps the uncompressed transcript
+instead of discarding it behind a failed capture.
 
 Evaluation tracing is also opt-in. Set `evaluation_trace: true` or
 `POWERCONTEXT_HERMES_EVALUATION_TRACE=1` to record context injections in

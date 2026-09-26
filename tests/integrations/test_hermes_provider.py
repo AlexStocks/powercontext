@@ -718,6 +718,21 @@ def test_required_checkpoint_succeeds_when_the_transcript_is_stored(provider_and
     assert [call[0] for call in client.calls] == ["capture_content", "get_capabilities", "flush_memory"]
 
 
+def test_required_checkpoint_raises_when_the_transcript_would_be_truncated(provider_and_client):
+    provider, client = provider_and_client
+    provider._config["capture_pre_compress"] = True
+    provider_module = hermes_provider_module(provider)
+
+    with pytest.raises(provider_module.PreCompressCheckpointError):
+        provider.on_pre_compress(
+            [{"role": "user", "content": "x" * 30_001}],
+            require_checkpoint=True,
+        )
+
+    assert client.calls == []
+    assert provider._precompress_snapshot == []
+
+
 def test_required_checkpoint_accepts_a_window_that_is_already_captured(provider_and_client):
     provider, client = provider_and_client
     provider._config["capture_pre_compress"] = True
@@ -731,6 +746,28 @@ def test_required_checkpoint_accepts_a_window_that_is_already_captured(provider_
 
     capture_calls = [call for call in client.calls if call[0] == "capture_content"]
     assert len(capture_calls) == 1
+
+
+def test_required_checkpoint_raises_when_scope_changes_during_capture(provider_and_client, monkeypatch):
+    provider, client = provider_and_client
+    provider._config["capture_pre_compress"] = True
+    provider_module = hermes_provider_module(provider)
+    capture_content = client.capture_content
+
+    def capture_switches_scope(*args, **kwargs):
+        capture_content(*args, **kwargs)
+        provider._switch_scope("scp_other_scope")
+
+    monkeypatch.setattr(client, "capture_content", capture_switches_scope)
+
+    with pytest.raises(provider_module.PreCompressCheckpointError):
+        provider.on_pre_compress(
+            [{"role": "user", "content": "Capture before the scope switch."}],
+            require_checkpoint=True,
+        )
+
+    assert [call[0] for call in client.calls] == ["capture_content"]
+    assert provider._precompress_snapshot == []
 
 
 def test_committed_checkpoint_survives_a_memory_extraction_failure(provider_and_client, monkeypatch):
