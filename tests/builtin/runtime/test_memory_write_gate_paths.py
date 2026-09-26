@@ -206,10 +206,7 @@ def test_enabling_the_gate_without_a_backend_warns_and_passes_writes_through(
         asyncio.run(scenario())
 
     assert any("no decision backend is available" in message for message in caplog.messages)
-    unavailable = next(
-        record for record in caplog.records if getattr(record, "event", None) == "memory.write-gate.unavailable"
-    )
-    assert getattr(unavailable, "event", None) == "memory.write-gate.unavailable"
+    assert "memory.write-gate.unavailable" in {getattr(record, "event", None) for record in caplog.records}
 
 
 def test_a_held_write_is_not_committed_and_stays_visible(tmp_path: Path) -> None:
