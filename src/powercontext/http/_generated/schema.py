@@ -7354,14 +7354,14 @@ OPENAPI_SCHEMA: dict[str, JsonValue] = {
                     "held_count": {
                         "type": "integer",
                         "minimum": 0.0,
-                        "default": 0,
                         "description": "Number of source windows held by the Memory write gate.",
+                        "default": 0,
                     },
                     "hold_codes": {
                         "items": {"type": "string"},
                         "type": "array",
-                        "default": [],
                         "description": "Structured Memory write gate refusal codes for held windows.",
+                        "default": [],
                     },
                 },
                 "additionalProperties": False,
