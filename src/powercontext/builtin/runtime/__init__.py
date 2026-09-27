@@ -101,9 +101,13 @@ from powercontext.builtin.runtime.config import (
 from powercontext.builtin.runtime.decision_model import (
     DecisionKind,
     DecisionModel,
+    DecisionModelOption,
+    DecisionModelRequest,
+    DecisionModelResult,
     DecisionOutcome,
     DecisionRequest,
     DecisionResult,
+    StructuredDecisionModel,
 )
 from powercontext.builtin.runtime.errors import InvalidRuntimeRequestError, TopicMemoryProcessingUnavailableError
 from powercontext.builtin.runtime.memory_write_gate import (
@@ -232,6 +236,9 @@ __all__ = [
     "DecisionKind",
     "DecisionMemoryWriteGate",
     "DecisionModel",
+    "DecisionModelOption",
+    "DecisionModelRequest",
+    "DecisionModelResult",
     "DecisionOutcome",
     "DecisionRequest",
     "DecisionResult",
@@ -364,6 +371,7 @@ __all__ = [
     "Statistics",
     "StatisticsApplication",
     "StatisticsPeriod",
+    "StructuredDecisionModel",
     "SubmitSourceObservation",
     "TopicMemoryApplication",
     "TopicMemoryFlushResult",
