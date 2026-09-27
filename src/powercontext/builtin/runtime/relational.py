@@ -1440,6 +1440,14 @@ class _RelationalMemorySourceResolver:
     def as_ref(self, source: Source, /) -> SourceRef:
         return self._catalog.as_ref(source)
 
+    async def get_ref(self, ref: SourceRef, /) -> Source:
+        try:
+            async with self._database.connection(self._connection) as connection:
+                (stored,) = await self._access.require_for_generation(connection, self._scope_id, (ref,))
+        except RepositoryNotFoundError:
+            raise SourceNotFoundError(ref) from None
+        return stored.value
+
     async def get(self, source: Source, /) -> Source:
         try:
             async with self._database.connection(self._connection) as connection:
@@ -1545,13 +1553,16 @@ class _RelationalArtifactResolver:
 
     async def get(self, artifact: Artifact[object], /) -> Artifact[object]:
         try:
-            async with self._database.connection(self._bound_connection) as connection:
-                return cast(
-                    Artifact[object],
-                    await self._repository.get(connection, self._scope_id, artifact.as_ref()),
-                )
-        except RepositoryNotFoundError:
+            return await self.get_ref(artifact.as_ref())
+        except ArtifactNotFoundError:
             raise ArtifactNotFoundError(artifact) from None
+
+    async def get_ref(self, ref: ArtifactRef, /) -> Artifact[object]:
+        try:
+            async with self._database.connection(self._bound_connection) as connection:
+                return cast(Artifact[object], await self._repository.get(connection, self._scope_id, ref))
+        except RepositoryNotFoundError:
+            raise ArtifactNotFoundError(ref) from None
 
 
 class _RelationalTriggers:

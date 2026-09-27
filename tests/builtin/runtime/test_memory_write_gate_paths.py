@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from powercontext.builtin.artifacts.experience import Experience, ExperienceContent
 from powercontext.builtin.artifacts.memory import (
     MemoryCandidateRequest,
     MemoryEntryInput,
@@ -49,7 +50,7 @@ from powercontext.builtin.runtime.decision_model import (
 )
 from powercontext.builtin.runtime.memory_write_gate import DecisionMemoryWriteGate
 from powercontext.builtin.scope import ScopeDraft
-from powercontext.builtin.sources import ContentSource
+from powercontext.builtin.sources import ContentCapture, ContentSource
 from powercontext.server import mapping
 from powercontext.server.app import _map_error
 
@@ -279,6 +280,95 @@ def test_a_failing_injected_gate_leaves_the_write_unchanged(tmp_path: Path) -> N
             )
 
             assert stored is not None
+
+    asyncio.run(scenario())
+
+
+def test_revisions_pass_inherited_source_content_to_the_gate(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        gate = _ScriptedGate(_assessment(MemoryWriteVerdict.ACCEPT))
+        async with open_builtin_contexts(_config(tmp_path), memory_write_gate=gate) as contexts:
+            context = await contexts.get("project")
+            source, _ = await context.sources.capture(
+                ContentCapture(source_id="db-requirements", content="The database requirement is MySQL 8.")
+            )
+            initial = await context.artifacts.memory.remember(
+                memory=None,
+                sources=(source,),
+                entries=(MemoryEntryInput(kind="fact", text="Use MySQL 8.", sources=(source,)),),
+                mode="append",
+            )
+            assert initial is not None
+            entry = (await context.artifacts.memory.entries(initial))[0]
+
+            revised = await context.artifacts.memory.remember(
+                memory=initial,
+                entries=(MemoryEntryInput(kind="fact", text="Use PostgreSQL.", entry=entry),),
+                mode="append",
+            )
+
+            assert revised is not None
+            assert "The database requirement is MySQL 8." in "\n".join(gate.requests[-1].evidence)
+
+    asyncio.run(scenario())
+
+
+def test_artifact_evidence_passes_content_to_the_gate(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        gate = _ScriptedGate(
+            _assessment(
+                MemoryWriteVerdict.HOLD,
+                code=MemoryWriteRejectionCode.INSUFFICIENT_COVERAGE,
+                reason="artifact content was inspected",
+            )
+        )
+        async with open_builtin_contexts(_config(tmp_path), memory_write_gate=gate) as contexts:
+            context = await contexts.get("project")
+            artifact = Experience(
+                artifact_id="experience-db-outcome",
+                revision=1,
+                content=ExperienceContent(
+                    situation="The write path used SQLite.",
+                    action="Checked the gate request.",
+                    outcome="The controlled outcome was HOLD.",
+                    lesson="Opposite outcome text must be visible to the judge.",
+                ),
+            )
+
+            plan = await context.artifacts.memory.plan_remember(
+                memory=None,
+                entries=(MemoryEntryInput(kind="fact", text="Gate outcome was ACCEPT.", artifacts=(artifact,)),),
+                mode="append",
+            )
+
+            assert plan.commit is None
+            evidence = "\n".join(gate.requests[-1].evidence)
+            assert "Opposite outcome text must be visible to the judge." in evidence
+
+    asyncio.run(scenario())
+
+
+def test_incomplete_gate_evidence_is_held_before_backend_assessment(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        gate = _ScriptedGate(_assessment(MemoryWriteVerdict.ACCEPT))
+        async with open_builtin_contexts(_config(tmp_path), memory_write_gate=gate) as contexts:
+            context = await contexts.get("project")
+            long_source, _ = await context.sources.capture(
+                ContentCapture(source_id="corrected-requirements", content=f"{'PostgreSQL first. ' * 150}Use MySQL.")
+            )
+
+            plan = await context.artifacts.memory.plan_remember(
+                memory=None,
+                sources=(long_source,),
+                entries=(MemoryEntryInput(kind="fact", text="Use PostgreSQL.", sources=(long_source,)),),
+                mode="append",
+            )
+
+            assert plan.commit is None
+            assert plan.decision is not None
+            assert plan.decision.verdict is MemoryWriteVerdict.HOLD
+            assert plan.decision.code is MemoryWriteRejectionCode.EVIDENCE_LIMIT_EXCEEDED
+            assert gate.requests == []
 
     asyncio.run(scenario())
 

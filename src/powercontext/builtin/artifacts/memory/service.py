@@ -23,6 +23,8 @@ from time import perf_counter
 from typing import Literal, Protocol, TypeAlias, TypeVar, overload
 from uuid import uuid4
 
+from pydantic import BaseModel
+
 from powercontext.artifacts import Artifact, ArtifactLineage, ArtifactRef
 from powercontext.builtin.artifacts.memory.canonical import (
     canonical_embedding,
@@ -83,6 +85,7 @@ from powercontext.builtin.artifacts.memory.protocols import (
     MemoryWriteGate,
     MemoryWriteGateRequest,
     MemoryWritePlan,
+    MemoryWriteRejectionCode,
     MemoryWriteVerdict,
 )
 from powercontext.builtin.artifacts.memory.reranking import MemoryReranker
@@ -109,11 +112,15 @@ _GATE_EVIDENCE_TEXT_LIMIT = 2000
 class _SourceResolver(Protocol):
     async def get(self, source: Source, /) -> Source: ...
 
+    async def get_ref(self, ref: SourceRef, /) -> Source: ...
+
     def as_ref(self, source: Source, /) -> SourceRef: ...
 
 
 class _ArtifactResolver(Protocol):
     async def get(self, artifact: Artifact[object], /) -> Artifact[object]: ...
+
+    async def get_ref(self, ref: ArtifactRef, /) -> Artifact[object]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +137,45 @@ class _EntryMaterial:
     artifacts: tuple[ArtifactRef, ...]
     content_bytes: bytes
     content_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class _GateEvidenceEntry:
+    text: str
+    complete: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _GateEvidenceProjection:
+    entries: tuple[str, ...]
+    rejection: MemoryWriteAssessment | None = None
+
+
+@dataclass(slots=True)
+class _GateEvidenceBuilder:
+    policy_id: str
+    entries: list[str]
+
+    def append(self, entry: _GateEvidenceEntry) -> MemoryWriteAssessment | None:
+        if not entry.complete:
+            return self._budget_rejection()
+        if any(current == entry.text for current in self.entries):
+            return None
+        if len(self.entries) >= _GATE_EVIDENCE_ITEM_LIMIT:
+            return self._budget_rejection()
+        self.entries.append(entry.text)
+        return None
+
+    def projection(self) -> _GateEvidenceProjection:
+        return _GateEvidenceProjection(tuple(self.entries))
+
+    def _budget_rejection(self) -> MemoryWriteAssessment:
+        return MemoryWriteAssessment(
+            verdict=MemoryWriteVerdict.HOLD,
+            policy_id=self.policy_id,
+            code=MemoryWriteRejectionCode.EVIDENCE_LIMIT_EXCEEDED,
+            reason="the cited evidence exceeds the gate evidence budget",
+        )
 
 
 class _InvalidMemoryOperationError(ValueError):
@@ -1150,10 +1196,13 @@ class MemoryService:
         if self._write_gate is None:
             return None
         try:
+            projection = await self._gate_evidence(evidence, candidates)
+            if projection.rejection is not None:
+                return projection.rejection
             return await self._write_gate.assess(
                 MemoryWriteGateRequest(
                     candidates=tuple(candidate.text for candidate in candidates),
-                    evidence=self._gate_evidence(evidence, candidates),
+                    evidence=projection.entries,
                     expected_revision=None if base is None else base.revision,
                 )
             )
@@ -1164,39 +1213,74 @@ class MemoryService:
                 used_fallback=True,
             )
 
-    def _gate_evidence(
+    async def _gate_evidence(
         self,
         evidence: _OperationEvidence,
         candidates: tuple[MemoryEntryInput, ...],
-    ) -> tuple[str, ...]:
-        entries: list[str] = []
-        for source in evidence.sources:
-            _append_unique(entries, self._source_gate_evidence(source))
-        for artifact in evidence.artifacts:
-            _append_unique(entries, self._artifact_gate_evidence(artifact))
+    ) -> _GateEvidenceProjection:
+        builder = _GateEvidenceBuilder(self._write_gate_policy_id(), [])
+        for entry in self._direct_gate_evidence(evidence):
+            if rejection := builder.append(entry):
+                return _GateEvidenceProjection(tuple(builder.entries), rejection)
         for candidate in candidates:
-            for source in candidate.sources:
-                _append_unique(entries, self._source_gate_evidence(source))
-            for artifact in candidate.artifacts:
-                _append_unique(entries, self._artifact_gate_evidence(artifact))
-            if candidate.entry is not None:
-                for source in candidate.entry.sources:
-                    _append_unique(entries, f"source:{source.source_type}:{source.source_id}")
-                for artifact in candidate.entry.artifacts:
-                    _append_unique(entries, f"artifact:{artifact.family}:{artifact.artifact_id}@{artifact.revision}")
-        return tuple(entries[:_GATE_EVIDENCE_ITEM_LIMIT])
+            for entry in await self._candidate_gate_evidence(candidate):
+                if rejection := builder.append(entry):
+                    return _GateEvidenceProjection(tuple(builder.entries), rejection)
+        return builder.projection()
 
-    def _source_gate_evidence(self, source: Source) -> str:
+    def _direct_gate_evidence(self, evidence: _OperationEvidence) -> tuple[_GateEvidenceEntry, ...]:
+        return tuple(
+            [self._source_gate_evidence(source) for source in evidence.sources]
+            + [self._artifact_gate_evidence(artifact) for artifact in evidence.artifacts]
+        )
+
+    async def _candidate_gate_evidence(self, candidate: MemoryEntryInput) -> tuple[_GateEvidenceEntry, ...]:
+        entries = [
+            *(self._source_gate_evidence(source) for source in candidate.sources),
+            *(self._artifact_gate_evidence(artifact) for artifact in candidate.artifacts),
+        ]
+        if candidate.entry is None:
+            return tuple(entries)
+        entries.extend([await self._source_ref_gate_evidence(source) for source in candidate.entry.sources])
+        entries.extend([await self._artifact_ref_gate_evidence(artifact) for artifact in candidate.entry.artifacts])
+        return tuple(entries)
+
+    def _source_gate_evidence(self, source: Source) -> _GateEvidenceEntry:
         ref = self._source_refs((source,))[0]
         content = getattr(source, "content", None)
         if isinstance(content, str) and content.strip():
             return _bounded_gate_evidence(f"source:{ref.source_type}:{ref.source_id}", content)
-        return f"source:{ref.source_type}:{ref.source_id}"
+        return _incomplete_gate_evidence(f"source:{ref.source_type}:{ref.source_id}")
 
     @staticmethod
-    def _artifact_gate_evidence(artifact: Artifact[object]) -> str:
+    def _artifact_gate_evidence(artifact: Artifact[object]) -> _GateEvidenceEntry:
         ref = artifact.as_ref()
-        return f"artifact:{ref.family}:{ref.artifact_id}@{ref.revision}"
+        return _bounded_gate_evidence(
+            f"artifact:{ref.family}:{ref.artifact_id}@{ref.revision}",
+            _artifact_gate_content(artifact),
+        )
+
+    async def _source_ref_gate_evidence(self, ref: SourceRef) -> _GateEvidenceEntry:
+        if self._source_resolver is None:
+            return _incomplete_gate_evidence(f"source:{ref.source_type}:{ref.source_id}")
+        try:
+            return self._source_gate_evidence(await self._source_resolver.get_ref(ref))
+        except Exception:
+            return _incomplete_gate_evidence(f"source:{ref.source_type}:{ref.source_id}")
+
+    async def _artifact_ref_gate_evidence(self, ref: ArtifactRef) -> _GateEvidenceEntry:
+        identity = f"artifact:{ref.family}:{ref.artifact_id}@{ref.revision}"
+        if self._artifact_resolver is None:
+            return _incomplete_gate_evidence(identity)
+        try:
+            return self._artifact_gate_evidence(await self._artifact_resolver.get_ref(ref))
+        except Exception:
+            return _incomplete_gate_evidence(identity)
+
+    def _write_gate_policy_id(self) -> str:
+        if self._write_gate is not None:
+            return self._write_gate.policy_id
+        return "memory.write-gate"
 
     async def _prepare_commit(
         self,
@@ -1533,9 +1617,23 @@ def _raise_if_write_held(plan: MemoryWritePlan) -> None:
     raise MemoryWriteRejectedError(code, decision.reason)
 
 
-def _bounded_gate_evidence(identity: str, content: str) -> str:
+def _bounded_gate_evidence(identity: str, content: str) -> _GateEvidenceEntry:
     normalized = normalize_text(content)
-    return f"{identity}\n{normalized[:_GATE_EVIDENCE_TEXT_LIMIT]}"
+    return _GateEvidenceEntry(
+        text=f"{identity}\n{normalized[:_GATE_EVIDENCE_TEXT_LIMIT]}",
+        complete=len(normalized) <= _GATE_EVIDENCE_TEXT_LIMIT,
+    )
+
+
+def _incomplete_gate_evidence(identity: str) -> _GateEvidenceEntry:
+    return _GateEvidenceEntry(text=identity, complete=False)
+
+
+def _artifact_gate_content(artifact: Artifact[object]) -> str:
+    content = artifact.content
+    if isinstance(content, BaseModel):
+        return content.model_dump_json()
+    return str(content)
 
 
 def _canonical_source_refs(values: Sequence[SourceRef]) -> tuple[SourceRef, ...]:
