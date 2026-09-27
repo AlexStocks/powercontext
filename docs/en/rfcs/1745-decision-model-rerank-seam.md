@@ -10,9 +10,12 @@ second `MemoryReranker` implementation behind the reranking seam established by 
 generation request, it asks the decision model one narrow keep/drop decision per coarse candidate, preserves the coarse
 order among kept candidates, and emits only coarse integer ranks, so every selected hit keeps its exact Artifact,
 entry, and Revision identity. The decision model is invoked only from deterministic Runtime code on the search path and
-is never exposed as a model-callable tool. The policy is opt-in and disabled by default. Because the rerank stage is
-fail-closed under RFC 0080, this RFC also separates the decision role's *runtime failure policy* from the existing
-fail-open envelope, so the reranker fails closed while current advisory consumers keep failing open.
+is never exposed as a model-callable tool. This RFC depends on the DecisionModel foundation proposed in
+[#1740](https://github.com/oceanbase/powercontext/pull/1740): the provider-neutral request/result contract, backend
+configuration, runtime composition, and fail-open wrapper are prerequisites rather than part of this reranker adapter.
+The policy is opt-in and disabled by default. Because the rerank stage is fail-closed under RFC 0080, this RFC also
+separates the decision role's *runtime failure policy* from the existing fail-open envelope, so the reranker fails
+closed while current advisory consumers keep failing open.
 
 # Motivation
 
@@ -21,11 +24,14 @@ RFC 0080 introduced a provider-neutral rerank seam: an ordered, bounded coarse p
 also shipped exactly one policy — a listwise structured generation request that reuses the configured generation
 model.
 
-PowerContext already exposes a **cross-family decision model port**. It answers a single narrow yes/no/abstain question
-against a small, explicit request from deterministic Runtime code, and it is used by internal runtime steps rather than
-by model-callable tooling. Some deployments have a decision backend available but no suitable listwise generation
-behaviour, and there is value in being able to rerank from that decision capability without adopting a second listwise
-prompt policy.
+PowerContext's DecisionModel foundation is being introduced separately in #1740. That foundation defines a
+**cross-family decision model port**: a provider-neutral request/result contract for a single narrow yes/no/abstain
+question, backend configuration, runtime composition, and the fail-open wrapper used by advisory consumers. This RFC is
+stacked on that prerequisite. It does not define the decision port itself; it defines one new Memory reranker adapter
+that consumes the port, plus the role-level failure policy needed because reranking is not advisory.
+
+Some deployments have a decision backend available but no suitable listwise generation behaviour, and there is value in
+being able to rerank from that decision capability without adopting a second listwise prompt policy.
 
 The seam is already the right place for this: it is provider-neutral, it preserves identity by construction, and it is
 composable. Adding a second `MemoryReranker` implementation lets a deployment choose the reranking policy it can
@@ -155,7 +161,7 @@ rerank(query, candidates, limit):
         usages.append(result.usage)
         if result.used_fallback:                 # DecisionResult.used_fallback: backend degraded -> fail closed
             raise RerankFailure()
-        if result.outcome is keep_on:            # keep_on defaults to YES
+        if result.outcome in keep_outcomes:      # keep_outcomes defaults to {YES, ABSTAIN}
             kept.append(rank)
         if len(kept) == limit:
             break
@@ -163,7 +169,7 @@ rerank(query, candidates, limit):
     return MemoryRerankDecision(
         selected_ranks       = selected,
         usage                = sum_usages(usages),
-        discarded_rank_count = len(candidates) - len(selected),   # candidates not in the final selection
+        discarded_rank_count = 0,                  # no duplicate/out-of-range ranks were emitted
         used_fallback        = not kept,                          # MemoryRerankDecision field: built-in fallback used
     )
 ```
@@ -176,18 +182,20 @@ Notes:
 - **Identity.** The adapter emits at most `limit` coarse integer ranks. The service resolves them back to the original
   `MemoryHit` objects. No candidate is added, removed, or re-identified.
 - **`abstain` versus backend failure.** A healthy backend that abstains on one candidate is treated conservatively as a
-  keep (do not drop evidence). A *failed* backend (`used_fallback = true`) is not a verdict and is not treated as a
-  keep; it fails the rerank closed (see below).
+  keep (do not drop evidence), so the default keep set is `{YES, ABSTAIN}`. A *failed* backend
+  (`used_fallback = true`) is not a verdict and is not treated as a keep; it fails the rerank closed (see below).
 - **Two different `used_fallback` fields, with opposite meanings.** The adapter *reads* `DecisionResult.used_fallback`,
   the backend-degradation marker: `true` means the decision backend failed, so the verdict is not trustworthy and the
   rerank fails closed. It *writes* `MemoryRerankDecision.used_fallback`, a different field defined by RFC 0080 that means
   "the built-in coarse fallback ranks were used because no valid selection remained". The two fields share a name but
   mean the opposite; the adapter must never conflate them. This is the read/write pair behind the *abstain versus
   backend failure* rule above.
-- **`discarded_rank_count` is computed, not zero.** The adapter produces its own ranks and does not run RFC 0080's
-  rank-normalisation, so it must report this field explicitly as the number of coarse candidates excluded from the final
-  selection: `len(candidates) - len(selected)`. This includes the fallback case, where `selected` is `1..min(limit, n)`.
-  A hard-coded `0` is incorrect, because the existing listwise policy records a real computed value for this field.
+- **`discarded_rank_count` keeps the RFC 0080 diagnostic meaning.** The existing listwise policy uses this field for
+  model-emitted ranks that were discarded because they were duplicate or out of range. It does not count coarse
+  candidates that were validly left out of the final selection. The decision adapter emits only validated, unique ranks,
+  so it should report `0` unless a future implementation accepts raw rank output that needs the same normalization
+  diagnostic. The number of unselected coarse candidates remains derivable from the candidate pool and selected ranks;
+  overloading `discarded_rank_count` for that different meaning would make traces incomparable across policies.
 - **Fallback ranks.** When nothing is kept, the adapter falls back to coarse ranks `1..min(limit, n)`, matching the
   built-in fallback of the listwise policy and the "only when no valid rank remains" rule.
 - **Usage.** `MemoryRerankDecision.usage` is a single portable usage value; the adapter must aggregate the per-candidate

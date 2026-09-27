@@ -9,8 +9,10 @@
 decision model port），在 RFC 0080 建立的 rerank 接缝后面接入第二种 `MemoryReranker` 实现。它不再发出一次 listwise
 生成请求，而是对每个粗排候选向决策模型提出一次窄范围的 keep/drop 判定，在保留的候选之间维持粗排顺序，并且只输出粗排整数
 rank；因此每个被选中的 hit 都保持其准确的 Artifact、entry 与 Revision 身份。决策模型只由确定性 Runtime 代码在搜索路径上
-调用，绝不暴露为可被模型调用的 tool。该策略为 opt-in 且默认关闭。由于 RFC 0080 要求 rerank 阶段 fail-closed，本 RFC 同时
-把决策角色的**运行时失败策略**与既有的 fail-open 信封分离：reranker 失败时 fail-closed，而现有的咨询类消费者继续保持
+调用，绝不暴露为可被模型调用的 tool。本 RFC 依赖 [#1740](https://github.com/oceanbase/powercontext/pull/1740) 提出的
+DecisionModel 地基：provider-neutral 的请求/结果契约、后端配置、Runtime composition 与 fail-open 包装都是前置条件，而
+不是本 reranker 适配器本身要定义的内容。该策略为 opt-in 且默认关闭。由于 RFC 0080 要求 rerank 阶段 fail-closed，本 RFC
+同时把决策角色的**运行时失败策略**与既有的 fail-open 信封分离：reranker 失败时 fail-closed，而现有的咨询类消费者继续保持
 fail-open。
 
 # Motivation
@@ -19,9 +21,13 @@ RFC 0080 引入了一个 provider-neutral 的 rerank 接缝：融合产出的、
 一组稀疏的原始 rank，每个被选中的 hit 都保持其准确身份。该 RFC 同时上线了一个策略——一次 listwise 结构化生成请求，复用
 所配置的 generation model。
 
-PowerContext 已经暴露了一个**跨家族决策模型端口**。它针对一个小而显式的请求，由确定性 Runtime 代码提出一次窄范围的
-yes/no/abstain 判定；它服务于内部 runtime 步骤，而不是被模型调用的工具。有些部署具备可用的决策后端，但没有合适的 listwise
-生成行为，因此希望能够基于这种决策能力进行 rerank，而不必再采用一套 listwise prompt 策略。
+PowerContext 的 DecisionModel 地基由 #1740 单独引入。该地基定义一个**跨家族决策模型端口**：provider-neutral 的
+请求/结果契约，用于一个窄范围的 yes/no/abstain 判定；同时定义后端配置、Runtime composition，以及咨询类消费者使用的
+fail-open 包装。本 RFC 叠在该前置 PR 之上。它不定义决策端口本身，而是定义一个消费该端口的新 Memory reranker 适配器，
+以及 rerank 因为不是咨询类路径而需要的角色级失败策略。
+
+有些部署具备可用的决策后端，但没有合适的 listwise 生成行为，因此希望能够基于这种决策能力进行 rerank，而不必再采用一套
+listwise prompt 策略。
 
 接缝本身已是合适的位置：它 provider-neutral、按构造即保持身份、且可组合。增加第二种 `MemoryReranker` 实现，可让部署选择
 它真正能够支撑的 rerank 策略。
@@ -135,7 +141,7 @@ rerank(query, candidates, limit):
         usages.append(result.usage)
         if result.used_fallback:                 # DecisionResult.used_fallback：后端降级 -> fail closed
             raise RerankFailure()
-        if result.outcome is keep_on:            # keep_on 默认为 YES
+        if result.outcome in keep_outcomes:      # keep_outcomes 默认为 {YES, ABSTAIN}
             kept.append(rank)
         if len(kept) == limit:
             break
@@ -143,7 +149,7 @@ rerank(query, candidates, limit):
     return MemoryRerankDecision(
         selected_ranks       = selected,
         usage                = sum_usages(usages),
-        discarded_rank_count = len(candidates) - len(selected),   # 未进入最终选择的候选数
+        discarded_rank_count = 0,                                # 没有发出重复或越界 rank
         used_fallback        = not kept,                          # MemoryRerankDecision 字段：使用了内建回退
     )
 ```
@@ -154,15 +160,17 @@ rerank(query, candidates, limit):
   rank 子集。因此决策式 rerank 不可能是 listwise；它是每个候选一次、有界的 keep/drop 判定。
 - **身份。** 适配器最多输出 `limit` 个粗排整数 rank，由 service 解析回原始 `MemoryHit` 对象。不新增、不删除、不重新
   标识任何候选。
-- **`abstain` 与后端失败的区别。** 健康后端对某候选弃权时，按保守保召回处理为 keep（不丢弃证据）。**失败**的后端
-  （`used_fallback = true`）不是一个裁决，不能被当作 keep；它会使 rerank fail-closed（见下）。
+- **`abstain` 与后端失败的区别。** 健康后端对某候选弃权时，按保守保召回处理为 keep（不丢弃证据），因此默认 keep 集合是
+  `{YES, ABSTAIN}`。**失败**的后端（`used_fallback = true`）不是一个裁决，不能被当作 keep；它会使 rerank fail-closed
+  （见下）。
 - **两个同名、语义相反的 `used_fallback` 字段。** 适配器**读取** `DecisionResult.used_fallback`——后端降级标记：为 `true`
   表示决策后端失败，裁决不可信，故 rerank fail-closed。适配器**写入** `MemoryRerankDecision.used_fallback`——RFC 0080
   定义的另一字段，含义是「因无有效选择而使用了内建粗排回退 rank」。两者同名却语义相反，适配器绝不能混淆。这一读一写
   正是上文「`abstain` 与后端失败的区别」规则背后的字段对。
-- **`discarded_rank_count` 必须计算，不能写 0。** 适配器自行产生 rank、不走 RFC 0080 的 rank 归一化，因此必须显式上报该
-  字段，取值为**未进入最终选择的粗排候选数**：`len(candidates) - len(selected)`。该口径**含回退情形**，此时 `selected`
-  为 `1..min(limit, n)`。硬编码 `0` 是错误的，因为既有 listwise 策略为该字段记录的是真实计算值。
+- **`discarded_rank_count` 保持 RFC 0080 的诊断语义。** 既有 listwise 策略用这个字段记录模型发出的 rank 中，因为重复或
+  越界而被丢弃的数量。它不统计那些被合法排除在最终选择之外的粗排候选。决策式适配器只发出已校验、唯一的 rank，因此除非
+  未来实现接受需要同样归一化诊断的原始 rank 输出，否则应报告 `0`。未被选择的粗排候选数量可以从候选池与 selected ranks
+  推导出来；把 `discarded_rank_count` 重载成另一种含义会让不同策略的 trace 无法比较。
 - **回退 rank。** 当没有任何候选被保留时，适配器回退到粗排 rank `1..min(limit, n)`，与 listwise 策略的内建回退、以及
   「仅在无有效 rank 时才回退」规则一致。
 - **usage。** `MemoryRerankDecision.usage` 是单一的可移植 usage 值；适配器必须聚合逐候选 usage，而不是只上报其中一个。
