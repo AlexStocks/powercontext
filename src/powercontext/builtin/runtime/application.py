@@ -2829,16 +2829,22 @@ class ScheduledSourceProcessor:
                         if span is not None:
                             span.set_outcome("failure")
                     else:
-                        outcome = "success" if result.processed else "noop"
+                        outcome = "hold" if result.held_count else "success" if result.processed else "noop"
                         _log_scheduled_processing(
                             outcome,
                             operation="process_source_window",
                             started_at=started_at,
                             source_count=result.source_count,
+                            held_count=result.held_count,
+                            hold_codes=result.hold_codes,
                         )
                         if span is not None:
                             span.set_outcome(outcome)
-                            span.set_attributes({"powercontext.background.source_count": result.source_count})
+                            span.set_attributes({
+                                "powercontext.background.source_count": result.source_count,
+                                "powercontext.background.memory_held_count": result.held_count,
+                                "powercontext.background.memory_hold_codes": ",".join(result.hold_codes),
+                            })
 
 
 class ScheduledExperienceProcessor:
@@ -2908,6 +2914,8 @@ def _log_scheduled_processing(
     error: Exception | None = None,
     source_count: int | None = None,
     candidate_count: int | None = None,
+    held_count: int | None = None,
+    hold_codes: tuple[str, ...] = (),
 ) -> None:
     extra = {
         "event": "background.operation.completed",
@@ -2920,6 +2928,10 @@ def _log_scheduled_processing(
         extra["source_count"] = source_count
     if candidate_count is not None:
         extra["candidate_count"] = candidate_count
+    if held_count is not None:
+        extra["held_count"] = held_count
+    if hold_codes:
+        extra["hold_codes"] = hold_codes
     level = logging.ERROR if error is not None else logging.INFO
     log_safely(
         logger,

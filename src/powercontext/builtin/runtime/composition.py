@@ -421,7 +421,10 @@ async def open_builtin_runtime(
                 or skill_generator is None
                 or handoff_pipeline is None
                 or (config.runtime.memory_rerank_enabled and memory_reranker is None)
-                or (config.runtime.decision_assistance_enabled and decision_model is None)
+                or (
+                    (config.runtime.decision_assistance_enabled or config.runtime.memory_write_gate_enabled)
+                    and decision_model is None
+                )
             )
             else (None, None, None, None, None, None, None, None, None, None, None)
         )
@@ -1087,7 +1090,10 @@ async def _generation_pipelines(
     if (
         settings.generation_model is None
         and (not runtime.memory_rerank_enabled or settings.rerank_model is None)
-        and not (runtime.decision_assistance_enabled and settings.decision_model is not None)
+        and not (
+            (runtime.decision_assistance_enabled or runtime.memory_write_gate_enabled)
+            and settings.decision_model is not None
+        )
     ):
         return (None, None, None, None, None, None, None, None, None, None, None)
 
@@ -1373,7 +1379,7 @@ async def _generation_decision(
 ) -> tuple[DecisionModel | None, ReadinessProbe | None]:
     """Build the opt-in decision backend, reusing the generation model when not overridden."""
 
-    if not runtime.decision_assistance_enabled:
+    if not runtime.decision_assistance_enabled and not runtime.memory_write_gate_enabled:
         return None, None
 
     from pydantic_ai.settings import ModelSettings, merge_model_settings

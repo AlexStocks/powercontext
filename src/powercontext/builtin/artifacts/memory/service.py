@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
+from powercontext._logging import log_safely
 from powercontext.artifacts import Artifact, ArtifactLineage, ArtifactRef
 from powercontext.builtin.artifacts.memory.canonical import (
     canonical_embedding,
@@ -100,13 +102,14 @@ from powercontext.builtin.inference import (
 )
 from powercontext.builtin.tags import TagFilter
 from powercontext.errors import RevisionConflictError
-from powercontext.sources import Source, SourceRef
+from powercontext.sources import TEXT_EVIDENCE_PROJECTION_KEY, Source, SourceObservation, SourceRef, TextEvidence
 
 MemoryRememberMode: TypeAlias = Literal["append", "extract", "auto"]
 IdFactory: TypeAlias = Callable[[str], str]
 ValueT = TypeVar("ValueT")
 _GATE_EVIDENCE_ITEM_LIMIT = 32
 _GATE_EVIDENCE_TEXT_LIMIT = 2000
+logger = logging.getLogger(__name__)
 
 
 class _SourceResolver(Protocol):
@@ -143,6 +146,12 @@ class _EntryMaterial:
 class _GateEvidenceEntry:
     text: str
     complete: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _GateCandidateEvidence:
+    index: int
+    material: _EntryMaterial
 
 
 @dataclass(frozen=True, slots=True)
@@ -363,7 +372,7 @@ class MemoryService:
             if not candidates:
                 return MemoryWritePlan(result=base, commit=None)
 
-            assessment = await self._assess_write(base, candidates, evidence)
+            assessment = await self._assess_write(base, candidates, evidence, current_entries)
             if assessment is not None and assessment.verdict is MemoryWriteVerdict.HOLD:
                 # A refused write stays visible: the caller reads the structured code and reason
                 # from the plan. The plan carries no commit, so nothing is written.
@@ -1190,15 +1199,17 @@ class MemoryService:
         base: Memory | None,
         candidates: tuple[MemoryEntryInput, ...],
         evidence: _OperationEvidence,
+        current_entries: tuple[MemoryEntryVersion, ...] | None,
     ) -> MemoryWriteAssessment | None:
         """Ask the configured gate about one candidate set; ``None`` means no gate is active."""
 
         if self._write_gate is None:
             return None
+        projection = await self._gate_evidence(base, candidates, evidence, current_entries)
+        if projection.rejection is not None:
+            _log_gate_assessment(projection.rejection)
+            return projection.rejection
         try:
-            projection = await self._gate_evidence(evidence, candidates)
-            if projection.rejection is not None:
-                return projection.rejection
             return await self._write_gate.assess(
                 MemoryWriteGateRequest(
                     candidates=tuple(candidate.text for candidate in candidates),
@@ -1215,65 +1226,82 @@ class MemoryService:
 
     async def _gate_evidence(
         self,
-        evidence: _OperationEvidence,
+        base: Memory | None,
         candidates: tuple[MemoryEntryInput, ...],
+        evidence: _OperationEvidence,
+        current_entries: tuple[MemoryEntryVersion, ...] | None,
     ) -> _GateEvidenceProjection:
         builder = _GateEvidenceBuilder(self._write_gate_policy_id(), [])
-        for entry in self._direct_gate_evidence(evidence):
-            if rejection := builder.append(entry):
-                return _GateEvidenceProjection(tuple(builder.entries), rejection)
-        for candidate in candidates:
+        for candidate in await self._gate_candidate_evidence(base, candidates, evidence, current_entries):
             for entry in await self._candidate_gate_evidence(candidate):
                 if rejection := builder.append(entry):
                     return _GateEvidenceProjection(tuple(builder.entries), rejection)
         return builder.projection()
 
-    def _direct_gate_evidence(self, evidence: _OperationEvidence) -> tuple[_GateEvidenceEntry, ...]:
-        return tuple(
-            [self._source_gate_evidence(source) for source in evidence.sources]
-            + [self._artifact_gate_evidence(artifact) for artifact in evidence.artifacts]
-        )
+    async def _gate_candidate_evidence(
+        self,
+        base: Memory | None,
+        candidates: tuple[MemoryEntryInput, ...],
+        evidence: _OperationEvidence,
+        current_entries: tuple[MemoryEntryVersion, ...] | None,
+    ) -> tuple[_GateCandidateEvidence, ...]:
+        current_by_entry = {} if current_entries is None else {entry.entry_id: entry for entry in current_entries}
+        targeted: set[str] = set()
+        resolved: list[_GateCandidateEvidence] = []
+        for index, candidate in enumerate(candidates, start=1):
+            previous = None
+            if candidate.entry is not None:
+                _, previous = await self._claim_revision_target(candidate, base, current_by_entry, targeted)
+            material = await self._material_from_candidate(
+                candidate,
+                evidence.sources,
+                evidence.artifacts,
+                previous=previous,
+            )
+            resolved.append(_GateCandidateEvidence(index=index, material=material))
+        return tuple(resolved)
 
-    async def _candidate_gate_evidence(self, candidate: MemoryEntryInput) -> tuple[_GateEvidenceEntry, ...]:
+    async def _candidate_gate_evidence(self, candidate: _GateCandidateEvidence) -> tuple[_GateEvidenceEntry, ...]:
         entries = [
-            *(self._source_gate_evidence(source) for source in candidate.sources),
-            *(self._artifact_gate_evidence(artifact) for artifact in candidate.artifacts),
+            await self._source_ref_gate_evidence(candidate.index, source) for source in candidate.material.sources
         ]
-        if candidate.entry is None:
-            return tuple(entries)
-        entries.extend([await self._source_ref_gate_evidence(source) for source in candidate.entry.sources])
-        entries.extend([await self._artifact_ref_gate_evidence(artifact) for artifact in candidate.entry.artifacts])
+        entries.extend([
+            await self._artifact_ref_gate_evidence(candidate.index, artifact)
+            for artifact in candidate.material.artifacts
+        ])
         return tuple(entries)
 
-    def _source_gate_evidence(self, source: Source) -> _GateEvidenceEntry:
+    def _source_gate_evidence(self, candidate_index: int, source: Source) -> _GateEvidenceEntry:
         ref = self._source_refs((source,))[0]
-        content = getattr(source, "content", None)
+        identity = _candidate_gate_identity(candidate_index, f"source:{ref.source_type}:{ref.source_id}")
+        content = _source_gate_content(source)
         if isinstance(content, str) and content.strip():
-            return _bounded_gate_evidence(f"source:{ref.source_type}:{ref.source_id}", content)
-        return _incomplete_gate_evidence(f"source:{ref.source_type}:{ref.source_id}")
+            return _bounded_gate_evidence(identity, content)
+        return _incomplete_gate_evidence(identity)
 
     @staticmethod
-    def _artifact_gate_evidence(artifact: Artifact[object]) -> _GateEvidenceEntry:
+    def _artifact_gate_evidence(candidate_index: int, artifact: Artifact[object]) -> _GateEvidenceEntry:
         ref = artifact.as_ref()
         return _bounded_gate_evidence(
-            f"artifact:{ref.family}:{ref.artifact_id}@{ref.revision}",
+            _candidate_gate_identity(candidate_index, f"artifact:{ref.family}:{ref.artifact_id}@{ref.revision}"),
             _artifact_gate_content(artifact),
         )
 
-    async def _source_ref_gate_evidence(self, ref: SourceRef) -> _GateEvidenceEntry:
+    async def _source_ref_gate_evidence(self, candidate_index: int, ref: SourceRef) -> _GateEvidenceEntry:
+        identity = _candidate_gate_identity(candidate_index, f"source:{ref.source_type}:{ref.source_id}")
         if self._source_resolver is None:
-            return _incomplete_gate_evidence(f"source:{ref.source_type}:{ref.source_id}")
+            return _incomplete_gate_evidence(identity)
         try:
-            return self._source_gate_evidence(await self._source_resolver.get_ref(ref))
+            return self._source_gate_evidence(candidate_index, await self._source_resolver.get_ref(ref))
         except Exception:
-            return _incomplete_gate_evidence(f"source:{ref.source_type}:{ref.source_id}")
+            return _incomplete_gate_evidence(identity)
 
-    async def _artifact_ref_gate_evidence(self, ref: ArtifactRef) -> _GateEvidenceEntry:
-        identity = f"artifact:{ref.family}:{ref.artifact_id}@{ref.revision}"
+    async def _artifact_ref_gate_evidence(self, candidate_index: int, ref: ArtifactRef) -> _GateEvidenceEntry:
+        identity = _candidate_gate_identity(candidate_index, f"artifact:{ref.family}:{ref.artifact_id}@{ref.revision}")
         if self._artifact_resolver is None:
             return _incomplete_gate_evidence(identity)
         try:
-            return self._artifact_gate_evidence(await self._artifact_resolver.get_ref(ref))
+            return self._artifact_gate_evidence(candidate_index, await self._artifact_resolver.get_ref(ref))
         except Exception:
             return _incomplete_gate_evidence(identity)
 
@@ -1486,7 +1514,9 @@ class MemoryService:
         result: list[ArtifactRef] = []
         allowed_refs = tuple(artifact.as_ref() for artifact in allowed)
         for value in values:
-            canonical = value if self._artifact_resolver is None else await self._artifact_resolver.get(value)
+            canonical = _matching_allowed_artifact(value, allowed)
+            if canonical is None:
+                canonical = value if self._artifact_resolver is None else await self._artifact_resolver.get(value)
             reference = canonical.as_ref()
             if reference not in (*allowed_refs, *previous):
                 raise InvalidMemoryEvidenceError("artifact-outside")
@@ -1629,11 +1659,69 @@ def _incomplete_gate_evidence(identity: str) -> _GateEvidenceEntry:
     return _GateEvidenceEntry(text=identity, complete=False)
 
 
+def _candidate_gate_identity(candidate_index: int, identity: str) -> str:
+    return f"candidate:{candidate_index} {identity}"
+
+
+def _source_gate_content(source: Source) -> str | None:
+    content = getattr(source, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(source, SourceObservation):
+        try:
+            evidence = TextEvidence.model_validate(source.projection(TEXT_EVIDENCE_PROJECTION_KEY))
+        except Exception:
+            return None
+        return evidence.content
+    return None
+
+
+def _log_gate_assessment(assessment: MemoryWriteAssessment) -> None:
+    event = {
+        MemoryWriteVerdict.HOLD: "memory.write-gate.hold",
+        MemoryWriteVerdict.FLAG: "memory.write-gate.flag",
+    }.get(assessment.verdict, "memory.write-gate.assess")
+    log_safely(
+        logger,
+        logging.INFO,
+        "Memory write gate assessed a pending write",
+        extra={
+            "event": event,
+            "decision_kind": "memory.write-gate",
+            "policy_id": assessment.policy_id,
+            "verdict": assessment.verdict.value,
+            "code": None if assessment.code is None else assessment.code.value,
+            "used_fallback": assessment.used_fallback,
+        },
+    )
+
+
 def _artifact_gate_content(artifact: Artifact[object]) -> str:
     content = artifact.content
     if isinstance(content, BaseModel):
         return content.model_dump_json()
     return str(content)
+
+
+def _matching_allowed_artifact(
+    value: Artifact[object],
+    allowed: Sequence[Artifact[object]],
+) -> Artifact[object] | None:
+    reference = value.as_ref()
+    for artifact in allowed:
+        if artifact.as_ref() == reference:
+            return artifact
+    # Pydantic validates MemoryEntryInput artifacts through the generic Artifact[object]
+    # annotation, which strips the concrete subclass family. Fall back to the operation's
+    # canonical evidence set when the revision identity and body match exactly.
+    matches = [
+        artifact
+        for artifact in allowed
+        if artifact.artifact_id == value.artifact_id
+        and artifact.revision == value.revision
+        and artifact.content == value.content
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _canonical_source_refs(values: Sequence[SourceRef]) -> tuple[SourceRef, ...]:

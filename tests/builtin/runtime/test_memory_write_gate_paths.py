@@ -19,8 +19,9 @@ import logging
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
-from powercontext.builtin.artifacts.experience import Experience, ExperienceContent
+from powercontext.builtin.artifacts.experience import Experience, ExperienceContent, ExperienceDraft
 from powercontext.builtin.artifacts.memory import (
     MemoryCandidateRequest,
     MemoryEntryInput,
@@ -39,6 +40,7 @@ from powercontext.builtin.runtime import (
     MemoryFlushResult,
     RememberMemoryRequest,
     RuntimeConfig,
+    SubmitSourceObservation,
     open_builtin_contexts,
     open_builtin_runtime,
 )
@@ -53,8 +55,57 @@ from powercontext.builtin.scope import ScopeDraft
 from powercontext.builtin.sources import ContentCapture, ContentSource
 from powercontext.server import mapping
 from powercontext.server.app import _map_error
+from powercontext.sources import (
+    TEXT_EVIDENCE_PROJECTION_KEY,
+    AdapterSourceDefinition,
+    Source,
+    SourceDefinitionRegistry,
+    SourceMaterialization,
+    TextEvidence,
+    manifest_for_definition,
+    project_source_for_transport,
+)
 
 _SCRIPTED_POLICY_ID = "test.memory.write-gate.v1"
+
+
+class _RemoteNoteCapture(BaseModel):
+    source_id: str
+    content: str
+
+
+class _RemoteNoteSource(Source):
+    note: str
+
+
+class _RemoteNoteAdapter:
+    name = "remote-note"
+    input_class = _RemoteNoteCapture
+    source_class = _RemoteNoteSource
+
+    async def resolve(self, value: _RemoteNoteCapture, /) -> _RemoteNoteSource:
+        return _RemoteNoteSource(
+            name=value.source_id, materialization=SourceMaterialization.CAPTURED, note=value.content
+        )
+
+    async def read(self, source: _RemoteNoteSource, /) -> _RemoteNoteCapture:
+        return _RemoteNoteCapture(source_id=source.name, content=source.note)
+
+
+class _RemoteNoteTextEvidenceProjection:
+    name = TEXT_EVIDENCE_PROJECTION_KEY.name
+    version = TEXT_EVIDENCE_PROJECTION_KEY.version
+    source_class = _RemoteNoteSource
+    output_class: type[BaseModel] = TextEvidence
+
+    def project(self, source: _RemoteNoteSource, /) -> TextEvidence:
+        return TextEvidence(source_type="remote-note", source_id=source.name, content=source.note)
+
+
+_REMOTE_NOTE_DEFINITION = AdapterSourceDefinition(
+    _RemoteNoteAdapter(),
+    projections=(_RemoteNoteTextEvidenceProjection(),),
+)
 
 
 class _ScriptedGate:
@@ -324,9 +375,7 @@ def test_artifact_evidence_passes_content_to_the_gate(tmp_path: Path) -> None:
         )
         async with open_builtin_contexts(_config(tmp_path), memory_write_gate=gate) as contexts:
             context = await contexts.get("project")
-            artifact = Experience(
-                artifact_id="experience-db-outcome",
-                revision=1,
+            draft = ExperienceDraft(
                 content=ExperienceContent(
                     situation="The write path used SQLite.",
                     action="Checked the gate request.",
@@ -334,9 +383,15 @@ def test_artifact_evidence_passes_content_to_the_gate(tmp_path: Path) -> None:
                     lesson="Opposite outcome text must be visible to the judge.",
                 ),
             )
+            async with contexts.database.transaction() as connection:
+                stored = await contexts.repositories.artifacts.create(
+                    connection, "project", "experience-db-outcome", draft
+                )
+            artifact = Experience.model_validate(stored.model_dump(mode="json"))
 
             plan = await context.artifacts.memory.plan_remember(
                 memory=None,
+                artifacts=(artifact,),
                 entries=(MemoryEntryInput(kind="fact", text="Gate outcome was ACCEPT.", artifacts=(artifact,)),),
                 mode="append",
             )
@@ -344,6 +399,92 @@ def test_artifact_evidence_passes_content_to_the_gate(tmp_path: Path) -> None:
             assert plan.commit is None
             evidence = "\n".join(gate.requests[-1].evidence)
             assert "Opposite outcome text must be visible to the judge." in evidence
+
+    asyncio.run(scenario())
+
+
+def test_gate_reads_remote_source_text_evidence_projection(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        gate = _ScriptedGate(_assessment(MemoryWriteVerdict.ACCEPT))
+        registry = SourceDefinitionRegistry((_REMOTE_NOTE_DEFINITION,))
+        source = await registry.resolve(
+            _RemoteNoteCapture(source_id="remote-1", content="Remote projection says use MySQL.")
+        )
+        observed = project_source_for_transport(registry, source)
+        async with open_builtin_contexts(
+            _config(tmp_path),
+            memory_write_gate=gate,
+        ) as contexts:
+            scope = await contexts.scopes.create(
+                ScopeDraft(title="Remote", summary="Remote source test", idempotency_key="remote-source-gate")
+            )
+            await contexts.register_source_definition(manifest_for_definition(_REMOTE_NOTE_DEFINITION))
+            await contexts.submit_source_observation(
+                SubmitSourceObservation(scope_id=scope.scope_id, observation=observed)
+            )
+            context = await contexts.get(scope.scope_id)
+
+            plan = await context.artifacts.memory.plan_remember(
+                memory=None,
+                sources=(observed,),
+                entries=(MemoryEntryInput(kind="fact", text="Use MySQL.", sources=(observed,)),),
+                mode="append",
+            )
+
+            assert plan.commit is not None
+            assert any("Remote projection says use MySQL." in item for item in gate.requests[-1].evidence)
+
+    asyncio.run(scenario())
+
+
+def test_gate_budgets_only_effective_candidate_citations(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        gate = _ScriptedGate(_assessment(MemoryWriteVerdict.ACCEPT))
+        async with open_builtin_contexts(_config(tmp_path), memory_write_gate=gate) as contexts:
+            context = await contexts.get("project")
+            short_source, _ = await context.sources.capture(ContentCapture(source_id="short", content="Use MySQL."))
+            unrelated_long_source, _ = await context.sources.capture(
+                ContentCapture(source_id="build-log", content="unrelated " * 300)
+            )
+
+            plan = await context.artifacts.memory.plan_remember(
+                memory=None,
+                sources=(short_source, unrelated_long_source),
+                entries=(MemoryEntryInput(kind="fact", text="Use MySQL.", sources=(short_source,)),),
+                mode="append",
+            )
+
+            assert plan.commit is not None
+            evidence = "\n".join(gate.requests[-1].evidence)
+            assert "Use MySQL." in evidence
+            assert "build-log" not in evidence
+
+    asyncio.run(scenario())
+
+
+def test_gate_preserves_each_candidate_citation_mapping(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        gate = _ScriptedGate(_assessment(MemoryWriteVerdict.ACCEPT))
+        async with open_builtin_contexts(_config(tmp_path), memory_write_gate=gate) as contexts:
+            context = await contexts.get("project")
+            alpha, _ = await context.sources.capture(ContentCapture(source_id="alpha", content="Alpha uses MySQL."))
+            beta, _ = await context.sources.capture(ContentCapture(source_id="beta", content="Beta uses PostgreSQL."))
+
+            await context.artifacts.memory.plan_remember(
+                memory=None,
+                sources=(alpha, beta),
+                entries=(
+                    MemoryEntryInput(kind="fact", text="Alpha uses MySQL.", sources=(alpha,)),
+                    MemoryEntryInput(kind="fact", text="Beta uses PostgreSQL.", sources=(beta,)),
+                ),
+                mode="append",
+            )
+
+            evidence = "\n".join(gate.requests[-1].evidence)
+            assert "candidate:1 source:content:alpha" in evidence
+            assert "Alpha uses MySQL." in evidence
+            assert "candidate:2 source:content:beta" in evidence
+            assert "Beta uses PostgreSQL." in evidence
 
     asyncio.run(scenario())
 
