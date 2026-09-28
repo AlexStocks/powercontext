@@ -1,6 +1,6 @@
 - Proposal Name: `decision_policy_governance`
 - Start Date: 2026-09-28
-- RFC PR: [oceanbase/powercontext#0000](https://github.com/oceanbase/powercontext/pull/0000)
+- RFC PR: [oceanbase/powercontext#1770](https://github.com/oceanbase/powercontext/pull/1770)
 - Tracking Issue: [oceanbase/powercontext#1649](https://github.com/oceanbase/powercontext/issues/1649)
 - Related RFCs: [RFC 0046](0046_observability_foundations.md), [RFC 0050](0050_artifact_candidate_review_inbox.md),
   [RFC 0080](0080_memory_search_reranking.md), [RFC 1223](1223_human_agent_work_continuity.md),
