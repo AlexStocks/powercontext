@@ -148,6 +148,19 @@ class RuntimeConfig(BaseModel):
     # number.
     memory_write_gate_hold_on: Literal["yes", "no"] = "yes"
     memory_write_gate_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    memory_max_active_entries: int = Field(default=5_000, ge=1, le=100_000)
+    memory_max_manifest_entries: int = Field(default=10_000, ge=1, le=200_000)
+    memory_max_manifest_bytes: int = Field(default=4_194_304, ge=1_024, le=67_108_864)
+    memory_compaction_enabled: bool = False
+    memory_compaction_min_tombstone_revisions: int = Field(default=10, ge=0)
+    memory_max_history_revisions: int = Field(default=100, ge=1)
+
+    @model_validator(mode="after")
+    def validate_memory_capacity_order(self) -> RuntimeConfig:
+        if self.memory_max_active_entries > self.memory_max_manifest_entries:
+            raise ValueError("memory_max_active_entries cannot exceed memory_max_manifest_entries")  # noqa: TRY003
+        return self
+
     recall_gate_enabled: bool = False
     recall_gate_max_rounds: int = Field(default=2, ge=0, le=2)
     recall_gate_min_candidates: int = Field(default=2, ge=1)
@@ -252,6 +265,7 @@ class InferenceConfig(BaseModel):
     embedding_model_settings: dict[str, JsonValue] = Field(default_factory=dict)
     embedding_profile_id: str | None = None
     embedding_dimension: int | None = Field(default=None, ge=1)
+    embedding_send_dimensions: bool = True
     embedding_normalization: Literal["none", "unit"] = "unit"
     embedding_timeout_seconds: float = Field(default=30.0, gt=0)
     embedding_batch_size: int = Field(default=10, ge=1)

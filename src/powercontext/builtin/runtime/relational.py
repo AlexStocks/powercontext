@@ -62,6 +62,8 @@ from powercontext.builtin.artifacts.memory import (
     CandidatePipeline,
     EmbeddingProfile,
     Memory,
+    MemoryCapacityBudget,
+    MemoryCompactionPolicy,
     MemoryQueryEmbedding,
     MemoryReranker,
     MemoryService,
@@ -302,6 +304,9 @@ class _ScopedServices:
     memory_rerank_candidate_limit: int
     decision_model: DecisionModel | None
     memory_write_gate: MemoryWriteGate | None
+    memory_capacity_budget: MemoryCapacityBudget
+    memory_compaction: MemoryCompactionPolicy
+    memory_max_history_revisions: int
     id_factory: IdFactory
     handoff_artifact_id: str
     memory_artifact_id: str
@@ -347,6 +352,9 @@ class _ScopedServices:
             embedding_model=self.embedding_model,
             reranker=self.memory_reranker,
             rerank_candidate_limit=self.memory_rerank_candidate_limit,
+            capacity_budget=self.memory_capacity_budget,
+            compaction=self.memory_compaction,
+            max_history_revisions=self.memory_max_history_revisions,
             source_resolver=_RelationalMemorySourceResolver(
                 database=self.database,
                 scope_id=self.scope_id,
@@ -519,6 +527,9 @@ class RelationalContexts:
         decision_model: DecisionModel | None = None,
         memory_write_gate: MemoryWriteGate | None = None,
         memory_rerank_candidate_limit: int = 30,
+        memory_capacity_budget: MemoryCapacityBudget | None = None,
+        memory_compaction: MemoryCompactionPolicy | None = None,
+        memory_max_history_revisions: int = 100,
         id_factory: IdFactory | None = None,
         handoff_artifact_id: str = "handoff",
         memory_artifact_id: str = "memory",
@@ -599,6 +610,7 @@ class RelationalContexts:
             PromptManagementWriter(self.repositories.artifacts, self.prompt_registry),
             ProfileManagementWriter(self.repositories.artifacts),
             MemoryManagementWriter(
+                capacity_budget=memory_capacity_budget,
                 database=database,
                 artifacts=self.repositories.artifacts,
                 index=self.index,
@@ -670,6 +682,11 @@ class RelationalContexts:
         self._decision_model = decision_model
         self._memory_write_gate = memory_write_gate
         self._memory_rerank_candidate_limit = memory_rerank_candidate_limit
+        self._memory_capacity_budget = (
+            MemoryCapacityBudget() if memory_capacity_budget is None else memory_capacity_budget
+        )
+        self._memory_compaction = MemoryCompactionPolicy() if memory_compaction is None else memory_compaction
+        self._memory_max_history_revisions = memory_max_history_revisions
         self._handoff_artifact_id = handoff_artifact_id
         self._memory_artifact_id = memory_artifact_id
         self._tracing = tracing
@@ -1408,6 +1425,9 @@ class RelationalContexts:
             memory_rerank_candidate_limit=self._memory_rerank_candidate_limit,
             decision_model=self._decision_model,
             memory_write_gate=self._memory_write_gate,
+            memory_capacity_budget=self._memory_capacity_budget,
+            memory_compaction=self._memory_compaction,
+            memory_max_history_revisions=self._memory_max_history_revisions,
             id_factory=self._id_factory,
             handoff_artifact_id=self._handoff_artifact_id,
             memory_artifact_id=self._memory_artifact_id,

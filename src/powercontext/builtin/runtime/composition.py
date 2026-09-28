@@ -39,6 +39,8 @@ from powercontext.builtin.artifacts.memory import (
     CandidatePipeline,
     DefaultMemoryEvidenceProjector,
     MemoryCapabilities,
+    MemoryCapacityBudget,
+    MemoryCompactionPolicy,
     MemoryHit,
     MemoryRerankDecision,
     MemoryReranker,
@@ -918,6 +920,16 @@ async def open_builtin_contexts(
                 decision_model=decision_model,
                 memory_write_gate=memory_write_gate,
                 memory_rerank_candidate_limit=config.runtime.memory_rerank_candidate_limit,
+                memory_capacity_budget=MemoryCapacityBudget(
+                    max_active_entries=config.runtime.memory_max_active_entries,
+                    max_manifest_entries=config.runtime.memory_max_manifest_entries,
+                    max_manifest_bytes=config.runtime.memory_max_manifest_bytes,
+                ),
+                memory_compaction=MemoryCompactionPolicy(
+                    enabled=config.runtime.memory_compaction_enabled,
+                    min_tombstone_revisions=config.runtime.memory_compaction_min_tombstone_revisions,
+                ),
+                memory_max_history_revisions=config.runtime.memory_max_history_revisions,
                 prompt_registry=prompt_registry,
                 prompt_demonstrators=prompt_demonstrators,
                 handoff_verification_keys=handoff_verification_keys,
@@ -977,6 +989,16 @@ async def open_builtin_contexts(
             decision_model=decision_model,
             memory_write_gate=memory_write_gate,
             memory_rerank_candidate_limit=config.runtime.memory_rerank_candidate_limit,
+            memory_capacity_budget=MemoryCapacityBudget(
+                max_active_entries=config.runtime.memory_max_active_entries,
+                max_manifest_entries=config.runtime.memory_max_manifest_entries,
+                max_manifest_bytes=config.runtime.memory_max_manifest_bytes,
+            ),
+            memory_compaction=MemoryCompactionPolicy(
+                enabled=config.runtime.memory_compaction_enabled,
+                min_tombstone_revisions=config.runtime.memory_compaction_min_tombstone_revisions,
+            ),
+            memory_max_history_revisions=config.runtime.memory_max_history_revisions,
             prompt_registry=prompt_registry,
             prompt_demonstrators=prompt_demonstrators,
             handoff_verification_keys=handoff_verification_keys,
@@ -1647,6 +1669,17 @@ def _usage_reporting_embedding_model(model: EmbeddingModel | None) -> EmbeddingM
     return UsageReportingEmbeddingModel(model)
 
 
+def _embedding_provider_settings(settings: InferenceConfig, dimension: int) -> dict[str, JsonValue]:
+    """Return embedding request settings, keeping stored dimension separate from the wire field."""
+
+    request_settings = dict(settings.embedding_model_settings)
+    if settings.embedding_send_dimensions:
+        request_settings["dimensions"] = dimension
+    else:
+        request_settings.pop("dimensions", None)
+    return request_settings
+
+
 async def _embedding_models(
     settings: InferenceConfig,
     resources: AsyncExitStack,
@@ -1698,7 +1731,7 @@ async def _embedding_models(
     limits = InferenceLimits(timeout_seconds=settings.embedding_timeout_seconds)
     embedding_settings = cast(
         EmbeddingSettings,
-        settings.embedding_model_settings | {"dimensions": profile.dimension},
+        _embedding_provider_settings(settings, profile.dimension),
     )
 
     def adapter(instrument: InstrumentationSettings | bool | None) -> EmbeddingModel:
