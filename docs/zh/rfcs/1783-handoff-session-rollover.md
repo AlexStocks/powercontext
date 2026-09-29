@@ -9,7 +9,7 @@
 
 本 RFC 将 session rollover 定义为 Handoff 生命周期事件。当一个长 Agent 会话接近上下文上限，或开始积累过时假设、噪声和压缩损耗时，宿主或用户可以要求 PowerContext 准备一份 Rollover Handoff：一份用于在新会话中继续同一 scope 的、完整且带 evidence 的工作检查点。新会话随后从这份 Rollover Handoff 和有界 PreparedContext 继续，而不是继承旧 transcript 或有损会话摘要。
 
-PowerContext 仍然是 Agent memory 与工作连续性系统。它不变成 Agent runtime、transcript store 或 provider 特定的上下文窗口管理器。Rollover Handoff 复用 RFC 0048 的 Handoff 内容契约和 commit 语义，增加 rollover reason 与质量要求，并保持长期 Memory 晋级必须显式发生。
+PowerContext 仍然是 Agent memory 与工作连续性系统。它不变成 Agent runtime、transcript store 或 provider 特定的上下文窗口管理器。Rollover Handoff 复用 RFC 0048 的 Handoff 内容契约和 commit 语义，在 prepare 阶段增加 advisory rollover reason，并保持长期 Memory 晋级必须显式发生。
 
 # Motivation
 
@@ -148,7 +148,7 @@ Rollover 期间的信息进入不同位置：
 
 ## 产品模型
 
-Rollover Handoff 不是新的 Artifact family。它是带有 `purpose = "session_rollover"` 或等价内部 metadata 的 Handoff prepare。共享内容契约仍然是 RFC 0048 的 Handoff 契约。
+Rollover Handoff 不是新的 Artifact family。它是由宿主或用户在 prepare 时提供 advisory rollover reason 的 Handoff。共享内容契约仍然是 RFC 0048 的 Handoff 契约。
 
 Prepared 与 committed 形式保持现有生命周期：
 
@@ -157,7 +157,7 @@ Draft -> Prepared Rollover Handoff -> Transfer
                                   -> Commit -> Handoff Revision
 ```
 
-rollover purpose 属于 prepare 和 inspect 上下文。已提交的 Rollover Handoff 仍是该 scope 线性 Handoff history 中的一个 Handoff Revision。读取 latest Handoff 不需要特殊处理，除非调用方想展示或筛选 rollover metadata。
+rollover reason 属于 prepare 上下文。它们指导 draft generation 和 inspect，但初始实现不把它们纳入 Handoff content identity。已提交的 Rollover Handoff 仍是该 scope 线性 Handoff history 中的一个 Handoff Revision。读取 latest Handoff 不需要特殊处理。
 
 ## Rollover reasons
 
@@ -172,7 +172,7 @@ prepare 请求可以包含一个或多个 advisory reason：
 | `delegation` | 工作将交给另一个 Agent 或人类 |
 | `manual_checkpoint` | 调用方需要 checkpoint，但不声称会话不健康 |
 
-reason 是 advisory。它们帮助用户理解 checkpoint 为什么存在，但不授权 commit 或执行。
+reason 是 advisory。它们帮助 generation 聚焦于 fresh-session checkpoint，但不授权 commit 或执行，也不会创建新的持久 Artifact 类型。
 
 ## 质量要求
 
@@ -284,8 +284,8 @@ OpenAI Codex 围绕 token budgeting、模型可请求 fresh context window、his
 
 # Unresolved questions
 
-- 初始实现应把 rollover 暴露为 Handoff prepare 上的独立 API flag，还是只作为宿主集成提供的 metadata？
-- 已提交的 rollover Handoff 是否应在 Handoff Report 中视觉区分，还是 reason 只作为诊断 metadata？
+- 后续实现是否应把 rollover reason 作为独立 observation 持久化用于诊断，同时不改变 Handoff content identity？
+- 已提交的 rollover Handoff 是否应通过独立 observation 在 Handoff Report 中视觉区分，还是 reason 保持为 preparation-only？
 - Prepared Rollover Handoff commit 前必须通过哪些最小确定性 validation？
 - continuation-oriented PreparedContext 应在 RFC 1489 assembly 中包含 Handoff，还是 Continue 应保持独立宿主步骤？
 - 哪些宿主观察可以默认捕获为 Source，哪些需要显式用户或 workspace policy？

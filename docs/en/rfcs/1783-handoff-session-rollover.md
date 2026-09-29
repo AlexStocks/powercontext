@@ -9,7 +9,7 @@
 
 This RFC defines session rollover as a Handoff lifecycle event. When a long Agent session approaches context limits or starts to accumulate stale assumptions, the host or user can ask PowerContext to prepare a Rollover Handoff: a complete, evidence-backed work checkpoint for continuing the same scope in a fresh session. A fresh session then continues from the Rollover Handoff and bounded PreparedContext instead of inheriting the old transcript or a lossy conversation summary.
 
-PowerContext remains an Agent memory and work-continuity system. It does not become an Agent runtime, a transcript store, or a provider-specific context-window manager. Rollover Handoff reuses the RFC 0048 Handoff content contract and commit semantics, adds a rollover reason and quality expectations, and keeps long-term Memory promotion explicit.
+PowerContext remains an Agent memory and work-continuity system. It does not become an Agent runtime, a transcript store, or a provider-specific context-window manager. Rollover Handoff reuses the RFC 0048 Handoff content contract and commit semantics, adds advisory rollover reasons to preparation, and keeps long-term Memory promotion explicit.
 
 # Motivation
 
@@ -148,7 +148,7 @@ This RFC does not define:
 
 ## Product model
 
-Rollover Handoff is not a new Artifact family. It is a Handoff prepared with `purpose = "session_rollover"` or equivalent internal metadata. The shared content contract remains the RFC 0048 Handoff contract.
+Rollover Handoff is not a new Artifact family. It is a Handoff prepared with advisory rollover reasons supplied by a host or user. The shared content contract remains the RFC 0048 Handoff contract.
 
 Prepared and committed forms retain their existing lifecycle:
 
@@ -157,7 +157,7 @@ Draft -> Prepared Rollover Handoff -> Transfer
                                   -> Commit -> Handoff Revision
 ```
 
-The rollover purpose is part of the preparation and inspection context. A committed Rollover Handoff is still a Handoff Revision in the scope's linear Handoff history. Reading the latest Handoff does not require special handling unless the caller wants to display or filter rollover metadata.
+The rollover reasons are part of the preparation context. They guide draft generation and inspection, but they are not part of Handoff content identity in the initial implementation. A committed Rollover Handoff is still a Handoff Revision in the scope's linear Handoff history. Reading the latest Handoff does not require special handling.
 
 ## Rollover reasons
 
@@ -172,7 +172,7 @@ A preparation request may include one or more advisory reasons:
 | `delegation` | Work is being transferred to another Agent or human |
 | `manual_checkpoint` | The caller wants a checkpoint without claiming the session is unhealthy |
 
-Reasons are advisory. They help users understand why the checkpoint exists, but they do not authorize commit or execution.
+Reasons are advisory. They help generation focus on a fresh-session checkpoint, but they do not authorize commit or execution and do not create a distinct durable Artifact kind.
 
 ## Quality requirements
 
@@ -284,8 +284,8 @@ Developer workflows already use manual handoff documents before starting fresh s
 
 # Unresolved questions
 
-- Should the initial implementation expose rollover as a distinct API flag on Handoff prepare, or only as metadata supplied by host integrations?
-- Should committed rollover Handoffs be visually distinguished in Handoff Report, or is the reason only diagnostic metadata?
+- Should later implementations persist rollover reason observations separately for diagnostics, without changing Handoff content identity?
+- Should committed rollover Handoffs be visually distinguished in Handoff Report through separate observations, or should reasons remain preparation-only?
 - What minimum deterministic validation should be mandatory before a Prepared Rollover Handoff can be committed?
 - Should continuation-oriented PreparedContext include Handoff in RFC 1489 assembly, or should Continue remain a separate host step?
 - Which host observations are safe to capture as Source by default, and which require explicit user or workspace policy?
