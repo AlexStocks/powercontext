@@ -1,7 +1,7 @@
 - Proposal Name: `handoff_session_rollover`
 - Start Date: 2026-09-29
 - Status: Draft
-- RFC PR: [oceanbase/powercontext#0000](https://github.com/oceanbase/powercontext/pull/0000)
+- RFC PR: [oceanbase/powercontext#1783](https://github.com/oceanbase/powercontext/pull/1783)
 - Tracking Issue: Not assigned
 - Related RFCs: [RFC 0001](0001_product_definition_and_vision.md), [RFC 0014](0014_memory_layer_design.md), [RFC 0019](0019_local_source_memory_runtime.md), [RFC 0028](0028_context_pack.md), [RFC 0048](0048_handoff_artifact.md), [RFC 0082](0082_handoff_report.md), and [RFC 1489](1489_prepared_context_text_assembly.md)
 
