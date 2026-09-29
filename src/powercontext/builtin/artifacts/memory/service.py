@@ -109,7 +109,14 @@ from powercontext.builtin.inference import (
 )
 from powercontext.builtin.tags import TagFilter
 from powercontext.errors import RevisionConflictError
-from powercontext.sources import TEXT_EVIDENCE_PROJECTION_KEY, Source, SourceObservation, SourceRef, TextEvidence
+from powercontext.sources import (
+    TEXT_EVIDENCE_PROJECTION_KEY,
+    Source,
+    SourceObservation,
+    SourceProjectionKey,
+    SourceRef,
+    TextEvidence,
+)
 
 MemoryRememberMode: TypeAlias = Literal["append", "extract", "auto"]
 IdFactory: TypeAlias = Callable[[str], str]
@@ -125,6 +132,8 @@ class _SourceResolver(Protocol):
     async def get_ref(self, ref: SourceRef, /) -> Source: ...
 
     def as_ref(self, source: Source, /) -> SourceRef: ...
+
+    def project(self, source: Source, key: SourceProjectionKey, /) -> object: ...
 
 
 class _ArtifactResolver(Protocol):
@@ -1434,7 +1443,7 @@ class MemoryService:
     def _source_gate_evidence(self, candidate_index: int, source: Source) -> _GateEvidenceEntry:
         ref = self._source_refs((source,))[0]
         identity = _candidate_gate_identity(candidate_index, f"source:{ref.source_type}:{ref.source_id}")
-        content = _source_gate_content(source)
+        content = _source_gate_content(source, self._source_resolver)
         if isinstance(content, str) and content.strip():
             return _bounded_gate_evidence(identity, content)
         return _incomplete_gate_evidence(identity)
@@ -1830,13 +1839,19 @@ def _candidate_gate_identity(candidate_index: int, identity: str) -> str:
     return f"candidate:{candidate_index} {identity}"
 
 
-def _source_gate_content(source: Source) -> str | None:
+def _source_gate_content(source: Source, resolver: _SourceResolver | None) -> str | None:
     content = getattr(source, "content", None)
     if isinstance(content, str):
         return content
     if isinstance(source, SourceObservation):
         try:
             evidence = TextEvidence.model_validate(source.projection(TEXT_EVIDENCE_PROJECTION_KEY))
+        except Exception:
+            return None
+        return evidence.content
+    if resolver is not None:
+        try:
+            evidence = TextEvidence.model_validate(resolver.project(source, TEXT_EVIDENCE_PROJECTION_KEY))
         except Exception:
             return None
         return evidence.content
@@ -1881,6 +1896,8 @@ def _matching_allowed_artifact(
     # Pydantic validates MemoryEntryInput artifacts through the generic Artifact[object]
     # annotation, which strips the concrete subclass family. Fall back to the operation's
     # canonical evidence set when the revision identity and body match exactly.
+    if value.family != Artifact.family:
+        return None
     matches = [
         artifact
         for artifact in allowed

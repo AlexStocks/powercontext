@@ -236,6 +236,7 @@ from powercontext.sources import (
     SourceDefinitionManifest,
     SourceDefinitionRegistry,
     SourceObservation,
+    SourceProjectionKey,
     SourceRef,
     TextEvidence,
 )
@@ -1459,6 +1460,9 @@ class _RelationalMemorySourceResolver:
 
     def as_ref(self, source: Source, /) -> SourceRef:
         return self._catalog.as_ref(source)
+
+    def project(self, source: Source, key: SourceProjectionKey, /) -> object:
+        return self._catalog.project(source, key)
 
     async def get_ref(self, ref: SourceRef, /) -> Source:
         try:

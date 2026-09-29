@@ -23,6 +23,7 @@ unavailable judge can never block a write.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Literal
 
@@ -171,11 +172,19 @@ def _rejection_code(request: MemoryWriteGateRequest) -> MemoryWriteRejectionCode
 
 
 def _bounded_subject(candidates: tuple[str, ...]) -> str:
-    return "\n".join(candidates)[:_MAX_SUBJECT_LENGTH]
+    return _candidate_subject(candidates)[:_MAX_SUBJECT_LENGTH]
 
 
 def _subject_exceeds_limit(candidates: tuple[str, ...]) -> bool:
-    return len("\n".join(candidates)) > _MAX_SUBJECT_LENGTH
+    return len(_candidate_subject(candidates)) > _MAX_SUBJECT_LENGTH
+
+
+def _candidate_subject(candidates: tuple[str, ...]) -> str:
+    return json.dumps(
+        [{"candidate": index, "text": text} for index, text in enumerate(candidates, start=1)],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 def _bounded_reason(value: str | None) -> str:

@@ -17,10 +17,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 from pydantic import BaseModel
 
+from powercontext.artifacts import Artifact
 from powercontext.builtin.artifacts.experience import Experience, ExperienceContent, ExperienceDraft
 from powercontext.builtin.artifacts.memory import (
     MemoryCandidateRequest,
@@ -53,6 +55,7 @@ from powercontext.builtin.runtime.decision_model import (
 from powercontext.builtin.runtime.memory_write_gate import DecisionMemoryWriteGate
 from powercontext.builtin.scope import ScopeDraft
 from powercontext.builtin.sources import ContentCapture, ContentSource
+from powercontext.errors import ArtifactNotFoundError
 from powercontext.server import mapping
 from powercontext.server.app import _map_error
 from powercontext.sources import (
@@ -106,6 +109,10 @@ _REMOTE_NOTE_DEFINITION = AdapterSourceDefinition(
     _RemoteNoteAdapter(),
     projections=(_RemoteNoteTextEvidenceProjection(),),
 )
+
+
+class _SkillFamilyExperienceBody(Artifact[ExperienceContent]):
+    family: ClassVar[str] = "skill"
 
 
 class _ScriptedGate:
@@ -437,6 +444,35 @@ def test_gate_reads_remote_source_text_evidence_projection(tmp_path: Path) -> No
     asyncio.run(scenario())
 
 
+def test_gate_reads_registered_local_source_text_evidence_projection(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        gate = _ScriptedGate(_assessment(MemoryWriteVerdict.ACCEPT))
+        registry = SourceDefinitionRegistry((_REMOTE_NOTE_DEFINITION,))
+        async with open_builtin_contexts(
+            _config(tmp_path),
+            memory_write_gate=gate,
+            source_registry=registry,
+        ) as contexts:
+            context = await contexts.get("project")
+            source = await context.sources.add(
+                await context.sources.resolve(
+                    _RemoteNoteCapture(source_id="local-1", content="Local projection says use MySQL.")
+                )
+            )
+
+            plan = await context.artifacts.memory.plan_remember(
+                memory=None,
+                sources=(source,),
+                entries=(MemoryEntryInput(kind="fact", text="Use MySQL.", sources=(source,)),),
+                mode="append",
+            )
+
+            assert plan.commit is not None
+            assert any("Local projection says use MySQL." in item for item in gate.requests[-1].evidence)
+
+    asyncio.run(scenario())
+
+
 def test_gate_budgets_only_effective_candidate_citations(tmp_path: Path) -> None:
     async def scenario() -> None:
         gate = _ScriptedGate(_assessment(MemoryWriteVerdict.ACCEPT))
@@ -485,6 +521,41 @@ def test_gate_preserves_each_candidate_citation_mapping(tmp_path: Path) -> None:
             assert "Alpha uses MySQL." in evidence
             assert "candidate:2 source:content:beta" in evidence
             assert "Beta uses PostgreSQL." in evidence
+
+    asyncio.run(scenario())
+
+
+def test_explicit_artifact_family_is_not_recovered_as_a_different_allowed_family(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        async with open_builtin_contexts(_config(tmp_path)) as contexts:
+            context = await contexts.get("project")
+            draft = ExperienceDraft(
+                content=ExperienceContent(
+                    situation="The artifact body is shared.",
+                    action="Create an Experience revision.",
+                    outcome="A matching Skill revision does not exist.",
+                    lesson="Explicit families must stay authoritative.",
+                ),
+            )
+            async with contexts.database.transaction() as connection:
+                stored = await contexts.repositories.artifacts.create(connection, "project", "shared-body", draft)
+            experience = Experience.model_validate(stored.model_dump(mode="json"))
+            explicit_skill = _SkillFamilyExperienceBody(
+                artifact_id=experience.artifact_id,
+                revision=experience.revision,
+                content=experience.content,
+                lineage=experience.lineage,
+            )
+
+            with pytest.raises(ArtifactNotFoundError):
+                await context.artifacts.memory.plan_remember(
+                    memory=None,
+                    artifacts=(experience,),
+                    entries=(
+                        MemoryEntryInput(kind="fact", text="The shared body is cited.", artifacts=(explicit_skill,)),
+                    ),
+                    mode="append",
+                )
 
     asyncio.run(scenario())
 

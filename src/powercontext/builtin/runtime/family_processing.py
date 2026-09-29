@@ -212,13 +212,15 @@ async def _process_family_invocation(  # noqa: C901 - one guarded dispatch per r
                     await invocation.complete(connection, remaining_work=False)
                 return ArtifactProcessingWorkerCompletion()
         if assignment.artifact_family == "memory":
-            await contexts.process_memory(
+            result = await contexts.process_memory(
                 scope,
                 config.runtime.source_window_limit,
                 processing=invocation,
                 authorize_snapshot=None if security is None else partial(security.authorize_memory, scope),
                 on_commit=None if security is None else partial(security.memory_commit, scope_id=scope),
             )
+            if result.held_count:
+                return ArtifactProcessingWorkerCompletion(held_count=result.held_count, hold_codes=result.hold_codes)
         elif assignment.artifact_family == "experience":
             await contexts.incubate_experience(
                 scope,

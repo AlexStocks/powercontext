@@ -31,6 +31,7 @@ from powercontext.builtin.runtime.memory_write_gate import (
     MemoryWriteGateRequest,
     MemoryWriteRejectionCode,
     MemoryWriteVerdict,
+    _candidate_subject,
     build_memory_write_gate,
 )
 
@@ -292,6 +293,15 @@ def test_noul_polarity_probe_exposes_a_contradictory_backend() -> None:
         assert preference.verdict is MemoryWriteVerdict.HOLD
 
     asyncio.run(scenario())
+
+
+def test_candidate_subject_preserves_candidate_boundaries() -> None:
+    valid_batch = _candidate_subject(("Alpha uses MySQL.\nBeta uses PostgreSQL.", "Gamma uses Redis."))
+    crossed_batch = _candidate_subject(("Alpha uses MySQL.", "Beta uses PostgreSQL.\nGamma uses Redis."))
+
+    assert valid_batch != crossed_batch
+    assert '"candidate":1' in valid_batch
+    assert '"candidate":2' in valid_batch
 
 
 def test_the_gate_stays_disabled_without_an_enabled_flag() -> None:

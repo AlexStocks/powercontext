@@ -543,6 +543,7 @@ async def open_builtin_runtime(
                 "profile": profile_generator,
                 "skill": dream_generator,
             },
+            injected_memory_write_gate=memory_write_gate,
             worker_security=worker_security,
             source_registry=configured_source_registry,
         )
@@ -699,6 +700,7 @@ def _artifact_processing_bindings(  # noqa: C901 - validate and assemble one reg
     injected_embedding_model: EmbeddingModel | None = None,
     injected_token_estimator: TokenEstimator | None = None,
     injected_pipelines: Mapping[str, object | None] | None = None,
+    injected_memory_write_gate: MemoryWriteGate | None = None,
     worker_security: dict[str, Any] | None = None,
     source_registry: SourceDefinitionRegistry = BUILTIN_SOURCE_REGISTRY,
 ) -> tuple[ArtifactProcessingBinding, ...]:
@@ -739,6 +741,7 @@ def _artifact_processing_bindings(  # noqa: C901 - validate and assemble one reg
             injected_embedding_model is not None
             or injected_token_estimator is not None
             or injected_pipelines.get(family) is not None
+            or (family == "memory" and injected_memory_write_gate is not None)
         ):
             raise BuiltinConfigurationError("artifact-processing-child-resources")
         if isinstance(config.database, SQLiteConfig) and config.database.is_in_memory:

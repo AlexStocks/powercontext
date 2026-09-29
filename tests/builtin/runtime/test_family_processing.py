@@ -20,6 +20,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from functools import partial
+from typing import cast
 
 import pytest
 from sqlalchemy import func, select
@@ -47,9 +48,11 @@ from powercontext.builtin.runtime.config import BuiltinConfig, InferenceConfig, 
 from powercontext.builtin.runtime.family_processing import (
     FAMILY_BINDINGS,
     FamilyWorkerSpec,
+    _process_family_invocation,
     process_family_invocation,
     run_family_worker,
 )
+from powercontext.builtin.runtime.models import MemoryFlushResult
 from powercontext.builtin.runtime.processing_contracts import (
     ArtifactProcessingWorkAssignment,
     ArtifactProcessingWorkerCompletion,
@@ -109,6 +112,19 @@ class _WorkerProfiles:
 
 class _WorkerContexts:
     profiles = _WorkerProfiles()
+
+
+class _HeldMemoryContexts:
+    async def process_memory(self, *_args, **_kwargs):
+        return MemoryFlushResult(
+            previous_cursor=0,
+            high_watermark=1,
+            current_cursor=1,
+            source_count=1,
+            memory_ref=None,
+            held_count=1,
+            hold_codes=("evidence_limit_exceeded",),
+        )
 
 
 async def prepare(profile, family):
@@ -407,6 +423,38 @@ def test_spawned_memory_worker_reconstructs_configured_write_gate(monkeypatch, t
         assert result.outcome == ArtifactProcessingWorkerOutcome.SUCCEEDED
         assert captured["decision_model"] is not None
         assert captured["memory_write_gate"] is not None
+
+    asyncio.run(scenario())
+
+
+def test_memory_worker_completion_preserves_hold_details(tmp_path):
+    async def scenario():
+        assignment = ArtifactProcessingWorkAssignment(
+            binding_name=FAMILY_BINDINGS["memory"],
+            scope_id="scope-a",
+            artifact_family="memory",
+            claimed_request_generation=1,
+            fence=ArtifactProcessingFence(
+                supervisor_group="global",
+                holder_id="worker-test",
+                supervisor_generation=1,
+                lease_mode="single-process",
+            ),
+            worker_id="worker-1",
+        )
+        config = BuiltinConfig(database=SQLiteConfig(url=f"sqlite+aiosqlite:///{tmp_path / 'held-worker.db'}"))
+
+        result = await _process_family_invocation(
+            cast(RelationalContexts, _HeldMemoryContexts()),
+            assignment,
+            config=config,
+            security=None,
+            dream_generator=None,
+        )
+
+        assert result.outcome == ArtifactProcessingWorkerOutcome.SUCCEEDED
+        assert result.held_count == 1
+        assert result.hold_codes == ("evidence_limit_exceeded",)
 
     asyncio.run(scenario())
 
