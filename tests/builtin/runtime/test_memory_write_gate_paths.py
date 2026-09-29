@@ -546,14 +546,20 @@ def test_explicit_artifact_family_is_not_recovered_as_a_different_allowed_family
                 content=experience.content,
                 lineage=experience.lineage,
             )
+            entry = MemoryEntryInput.model_construct(
+                kind="fact",
+                text="The shared body is cited.",
+                entry=None,
+                sources=(),
+                artifacts=(explicit_skill,),
+                reason=None,
+            )
 
             with pytest.raises(ArtifactNotFoundError):
                 await context.artifacts.memory.plan_remember(
                     memory=None,
                     artifacts=(experience,),
-                    entries=(
-                        MemoryEntryInput(kind="fact", text="The shared body is cited.", artifacts=(explicit_skill,)),
-                    ),
+                    entries=(entry,),
                     mode="append",
                 )
 

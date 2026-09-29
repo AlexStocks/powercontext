@@ -80,7 +80,7 @@ class _PolarityBackend:
     policy_id = "powercontext.decision.polarity.v1"
 
     def __init__(self, *, insufficient_for: frozenset[str]) -> None:
-        self._insufficient_for = insufficient_for
+        self._insufficient_for = frozenset(_candidate_subject((value,)) for value in insufficient_for)
 
     async def evaluate(self, request: DecisionRequest, /) -> DecisionResult:
         outcome = DecisionOutcome.YES if request.subject in self._insufficient_for else DecisionOutcome.NO
