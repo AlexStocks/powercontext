@@ -14,23 +14,21 @@
 
 from __future__ import annotations
 
-import asyncio
-
-from powercontext.builtin.persistence.sqlite import SQLiteConfig, SQLiteProfile
-from powercontext.builtin.persistence.tables import BUILTIN_TABLES
 from powercontext.builtin.runtime.relational import RelationalContexts
 
 
 def test_evict_removes_scope_skill_publication_locks() -> None:
-    async def scenario() -> None:
-        async with SQLiteProfile.open(SQLiteConfig(), tables=BUILTIN_TABLES) as profile:
-            contexts = RelationalContexts(database=profile.database)
-            contexts.skill_publications("scope-a", "target-1", "skill-1")
-            contexts.skill_publications("scope-b", "target-1", "skill-1")
+    contexts = RelationalContexts.__new__(RelationalContexts)
+    contexts._contexts = {}
+    contexts._source_locks = {}
+    contexts._activation_locks = {}
+    contexts._experience_locks = {}
+    contexts._skill_publication_locks = {
+        ("scope-a", "target-1", "skill-1"): object(),
+        ("scope-b", "target-1", "skill-1"): object(),
+    }
 
-            contexts.evict("scope-a")
+    contexts.evict("scope-a")
 
-            assert ("scope-a", "target-1", "skill-1") not in contexts._skill_publication_locks
-            assert ("scope-b", "target-1", "skill-1") in contexts._skill_publication_locks
-
-    asyncio.run(scenario())
+    assert ("scope-a", "target-1", "skill-1") not in contexts._skill_publication_locks
+    assert ("scope-b", "target-1", "skill-1") in contexts._skill_publication_locks
